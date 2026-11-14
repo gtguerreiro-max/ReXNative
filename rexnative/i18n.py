@@ -126,6 +126,13 @@ MESSAGES = {
         'r_scene_how': '- To measure it: run the game with `--pgr4_native=true '
                        '--pgr4_native_resolve_dump=<dir>`, create `<dir>\\dump.request` in a 3D scene, '
                        'and `python -m rexnative scene <dir>\\f<N>-resolves.jsonl`.',
+        'r_scene_auto': '- **Learned at run time** (`REXNATIVE_SCENE_AUTO 1`, scene.h): the renderer '
+                        'picks the surface with MSAA or HDR resolved at nearly the frame\'s size; look '
+                        'for `ReXNative scene: learned at frame` in the log. The reference\'s values, '
+                        'kept as a fallback only: `0x%X`, %sx%s.',
+        'r_scene_measured': '- Given in overrides.json: surface `0x%X` (mask `0x%X`), width %s, pitch %s, '
+                            'height %s.',
+        'c_scene_auto': 'Scene: check the `ReXNative scene: learned` line in the log',
         'c_scene': "Scene: measure the scene surface (python -m rexnative scene)",
         'c_devices': 'Devices: the renderer follows any device (kFollowSwapDeviceOnly false). If the '
                      'game draws on another device while loading (heap corruption 0xC0000374, as '
@@ -233,6 +240,13 @@ MESSAGES = {
         'r_scene_how': '- Para medir: correr o jogo com `--pgr4_native=true '
                        '--pgr4_native_resolve_dump=<pasta>`, criar `<pasta>\\dump.request` numa cena '
                        '3D, e `python -m rexnative scene <pasta>\\f<N>-resolves.jsonl`.',
+        'r_scene_auto': '- **Aprendida em runtime** (`REXNATIVE_SCENE_AUTO 1`, scene.h): o renderer '
+                        'escolhe a superfície com MSAA ou HDR resolvida quase ao tamanho do frame; '
+                        'procurar no log `ReXNative scene: learned at frame`. Valores da referência, só '
+                        'de reserva: `0x%X`, %sx%s.',
+        'r_scene_measured': '- Dada no overrides.json: superfície `0x%X` (máscara `0x%X`), largura %s, '
+                            'pitch %s, altura %s.',
+        'c_scene_auto': 'Cena: confirmar a linha `ReXNative scene: learned` no log',
         'c_scene': 'Cena: medir a superfície da cena (python -m rexnative scene)',
         'c_devices': 'Devices: o renderer segue qualquer device (kFollowSwapDeviceOnly false). Se o '
                      'jogo desenhar noutro device ao carregar (corrupção do heap 0xC0000374, como '

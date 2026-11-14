@@ -939,6 +939,7 @@ const ResolvedImage* Resolver::ResolveCopy(CommandStream* list, const ResolvePar
 }
 
 bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination* own) {
+  if (!own) SceneNoteResolve(p);  // the game's resolves show where its scene is (scene.h)
   const bool depth = p.source == 4;
   if (!GetDestStorage(p.dest_format)) return false;
   RenderTarget* rt = depth ? targets_->GetDepth(p.regs, uint32_t(std::max(p.y1, 0)))

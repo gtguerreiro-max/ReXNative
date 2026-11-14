@@ -118,6 +118,8 @@ def extract_layer(port, name=None):
         'scaled_pitch': num(const('kScenePitch')),
         'height': num(const('kGameFrameHeight')),
     }
+    m = re.search(r'#define REXNATIVE_SCENE_AUTO (\d)', h)
+    scene['auto'] = bool(m and m.group(1) == '1')
     defaults = {
         'pgr4_render_height': num(const('kDefaultRenderHeight')),
         'pgr4_native_occlusion': const('kDefaultOcclusion') == 'true',

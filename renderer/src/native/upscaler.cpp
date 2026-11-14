@@ -211,7 +211,7 @@ bool Upscaler::CreateTargets() {
     return false;
   output_.resource_format = output_.view_format = output_.srv_format = kOutputFormat;
   output_.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  output_.width = kSceneWidth;  // guest pixels, at out_scale_ host pixels each
+  output_.width = SceneWidth();  // guest pixels, at out_scale_ host pixels each
   output_.height = SceneHeight();
   output_.scale = output_.size_scale = {{out_scale_, out_scale_}, {1, 1}};
 
@@ -313,7 +313,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
     return nullptr;
   }
   Time(list, GpuTimer::kUpscaleInput);
-  const D3D12_RECT all = {0, 0, LONG(kSceneWidth), LONG(SceneHeight())};
+  const D3D12_RECT all = {0, 0, LONG(SceneWidth()), LONG(SceneHeight())};
   targets.PrepareRead(list, color, all);
   targets.PrepareRead(list, depth, all);
 

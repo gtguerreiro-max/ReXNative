@@ -135,10 +135,13 @@ def adapter_report(res):
     w(tr('r_scene'))
     w('')
     sc = res['scene']
-    w(tr('r_scene_copied', sc.get('kSceneSurface', 0), sc.get('kSceneSurfaceMask', 0),
-         sc.get('width'), sc.get('scaled_pitch'), sc.get('height')))
+    if sc.get('auto'):
+        w(tr('r_scene_auto', sc.get('kSceneSurface', 0), sc.get('width'), sc.get('height')))
+    else:
+        w(tr('r_scene_measured', sc.get('kSceneSurface', 0), sc.get('kSceneSurfaceMask', 0),
+             sc.get('width'), sc.get('scaled_pitch'), sc.get('height')))
     w(tr('r_scene_how'))
-    check.append(tr('c_scene'))
+    check.append(tr('c_scene_auto') if sc.get('auto') else tr('c_scene'))
     dv = res['devices']
     if not dv.get('follow_swap_device_only'):
         check.append(tr('c_devices'))

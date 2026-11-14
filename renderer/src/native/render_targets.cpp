@@ -5,6 +5,7 @@
 #include "guest_memory.h"
 #include "hook_args.h"
 #include "log.h"
+#include "scene.h"
 
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -388,7 +389,7 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
     if (overridden) {
       rt->scale = scene_scale_;
       rt->size_scale = scene_size_scale_;
-    } else if (pitch == kScaledPitch) {
+    } else if (pitch == ScenePitch()) {
       rt->scale = rt->size_scale = base_scale_;
     }
     rt->resource_format = resource;

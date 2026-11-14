@@ -30,6 +30,7 @@
 #include "fidelityfx.h"
 #include "gpu_timer.h"
 #include "render_targets.h"
+#include "scene.h"
 
 #include <cstdint>
 #include <optional>
@@ -46,26 +47,23 @@ class Upscaler {
   static bool Requested();
 
   // The scene surface, from its RB_SURFACE_INFO (pitch and MSAA; the guest's value whatever the
-  // host targets' sample count).
-  static constexpr uint32_t kSceneSurfaceMask = rexnative::game::kSceneSurfaceMask;
-  static constexpr uint32_t kSceneSurface = rexnative::game::kSceneSurface;  // pitch 1280, 2x MSAA
-  static constexpr bool IsScene(uint32_t surface_info) {
-    return (surface_info & kSceneSurfaceMask) == kSceneSurface;
-  }
-  static constexpr uint32_t kSceneWidth = kFfxSceneWidth;
-  static uint32_t SceneHeight() { return FrameHeight(); }
+  // host targets' sample count), and its size: game_layer.h's constants, or learned at run time
+  // (scene.h).
+  static bool IsScene(uint32_t surface_info) { return IsSceneSurface(surface_info); }
+  static uint32_t SceneWidth() { return ::pgr4::native::SceneWidth(); }
+  static uint32_t SceneHeight() { return ::pgr4::native::SceneHeight(); }
   // Whether a span of the scene surface (a resolve's, a viewport's) is the scene's width: the
   // scene resolves in tiles of its whole width, while the rear-view mirror renders into a corner
   // of the scene surface and resolves that corner on its own (neither upscaled nor jittered).
-  static constexpr bool IsSceneWidth(int32_t x0, int32_t x1) {
-    return x0 <= 0 && x1 >= int32_t(kSceneWidth);
+  static bool IsSceneWidth(int32_t x0, int32_t x1) {
+    return x0 <= 0 && x1 >= int32_t(SceneWidth());
   }
 
   Upscaler() = default;
   // This port: the output at this many host pixels per guest pixel (the resolution scale), the
   // render size from it; before Initialize.
   void set_output_scale(uint32_t scale) { out_scale_ = scale; }
-  uint32_t OutputWidth() const { return kSceneWidth * out_scale_; }
+  uint32_t OutputWidth() const { return SceneWidth() * out_scale_; }
   uint32_t OutputHeight() const { return SceneHeight() * out_scale_; }
   ~Upscaler();
   Upscaler(const Upscaler&) = delete;
@@ -110,10 +108,10 @@ class Upscaler {
   // The scene's render size this frame on its guest size, and its largest
   // (--pgr4_native_upscaler_width/height: the size of the scene's targets).
   RenderScale scale() const {
-    return {{render_width_, render_height_}, {kSceneWidth, SceneHeight()}};
+    return {{render_width_, render_height_}, {SceneWidth(), SceneHeight()}};
   }
   RenderScale max_scale() const {
-    return {{max_width_, max_height_}, {kSceneWidth, SceneHeight()}};
+    return {{max_width_, max_height_}, {SceneWidth(), SceneHeight()}};
   }
   uint32_t render_height() const { return render_height_; }
   // The scene's texture LOD bias, in negative quarter levels (SamplerKey::lod_bias).
@@ -188,8 +186,8 @@ class Upscaler {
   ComPtr<ID3D12PipelineState> input_pso_;
   ComPtr<ID3D12DescriptorHeap> input_heap_;
   uint32_t input_stride_ = 0;
-  uint32_t max_width_ = kSceneWidth, max_height_ = 0;  // Initialize's, from the render height
-  uint32_t render_width_ = kSceneWidth, render_height_ = 0;
+  uint32_t max_width_ = 0, max_height_ = 0;  // Initialize's, from the scene's size
+  uint32_t render_width_ = 0, render_height_ = 0;
   std::optional<DynamicResolution> dynamic_;  // with --pgr4_native_upscaler_target_fps
   uint32_t mip_bias_quarters_ = 0;
   uint64_t frame_ = 0;
