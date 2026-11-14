@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+# This machine's ports (paths); ports.example.json shows the format.
+ports.json
+# Generated layers, reports and the known ports' layers: addresses and data derived from the
+# games, local only.
+results/
+references/

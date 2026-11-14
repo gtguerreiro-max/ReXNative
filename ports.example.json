@@ -1,0 +1,21 @@
+{
+  "_comment": "The known ports (references for adapt, and what validate compares against). Copy to ports.json and set the paths: each needs the port's sources (native/trace/surface), its ReXGlue generated code and the game's default.xex. Paths are only read.",
+  "pgr4": {
+    "title": "Project Gotham Racing 4",
+    "root": "C:/ports/pgr4-native",
+    "native": "src/native",
+    "trace": "src/pgr4_d3d_trace.cpp",
+    "surface": "src/d3d_surface.inc",
+    "generated": "build/game/pgr4/generated/default",
+    "xex": "build/game/pgr4/game-data/default.xex"
+  },
+  "fromdust": {
+    "title": "From Dust",
+    "root": "C:/ports/FromDustDeck",
+    "native": "src/native",
+    "trace": "src/fromdust_d3d_trace.cpp",
+    "surface": "src/d3d_surface.inc",
+    "generated": "generated/default",
+    "xex": "game-data/Default.xex"
+  }
+}

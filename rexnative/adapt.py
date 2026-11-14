@@ -1,0 +1,232 @@
+"""The adapter: a reference port's game layer -> another game's.
+
+  target = {'name', 'title', 'generated', 'xex'}
+  refs   = {name: profile} (profile.extract of each hand-made port, with its generated tree)
+
+1. Picks the references (same D3D library version first, then LTCG vs not, then the closest
+   XDK build); the best is primary, the others fill the functions it could not find and
+   cross-check the ones it did.
+2. Matches the reference's functions (matcher.py), works out Resolve's hook and arguments
+   (abi.py), the device offsets (offsets.py) and the default clear colour (constants.py).
+3. Applies <out>/overrides.json, if any (choices made by hand after checking the report).
+"""
+import json
+import os
+
+from . import abi, constants, listing, matcher, offsets, profile as prof, xex
+
+EMIT = ('high', 'medium')  # confidences written to the layer; 'low' ones are only reported
+
+
+def score_reference(target_info, ref_profile):
+    lib, ver = xex.d3d_library(target_info)
+    rlib, rver = xex.d3d_library(ref_profile['xex'])
+    s, why = 0.0, []
+    if ver and rver == ver:
+        s += 100
+        why.append('mesma versão do XDK (%s)' % ver)
+    else:
+        b, rb = xex.xdk_build(ver), xex.xdk_build(rver)
+        if b and rb:
+            s -= abs(b - rb) / 100.0
+        why.append('XDK %s vs %s' % (rver, ver))
+    if (rlib == 'D3D9LTCG') == (lib == 'D3D9LTCG'):
+        s += 10
+        why.append('ambos %s' % ('LTCG' if lib == 'D3D9LTCG' else 'sem LTCG'))
+    else:
+        why.append('%s vs %s' % (rlib, lib))
+    known = sum(1 for v in ref_profile['functions'].values() if v)
+    s += known / 100.0
+    return s, why
+
+
+def named_functions(p):
+    named = {a: n for a, n, c in p['surface']}
+    for n, a in p['functions'].items():
+        if a:
+            named[a] = n
+    return named
+
+
+def run_matcher(R, T, p):
+    return matcher.Matcher(R, T, named_functions(p)).run()
+
+
+def adapt(target, refs, overrides=None, log=print):
+    info = xex.read(target['xex']) if target.get('xex') else None
+    lib, ver = xex.d3d_library(info) if info else (None, None)
+    T = listing.load(target['generated'])
+    order = []
+    for name, p in refs.items():
+        s, why = score_reference(info, p) if info else (0.0, ['sem xex'])
+        order.append((s, name, why))
+    order.sort(reverse=True)
+    if not order:
+        raise SystemExit('rexnative: no reference')
+    log('target %s: %s %s, %d functions' % (target['name'], lib, ver, len(T.funcs)))
+    runs = []
+    for s, name, why in order:
+        p = refs[name]
+        R = listing.load(p['generated'])
+        m = run_matcher(R, T, p)
+        log('  reference %s (score %.1f: %s): %d of %d matched' % (
+            name, s, '; '.join(why), sum(1 for a in m.named if a in m.map), len(m.named)))
+        runs.append({'name': name, 'score': s, 'why': why, 'profile': p, 'R': R, 'm': m})
+    primary = runs[0]
+    p, R, m = primary['profile'], primary['R'], primary['m']
+
+    # -- functions ------------------------------------------------------------------------
+    funcs = {}
+    for canon in prof.FUNCTIONS:
+        row = {'address': None, 'how': 'not found', 'confidence': None, 'detail': '',
+               'ref': None, 'ref_address': None, 'cross': {}}
+        for run in runs:
+            ra = run['profile']['functions'].get(canon)
+            if not ra:
+                continue
+            mm = run['m'].map.get(ra)
+            if mm is None:
+                cand = run['m'].candidates.get(ra) or [
+                    (sc, t, 'listing %.2f' % sc) for sc, t in run['m'].weak.get(ra, [])]
+                if cand and row['address'] is None and not row['detail']:
+                    row['detail'] = 'candidates (%s): %s' % (run['name'], ', '.join(
+                        '%08X %s' % (t, why) for sc, t, why in cand[:3]))
+                continue
+            if row['address'] is None and mm.confidence() in EMIT:
+                row.update(address=mm.target, how=mm.how, confidence=mm.confidence(),
+                           detail=mm.detail, ref=run['name'], ref_address=ra)
+            else:
+                row['cross'][run['name']] = (mm.target, mm.how, mm.confidence())
+        funcs[canon] = row
+
+    # Resolve: which function to hook and where its arguments are.
+    ra = abi.resolve_abi(R, T, p, m.map)
+    if ra:
+        r = funcs['Resolve']
+        r.update(address=ra['hook'], ref=primary['name'], ref_address=p['functions']['Resolve'])
+        if r['how'] in ('not found', 'wrapper'):
+            r.update(how='wrapper' if ra['inner'] == ra['hook'] else 'public wrapper',
+                     confidence='medium', detail='; '.join(ra['steps']))
+        elif ra['inner'] and ra['inner'] != ra['hook']:
+            r.update(how='public wrapper', detail='; '.join(ra['steps']))
+        inner = ra['inner'] if ra['inner'] and ra['inner'] != ra['hook'] else None
+        funcs['ResolveInner'].update(
+            address=inner, how='abi' if inner else 'same as Resolve',
+            confidence=r['confidence'] if inner else None,
+            detail='the function the public Resolve wraps' if inner else '')
+
+    # -- d3d_surface.inc: the reference's entries found with a usable confidence ----------------
+    surface, seen, dropped = [], set(), []
+    for run in runs:
+        for a, name, cat in run['profile']['surface']:
+            if any(e[1] == name for e in surface):
+                continue
+            mm = run['m'].map.get(a)
+            if mm is None or mm.how == 'wrapper' or mm.confidence() not in EMIT:
+                if run is primary:
+                    dropped.append((a, name, mm.how if mm else 'not found',
+                                    mm.detail if mm else ''))
+                continue
+            if mm.target in seen:
+                if run is primary:
+                    dropped.append((a, name, 'same function as another entry', '%08X' % mm.target))
+                continue
+            seen.add(mm.target)
+            surface.append([mm.target, name, cat, mm.how, mm.confidence(),
+                            run['name'] if run is not primary else ''])
+    # Every hooked function must be in the surface (its kFn_ id); add the missing ones.
+    cats = {'Swap': 'kSwap', 'Resolve': 'kResolve', 'Clear': 'kClear', 'ClearF': 'kClear',
+            'BeginTiling': 'kTiling', 'EndTiling': 'kTiling', 'QueryIssue': 'kQuery',
+            'QueryGetData': 'kQuery', 'CreateDevice': 'kDevice', 'MakeSpace': 'kPush',
+            'StartSegment': 'kPush', 'SwitchSegment': 'kPush', 'RestoreSegment': 'kPush',
+            'RestoreSegment13392': 'kPush', 'RestorePush': 'kPush'}
+    for canon in prof.FUNCTIONS:
+        a = funcs[canon]['address']
+        if a and a not in seen and canon not in ('ShaderLoad', 'ImmediateVs', 'ResolveInner',
+                                                 'RunCommandBuffer'):
+            surface.append([a, canon, cats.get(canon, 'kDraw'), funcs[canon]['how'],
+                            funcs[canon]['confidence'], 'hook'])
+            seen.add(a)
+    surface.sort()
+
+    # -- device offsets ---------------------------------------------------------------------
+    pairs = [(r, mm.target) for r, mm in m.map.items() if mm.confidence() in EMIT]
+    v = offsets.votes(R, T, pairs)
+    offs = offsets.map_offsets(p['offsets'], v, R, list(m.named))
+
+    # -- default clear colour ---------------------------------------------------------------
+    clear = None
+    hooked_inner = funcs['ResolveInner']['address'] or funcs['Resolve']['address']
+    if hooked_inner and hooked_inner in T:
+        clear = constants.default_clear_color(T[hooked_inner])
+    ref_clear_check = None
+    ref_resolve = p['functions'].get('ResolveInner') or p['functions'].get('Resolve')
+    if ref_resolve and ref_resolve in R:
+        own = constants.default_clear_color(R[ref_resolve])
+        ref_clear_check = {
+            'profile': p.get('clear_color'),
+            'found': own,
+            'consistent': bool(own and p.get('clear_color') and
+                               own['address'] == p['clear_color']['address'] and
+                               own['vector'] == p['clear_color']['vector']),
+        }
+
+    result = {
+        'target': {'name': target['name'], 'title': target.get('title', target['name']),
+                   'generated': target['generated'], 'xex': info, 'd3d': [lib, ver],
+                   'functions_in_tree': len(T.funcs)},
+        'references': [{'name': r['name'], 'score': r['score'], 'why': r['why'],
+                        'matched': sum(1 for a in r['m'].named if a in r['m'].map),
+                        'wanted': len(r['m'].named)} for r in runs],
+        'primary': primary['name'],
+        'library_ranges': [['%08X' % lo, '%08X' % hi] for lo, hi in m.target_ranges],
+        'functions': funcs,
+        'surface': surface,
+        'surface_dropped': dropped,
+        'offsets': offs,
+        'clear_color': clear,
+        'reference_clear_check': ref_clear_check,
+        'resolve_abi': ra,
+        # Not in the code: copied from the primary reference, to be measured (rexnative scene).
+        'scene': dict(p['scene']),
+        # The game's own frame height (PGR4's 800 is its Steam Deck mode, made by its own
+        # hooks), occlusion queries on the host off (From Dust hung with them; a new game's
+        # query hooks are often not found), the console's 16:9.
+        'defaults': {'pgr4_render_height': p['scene'].get('height', 720),
+                     'pgr4_native_occlusion': False,
+                     'pgr4_native_display_aspect': '16.0 / 9.0'},
+        'devices': {
+            'follow_swap_device_only': False,
+            'configure_at_first_device': funcs['CreateDevice']['address'] is None,
+        },
+        'overrides': {},
+    }
+    if overrides:
+        apply_overrides(result, overrides)
+    return result
+
+
+def apply_overrides(result, ov):
+    """overrides.json: {"functions": {name: "XXXXXXXX" | null}, "scene": {...},
+    "defaults": {...}, "devices": {...}, "clear_color": {"address": "...", "vector": bool},
+    "resolve_args": [8 registers]}"""
+    for name, val in ov.get('functions', {}).items():
+        row = result['functions'].setdefault(name, {})
+        row.update(address=int(val, 16) if val else None, how='override', confidence='override',
+                   detail='overrides.json')
+    for key in ('scene', 'defaults', 'devices'):
+        result[key].update(ov.get(key, {}))
+    if 'clear_color' in ov:
+        c = ov['clear_color']
+        result['clear_color'] = {'address': int(c['address'], 16), 'vector': bool(c['vector'])}
+    if 'resolve_args' in ov and result['resolve_abi']:
+        result['resolve_abi']['args'] = ov['resolve_args']
+    result['overrides'] = ov
+
+
+def load_overrides(out_dir):
+    path = os.path.join(out_dir, 'overrides.json')
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    return None
