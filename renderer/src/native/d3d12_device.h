@@ -280,6 +280,10 @@ class D3D12Device {
 // Logs a failed HRESULT with the call text; returns true when it failed.
 bool Failed(HRESULT hr, const char* what);
 
+// Once per run, when `device` was removed: the reason and, with --pgr4_native_dred, DRED's
+// breadcrumbs (the last operations each command list completed) and page-fault data.
+void LogDeviceRemoved(ID3D12Device* device);
+
 // A barrier moving every subresource of `resource` from `before` to `after`.
 inline D3D12_RESOURCE_BARRIER TransitionBarrier(ID3D12Resource* resource,
                                                 D3D12_RESOURCE_STATES before,

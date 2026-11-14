@@ -1149,6 +1149,7 @@ void NativeRenderer::Fail() {
   if (pacer_) pacer_->Stop();
   REXLOG_ERROR("PGR4 native: frame {} failed; native path off for the rest of the run",
                frame_index_);
+  if (device_) LogDeviceRemoved(device_->device());
   if (!primary_) {
     live_.store(nullptr, std::memory_order_relaxed);
     return;

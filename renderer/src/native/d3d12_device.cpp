@@ -12,6 +12,9 @@
 #include <simde/x86/sse.h>
 
 #include <algorithm>
+#include <atomic>
+#include <iterator>
+#include <string>
 #include <condition_variable>
 #include <cwchar>
 #include <mutex>
@@ -27,6 +30,10 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_INT32(pgr4_native_hdr_peak_nits, 0, "PGR4 native",
                      "HDR output: the peak luminance in nits the image is fitted to; 0: the "
                      "display's, or 1000 when it reports none");
+REXCVAR_DEFINE_BOOL(pgr4_native_dred, false, "PGR4 native",
+                    "Debug: D3D12 DRED (auto-breadcrumbs and page-fault data) on the native "
+                    "renderer's device; when the GPU removes it (a hang, TDR, or a fault) the last "
+                    "commands each command list completed and the faulting address are logged");
 REXCVAR_DECLARE(int32_t, d3d12_queue_priority);
 
 namespace pgr4::native {
@@ -35,6 +42,75 @@ namespace {
 constexpr UINT_PTR kTitleTimer = 1;
 const wchar_t kClassName[] = L"pgr4_native_debug";
 }  // namespace
+
+namespace {
+
+// D3D12_AUTO_BREADCRUMB_OP names (d3d12.h order).
+const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
+  static constexpr const char* kNames[] = {
+      "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced",
+      "ExecuteIndirect", "Dispatch", "CopyBufferRegion", "CopyTextureRegion", "CopyResource",
+      "CopyTiles", "ResolveSubresource", "ClearRenderTargetView", "ClearUnorderedAccessView",
+      "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle", "Present", "ResolveQueryData",
+      "BeginSubmission", "EndSubmission", "DecodeFrame", "ProcessFrames",
+      "AtomicCopyBufferUint", "AtomicCopyBufferUint64", "ResolveSubresourceRegion",
+      "WriteBufferImmediate", "DecodeFrame1", "SetProtectedResourceSession", "DecodeFrame2",
+      "ProcessFrames1", "BuildRaytracingAccelerationStructure",
+      "EmitRaytracingAccelerationStructurePostbuildInfo", "CopyRaytracingAccelerationStructure",
+      "DispatchRays", "InitializeMetaCommand", "ExecuteMetaCommand", "EstimateMotion",
+      "ResolveMotionVectorHeap", "SetPipelineState1", "InitializeExtensionCommand",
+      "ExecuteExtensionCommand", "DispatchMesh", "EncodeFrame", "ResolveEncoderOutputMetadata",
+      "Barrier", "BeginCommandList", "DispatchGraph", "SetProgram"};
+  return uint32_t(op) < std::size(kNames) ? kNames[op] : "?";
+}
+
+std::string Narrow(const wchar_t* w) {
+  std::string s;
+  for (; w && *w; ++w) s += *w < 128 ? char(*w) : '?';
+  return s;
+}
+
+}  // namespace
+
+void LogDeviceRemoved(ID3D12Device* device) {
+  static std::atomic<bool> logged{false};
+  if (!device || logged.exchange(true)) return;
+  const HRESULT reason = device->GetDeviceRemovedReason();
+  REXLOG_ERROR("PGR4 native DRED: device removed, reason {:08X}{}", uint32_t(reason),
+               REXCVAR_GET(pgr4_native_dred) ? "" : " (run with --pgr4_native_dred for details)");
+  ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+  if (!REXCVAR_GET(pgr4_native_dred) || FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
+  D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs = {};
+  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&crumbs))) {
+    for (const D3D12_AUTO_BREADCRUMB_NODE1* n = crumbs.pHeadAutoBreadcrumbNode; n; n = n->pNext) {
+      const uint32_t count = n->BreadcrumbCount;
+      const uint32_t last = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+      if (last >= count) continue;  // this list finished
+      REXLOG_ERROR("PGR4 native DRED: list '{}' on queue '{}': {} of {} operations completed",
+                   Narrow(n->pCommandListDebugNameW), Narrow(n->pCommandQueueDebugNameW), last,
+                   count);
+      const uint32_t from = last > 8 ? last - 8 : 0, to = std::min(count, last + 8);
+      for (uint32_t i = from; i < to && n->pCommandHistory; ++i)
+        REXLOG_ERROR("PGR4 native DRED:   {} {:4} {}", i == last ? "->" : "  ", i,
+                     BreadcrumbOpName(n->pCommandHistory[i]));
+      for (uint32_t c = 0; c < n->BreadcrumbContextsCount && n->pBreadcrumbContexts; ++c) {
+        const D3D12_DRED_BREADCRUMB_CONTEXT& ctx = n->pBreadcrumbContexts[c];
+        if (ctx.BreadcrumbIndex + 8 >= last && ctx.BreadcrumbIndex <= last + 8)
+          REXLOG_ERROR("PGR4 native DRED:   context at {}: {}", ctx.BreadcrumbIndex,
+                       Narrow(ctx.pContextString));
+      }
+    }
+  }
+  D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
+  if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&fault)) && fault.PageFaultVA) {
+    REXLOG_ERROR("PGR4 native DRED: page fault at GPU address {:016X}", uint64_t(fault.PageFaultVA));
+    for (const D3D12_DRED_ALLOCATION_NODE1* a = fault.pHeadExistingAllocationNode; a; a = a->pNext)
+      REXLOG_ERROR("PGR4 native DRED:   live allocation there: '{}'", Narrow(a->ObjectNameW));
+    for (const D3D12_DRED_ALLOCATION_NODE1* a = fault.pHeadRecentFreedAllocationNode; a;
+         a = a->pNext)
+      REXLOG_ERROR("PGR4 native DRED:   recently freed there: '{}'", Narrow(a->ObjectNameW));
+  }
+}
 
 bool Failed(HRESULT hr, const char* what) {
   if (SUCCEEDED(hr)) return false;
@@ -162,6 +238,18 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
                                                   IID_PPV_ARGS(adapter.GetAddressOf())),
              "EnumAdapterByGpuPreference"))
     return false;
+  if (REXCVAR_GET(pgr4_native_dred)) {
+    // Process-wide, for the devices created from here on (the Xenos plugin's is older).
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
+      dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      REXLOG_INFO("PGR4 native: D3D12 DRED on (breadcrumbs, page faults)");
+    } else {
+      REXLOG_WARN("PGR4 native: --pgr4_native_dred: no DRED settings interface");
+    }
+  }
   if (Failed(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
                                IID_PPV_ARGS(device_.ReleaseAndGetAddressOf())),
              "D3D12CreateDevice"))
@@ -495,8 +583,10 @@ bool D3D12Device::Present() {
   const HRESULT hr = vsync_ ? swapchain_->Present(1, 0)
                             : swapchain_->Present(0, tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
   if (!Failed(hr, "Present")) return true;
-  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
     Failed(device_->GetDeviceRemovedReason(), "device removed, reason");
+    LogDeviceRemoved(device_.Get());
+  }
   return false;
 }
 
