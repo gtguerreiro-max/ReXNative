@@ -625,15 +625,16 @@ void NativeRenderer::SwitchUpscaler(bool on) {
   upscaler_on_ = on;
   // The scene's targets are keyed by their sample count: the next draws make the other ones,
   // and the unused ones age out (RenderTargets::BeginFrame).
+  // The scene (scene.h); none yet when it is learned at run time and was not seen yet: the
+  // override then waits for it (SceneEndFrame asks for this again).
+  const SceneSurface& scene = Scene();
   if (on) {
-    rt_->OverrideScene(Upscaler::kSceneSurfaceMask, Upscaler::kSceneSurface, 1,
-                       upscaler_->max_scale());
+    rt_->OverrideScene(scene.mask, scene.value, 1, upscaler_->max_scale());
     rt_->SetSceneScale(upscaler_->scale());
     upscaler_->Reset();
   } else if (scene_msaa_ != 2) {
     const uint32_t s = rt_->resolution_scale();
-    rt_->OverrideScene(Upscaler::kSceneSurfaceMask, Upscaler::kSceneSurface, scene_msaa_,
-                       RenderScale{{s, s}, {1, 1}});
+    rt_->OverrideScene(scene.mask, scene.value, scene_msaa_, RenderScale{{s, s}, {1, 1}});
   } else {
     rt_->OverrideScene(0, 0, 1, {});
   }
@@ -658,6 +659,10 @@ void NativeRenderer::ReadSceneMsaa() {
 void NativeRenderer::BeginFrameModules() {
   if (frame_rate_requested_.exchange(false, std::memory_order_relaxed))
     device_->set_present_interval(uint32_t(std::max(1, REXCVAR_GET(pgr4_native_present_interval))));
+  // A scene learned at run time (scene.h): the upscaler and the scene's targets are made again
+  // for it, as when the antialiasing changes.
+  if (SceneEndFrame(frame_index_) && (upscaler_ || Upscaler::Requested() || scene_msaa_ != 2))
+    antialiasing_requested_.store(true, std::memory_order_relaxed);
   if (antialiasing_requested_.exchange(false, std::memory_order_relaxed)) {
     ReadSceneMsaa();
     // The upscaler takes its sizes when it is made (Upscaler::Initialize); its resources may be

@@ -192,8 +192,10 @@ def adapt(target, refs, overrides=None, log=print):
         'clear_color': clear,
         'reference_clear_check': ref_clear_check,
         'resolve_abi': ra,
-        # Not in the code: copied from the primary reference, to be measured (rexnative scene).
-        'scene': dict(p['scene']),
+        # Not in the code: the renderer learns it at run time (scene.h, REXNATIVE_SCENE_AUTO);
+        # the reference's values stay as the fallback. overrides.json "scene" (measured with
+        # rexnative scene) fixes it instead.
+        'scene': dict(p['scene'], auto=True),
         # The game's own frame height (PGR4's 800 is its Steam Deck mode, made by its own
         # hooks), occlusion queries on the host off (From Dust hung with them; a new game's
         # query hooks are often not found), the console's 16:9.
@@ -223,7 +225,11 @@ def apply_overrides(result, ov):
             # Not hooked any more under any name: out of d3d_surface.inc too.
             result['surface'] = [e for e in result['surface'] if e[0] != old]
         row.update(address=new, how='override', confidence='override', detail='overrides.json')
-    for key in ('scene', 'defaults', 'devices'):
+    if 'scene' in ov:
+        # A measured scene: the renderer uses it as it is, unless the file says "auto": true.
+        result['scene'].update(ov['scene'])
+        result['scene']['auto'] = bool(ov['scene'].get('auto', False))
+    for key in ('defaults', 'devices'):
         result[key].update(ov.get(key, {}))
     if 'clear_color' in ov:
         c = ov['clear_color']

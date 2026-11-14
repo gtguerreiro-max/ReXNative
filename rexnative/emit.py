@@ -154,13 +154,16 @@ def game_layer_h(layer, comments=True):
     w('')
     sc = layer['scene']
     if comments:
-        w('// The scene surface the upscaler (DLSS / DLAA) and DLSS 5 work on: measured at run time')
-        w('// (python -m rexnative scene <resolve dump>), not found in the code.')
+        w('// The scene surface the upscaler (DLSS / DLAA), the MSAA option and DLSS 5 work on: not in')
+        w('// the code. REXNATIVE_SCENE_AUTO 1: the renderer learns it from the frames\' resolves')
+        w('// (scene.h); 0: these constants, measured (python -m rexnative scene <resolve dump>).')
+        w('// --rexnative_scene_auto=0/1 overrides it at run time.')
     w('inline constexpr uint32_t kSceneSurfaceMask = 0x%X;' % sc.get('kSceneSurfaceMask', 0x33FFF))
     w('inline constexpr uint32_t kSceneSurface = 0x%X;' % sc.get('kSceneSurface', 0))
     w('inline constexpr uint32_t kSceneWidth = %d;' % sc.get('width', 0))
     w('inline constexpr uint32_t kScenePitch = %d;' % sc.get('scaled_pitch', sc.get('width', 0)))
     w('inline constexpr uint32_t kGameFrameHeight = %d;' % sc.get('height', 0))
+    w('#define REXNATIVE_SCENE_AUTO %d' % (1 if sc.get('auto') else 0))
     w('')
     d = layer['defaults']
     if comments:

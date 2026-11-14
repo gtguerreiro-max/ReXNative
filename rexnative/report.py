@@ -143,12 +143,19 @@ def adapter_report(res):
     w('## Cena (DLSS / DLAA / DLSS 5)')
     w('')
     sc = res['scene']
-    w('- Copiado da referência, **por medir neste jogo**: superfície `0x%X` (máscara `0x%X`), '
-      'largura %s, pitch %s, altura %s.' % (sc.get('kSceneSurface', 0), sc.get('kSceneSurfaceMask', 0),
-                                            sc.get('width'), sc.get('scaled_pitch'), sc.get('height')))
-    w('- Para medir: correr o jogo com `--pgr4_native=true --pgr4_native_resolve_dump=<pasta>`, '
+    if sc.get('auto'):
+        w('- **Aprendida em runtime** (`REXNATIVE_SCENE_AUTO 1`, scene.h): o renderer escolhe a '
+          'superfície com MSAA ou HDR resolvida quase ao tamanho do frame. Procurar no log '
+          '`ReXNative scene: learned at frame`. Valores da referência, só de reserva: `0x%X`, '
+          '%sx%s.' % (sc.get('kSceneSurface', 0), sc.get('width'), sc.get('height')))
+    else:
+        w('- Medida (overrides.json): superfície `0x%X` (máscara `0x%X`), largura %s, pitch %s, '
+          'altura %s.' % (sc.get('kSceneSurface', 0), sc.get('kSceneSurfaceMask', 0),
+                          sc.get('width'), sc.get('scaled_pitch'), sc.get('height')))
+    w('- Para medir à mão: correr o jogo com `--pgr4_native=true --pgr4_native_resolve_dump=<pasta>`, '
       'criar `<pasta>\\dump.request` numa cena 3D, e `python -m rexnative scene <pasta>\\f<N>-resolves.jsonl`.')
-    check.append('Cena: medir a superfície da cena (python -m rexnative scene)')
+    check.append('Cena: confirmar a linha `ReXNative scene: learned` no log' if sc.get('auto')
+                 else 'Cena: confirmar a superfície medida (python -m rexnative scene)')
     dv = res['devices']
     if not dv.get('follow_swap_device_only'):
         check.append('Devices: o renderer segue qualquer device (kFollowSwapDeviceOnly false). Se o '

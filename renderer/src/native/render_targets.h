@@ -236,9 +236,9 @@ class RenderTargets {
     scene_samples_ = samples;
     scene_scale_ = scene_size_scale_ = scale;
   }
-  // This port: the screen-sized surfaces (pitch kScaledPitch) render at `scale` host pixels
-  // per guest pixel (--pgr4_native_resolution_scale); before the first target.
-  static constexpr uint32_t kScaledPitch = rexnative::game::kScenePitch;
+  // This port: the screen-sized surfaces (the scene's pitch, scene.h ScenePitch) render at
+  // `scale` host pixels per guest pixel (--pgr4_native_resolution_scale); before the first
+  // target. A scene learned at run time applies to the targets made after it.
   void SetResolutionScale(uint32_t scale) {
     resolution_scale_ = scale;
     base_scale_ = {{scale, scale}, {1, 1}};
