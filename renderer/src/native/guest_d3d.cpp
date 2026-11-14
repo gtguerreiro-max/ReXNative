@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest D3D functions replaced in primary mode (guest_d3d.h).
+// ReXNative renderer: guest D3D functions replaced in primary mode (guest_d3d.h).
 #include "guest_d3d.h"
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
@@ -8,14 +8,14 @@
 
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_replace_draws, true, "PGR4 native",
-                    "With --pgr4_native_primary, replace the guest D3D's DrawIndexedVertices "
+REXCVAR_DEFINE_BOOL(rexnative_replace_draws, true, "ReXNative",
+                    "With --rexnative, replace the guest D3D's DrawIndexedVertices "
                     "(DrawIndexedVertices): keep the device state, skip its PM4 packets");
-REXCVAR_DECLARE(bool, pgr4_native_primary);
+REXCVAR_DECLARE(bool, rexnative);
 
 REX_EXTERN(REXNATIVE_SUB(REXNATIVE_SHADER_LOAD));
 
-namespace pgr4::native::guest_d3d {
+namespace rexnative::guest_d3d {
 
 // The original (DrawIndexedVertices(device, primitive, base vertex, start index, index count)):
 //   1. flushes the dirty float constants (masks +0, +8, sub_826DE030), clears both masks;
@@ -35,7 +35,7 @@ namespace pgr4::native::guest_d3d {
 bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
   // Start-up flags: the renderer switch changes NativeRenderer::Live, not these.
   static const bool kReplace =
-      REXCVAR_GET(pgr4_native_replace_draws) && REXCVAR_GET(pgr4_native_primary);
+      REXCVAR_GET(rexnative_replace_draws) && REXCVAR_GET(rexnative);
   const uint32_t device = ctx.r3.u32;
   if (!kReplace || !device || !NativeRenderer::Live()) return false;
   uint8_t* masks = HostPtr(base, device + dev::kDirtyMasks);
@@ -56,4 +56,4 @@ bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
   return true;
 }
 
-}  // namespace pgr4::native::guest_d3d
+}  // namespace rexnative::guest_d3d

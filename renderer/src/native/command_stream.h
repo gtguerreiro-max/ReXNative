@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the frame's command list, recorded on a thread of its own.
+// ReXNative renderer: the frame's command list, recorded on a thread of its own.
 //
 // Recording a draw took the render thread about 3 us, a third of it in vkd3d-proton and RADV
 // making the D3D12 calls (td-500's stage profile: record, 1.1 us a draw), and the race's
@@ -38,7 +38,7 @@
 #include <utility>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class CommandStream {
  public:
@@ -270,4 +270,4 @@ class CommandStream {
   std::thread thread_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

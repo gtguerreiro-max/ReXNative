@@ -22,7 +22,7 @@ REXCVAR_DEFINE_INT32(rexnative_scene_auto, -1, "ReXNative",
                      "the frames' resolves: 1 on, 0 off (game_layer.h's constants), -1 the game "
                      "layer's choice (REXNATIVE_SCENE_AUTO)");
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 // A candidate in this many frames in a row is adopted (about half a second).
@@ -188,4 +188,4 @@ bool SceneEndFrame(uint64_t frame) {
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

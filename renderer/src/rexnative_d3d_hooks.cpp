@@ -1,14 +1,14 @@
-// pgr4-native PGR4 native renderer: guest D3D API hooks and frame trace.
+// ReXNative renderer: guest D3D API hooks and frame trace.
 //
 // Every function in d3d_surface.inc (the XDK D3D entry points PGR4's game code calls, plus the
 // internal draw builders and MakeSpace) is overridden with a REX_HOOK_RAW that forwards to the
 // original __imp__sub_X and counts the call (the pass-through ones only while the tap or the
 // profiler is on). For debugging and oracle comparisons, forwarding can be switched off per class
 // at run time (`skip draw|clear|resolve|none`). The native renderer as the presenter
-// (--pgr4_native_primary) does not use it: it keeps forwarding and stops the Xenos plugin's host
+// (--rexnative) does not use it: it keeps forwarding and stops the Xenos plugin's host
 // draws with the SDK's --gpu_skip_draws (patches/0031).
 //
-// With --pgr4_d3d_tap the hooks also follow the D3D push buffer: the D3D device keeps its write
+// With --rexnative_d3d_tap the hooks also follow the D3D push buffer: the D3D device keeps its write
 // pointer at device+48 (last written dword) and its limit at device+56, and every packet the
 // library emits is written there before the GPU sees it. At the entry and exit of each device
 // call the new dwords are decoded (PM4 types 0-3), so register, constant, shader and draw state
@@ -16,17 +16,17 @@
 // and, on traced frames, written with its shaders, fetch constants, render-target registers and
 // a cross-check of the decoded registers against the device's own register shadow.
 //
-// Control at run time: --pgr4_d3d_control=<file>. The file is read (then deleted) once per
+// Control at run time: --rexnative_d3d_control=<file>. The file is read (then deleted) once per
 // frame, one command per line:
-//   trace <tag> [frames]   write the next N complete frames to --pgr4_d3d_trace_dir (ignored
+//   trace <tag> [frames]   write the next N complete frames to --rexnative_d3d_trace_dir (ignored
 //                          while the tap is off)
 //   skip <draw,clear,resolve|none>
 //   tap on|off             stop or resume decoding (hooks keep counting and forwarding); off
 //                          also drops the frames a trace has still to write
-// --pgr4_d3d_tap, --pgr4_d3d_tap_check and --pgr4_d3d_skip set the state at the first device the
+// --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
-// With --pgr4_native the draw, clear, resolve and Swap hooks also call the native D3D12
+// With --rexnative_beside_xenos the draw, clear, resolve and Swap hooks also call the native D3D12
 // renderer (src/native/renderer.h) after the guest function returned.
 //
 // Built only into the PGR4 game project (games/pgr4, scripts/build.sh).
@@ -63,20 +63,20 @@
 #include <unordered_map>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(pgr4_d3d_tap, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_d3d_tap, false, "ReXNative",
                     "Decode the guest D3D push buffer at each hooked D3D call (trace/oracle)");
-REXCVAR_DEFINE_STRING(pgr4_d3d_control, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_d3d_control, "", "ReXNative",
                       "Command file polled once per frame (trace/skip/tap commands)");
-REXCVAR_DEFINE_STRING(pgr4_d3d_trace_dir, "", "PGR4 native", "Directory for frame traces");
-REXCVAR_DEFINE_STRING(pgr4_d3d_skip, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_d3d_trace_dir, "", "ReXNative", "Directory for frame traces");
+REXCVAR_DEFINE_STRING(rexnative_d3d_skip, "", "ReXNative",
                       "Classes not forwarded to the guest D3D at start: draw,clear,resolve");
-REXCVAR_DEFINE_STRING(pgr4_d3d_frame_csv, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_d3d_frame_csv, "", "ReXNative",
                       "Per-frame counter CSV (frame, calls, draw calls, tap draws, ...)");
-REXCVAR_DECLARE(bool, pgr4_native_profile);
-REXCVAR_DEFINE_INT32(pgr4_d3d_stats_frames, 150, "PGR4 native",
+REXCVAR_DECLARE(bool, rexnative_profile);
+REXCVAR_DEFINE_INT32(rexnative_d3d_stats_frames, 150, "ReXNative",
                      "Frames per summary line in the log (0 = off)");
-REXCVAR_DEFINE_BOOL(pgr4_d3d_tap_check, false, "PGR4 native",
-                    "With --pgr4_d3d_tap: compare the tracked state with the stream at every draw "
+REXCVAR_DEFINE_BOOL(rexnative_d3d_tap_check, false, "ReXNative",
+                    "With --rexnative_d3d_tap: compare the tracked state with the stream at every draw "
                     "of every frame and log the frames that differ (slow)");
 
 namespace {
@@ -196,7 +196,7 @@ std::atomic<int64_t> g_drawn_step_ns{0};
 std::atomic<int64_t> g_smooth_step_ns{0};
 
 void NoteFrameBegin() {
-  const uint64_t now = pgr4::native::NowNs();
+  const uint64_t now = rexnative::NowNs();
   g_drawn_step_ns.store(g_frame_step_ns, std::memory_order_relaxed);
   if (g_frame_begin_ns) {
     g_frame_step_ns = int64_t(now - g_frame_begin_ns);
@@ -211,13 +211,13 @@ void NoteFrameBegin() {
   g_frame_begin_ns = now;
 }
 
-constexpr uint32_t kRegCount = pgr4::native::kGuestRegisterCount;
-namespace dev = pgr4::native::dev;
+constexpr uint32_t kRegCount = rexnative::kGuestRegisterCount;
+namespace dev = rexnative::dev;
 // First register of each constant kind in SET_CONSTANT and LOAD_ALU_CONSTANT: ALU (float),
 // fetch, bool, loop, register.
 constexpr uint32_t kConstantBase[] = {0x4000, 0x4800, 0x4900, 0x4908, 0x2000};
 
-using pgr4::native::Load32;  // the D3D's push buffer can live in the 0xE0000000 view
+using rexnative::Load32;  // the D3D's push buffer can live in the 0xE0000000 view
 
 uint64_t Fnv(const uint32_t* d, size_t n, uint64_t h = 1469598103934665603ull) {
   for (size_t i = 0; i < n; ++i) {
@@ -379,7 +379,7 @@ struct FrameCounters {
   uint64_t calls = 0, draw_calls = 0;  // hooked calls; DrawCounter's five builders
   uint64_t tap_draws = 0, tap_aux = 0, tap_resolves = 0;  // predicated / other draw packets
   uint64_t dwords = 0, segments = 0, resyncs = 0, torn = 0, unknown_ops = 0, ibs = 0, zero_pad = 0;
-  uint64_t checked = 0, differ = 0;  // --pgr4_d3d_tap_check: draws compared, draws that differ
+  uint64_t checked = 0, differ = 0;  // --rexnative_d3d_tap_check: draws compared, draws that differ
 };
 
 // Belongs to the thread that drives the guest D3D device: the game uses the device from one
@@ -414,7 +414,7 @@ struct Tap {
   uint64_t state_draws = 0, state_bad_draws = 0, state_shader_bad = 0, state_unchecked = 0;
   uint64_t state_details = 0, state_per_tile = 0;
   bool state_pending = false;  // BeginVertices: compared when RestorePush publishes its packets
-  bool check = false;          // --pgr4_d3d_tap_check
+  bool check = false;          // --rexnative_d3d_tap_check
   std::string check_first;     // the frame's first differing draw
   std::vector<uint64_t> state_regs = std::vector<uint64_t>(kRegCount);
   std::map<uint32_t, uint64_t> op_counts;
@@ -494,7 +494,7 @@ const ShaderInfo* Shader(Tap& t, uint32_t type, uint32_t addr, uint32_t dwords) 
 // The GPU view d3d_state keeps (dirty masks + bound objects + draw arguments) against what the
 // tap decoded: every register the tap has seen written, and the shaders it saw IM_LOADed.
 void CompareState(Tap& t, FnId id) {
-  const auto& gs = pgr4::native::GuestState();
+  const auto& gs = rexnative::GuestState();
   if (gs.device() != t.device) {
     ++t.state_unchecked;
     if (t.tracing && t.state_details < 64) {
@@ -522,7 +522,7 @@ void CompareState(Tap& t, FnId id) {
   if (!bad && !vs_bad && !ps_bad) return;
   ++t.state_bad_draws;
   ++t.frame.differ;
-  // Traced frames list 64 differing draws; --pgr4_d3d_tap_check keeps each frame's first.
+  // Traced frames list 64 differing draws; --rexnative_d3d_tap_check keeps each frame's first.
   const bool detail = t.tracing && t.state_details < 64;
   if (!detail && (t.tracing || !t.check_first.empty())) return;
   if (detail) ++t.state_details;
@@ -531,7 +531,7 @@ void CompareState(Tap& t, FnId id) {
   const uint32_t* v = gs.regs();
   uint32_t shown = 0;
   for (uint32_t r = 0x2000; r < kRegCount && shown < 16; ++r) {
-    if (t.written[r] != 1 || t.regs[r] == v[r] || pgr4::native::IsTapOnlyRegister(r)) continue;
+    if (t.written[r] != 1 || t.regs[r] == v[r] || rexnative::IsTapOnlyRegister(r)) continue;
     Append(s, " %04X tap=%08X state=%08X", r, t.regs[r], v[r]);
     ++shown;
   }
@@ -637,7 +637,7 @@ void HandlePacket(Tap& t) {
   if (t.tracing) ++t.op_counts[op];
   if (!OpName(op)) ++t.frame.unknown_ops;
   auto range = [&](uint32_t reg, size_t first) {
-    const uint8_t how = pred ? pgr4::native::GuestStateTracker::kTapWrittenPredicated : 1;
+    const uint8_t how = pred ? rexnative::GuestStateTracker::kTapWrittenPredicated : 1;
     for (size_t i = first; i < t.pkt.size(); ++i)
       WriteReg(t, reg + uint32_t(i - first), t.pkt[i], how);
     if (t.tracing) {
@@ -841,14 +841,14 @@ void FlushTrace(Tap& t) {
   for (auto& [k, n] : t.textures)
     Append(t.out, "# texture %08X fmt%u %ux%u draws=%llu\n", k.first & 0xFFFFF000u, k.first & 0x3F,
            (k.second & 0x1FFF) + 1, ((k.second >> 13) & 0x1FFF) + 1, (unsigned long long)n);
-  std::filesystem::path dir = REXCVAR_GET(pgr4_d3d_trace_dir);
+  std::filesystem::path dir = REXCVAR_GET(rexnative_d3d_trace_dir);
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   char name[256];
-  std::snprintf(name, sizeof(name), "pgr4-d3d-%s-f%llu.txt", t.trace_tag.c_str(),
+  std::snprintf(name, sizeof(name), "rexnative-d3d-%s-f%llu.txt", t.trace_tag.c_str(),
                 (unsigned long long)t.trace_frame);
   std::ofstream(dir / name, std::ios::binary).write(t.out.data(), std::streamsize(t.out.size()));
-  REXLOG_INFO("PGR4 D3D trace: wrote {} ({} bytes, {} draws, {} resolves)", (dir / name).string(),
+  REXLOG_INFO("ReXNative D3D trace: wrote {} ({} bytes, {} draws, {} resolves)", (dir / name).string(),
               t.out.size(), t.frame.tap_draws, t.frame.tap_resolves);
   t.out.clear();
   t.out.shrink_to_fit();
@@ -866,7 +866,7 @@ void BeginTrace(Tap& t) {
   t.textures.clear();
   std::memset(t.fn_calls, 0, sizeof(t.fn_calls));
   t.out.reserve(32u << 20);
-  Append(t.out, "# pgr4-d3d-trace v1 tag=%s frame=%llu device=%08X push=%08X\n",
+  Append(t.out, "# rexnative-d3d-trace v1 tag=%s frame=%llu device=%08X push=%08X\n",
          t.trace_tag.c_str(), (unsigned long long)t.frame_index, t.device, t.cursor);
   Append(t.out, "# state at frame start (registers the tap has seen written)\n");
   for (uint32_t r = 0; r < kRegCount; ++r) {
@@ -881,7 +881,7 @@ void BeginTrace(Tap& t) {
 }
 
 void PollControl(Tap& t, uint8_t* base) {
-  const std::string& path = REXCVAR_GET(pgr4_d3d_control);
+  const std::string& path = REXCVAR_GET(rexnative_d3d_control);
   if (path.empty()) return;
   std::error_code ec;
   if (!std::filesystem::exists(path, ec)) return;
@@ -897,7 +897,7 @@ void PollControl(Tap& t, uint8_t* base) {
     ss >> cmd >> arg;
     if (cmd == "trace") {
       if (!t.enabled) {
-        PGR4_WARN_ONCE("PGR4 D3D control: '{}' ignored: the tap is off", l);
+        REXNATIVE_WARN_ONCE("ReXNative D3D control: '{}' ignored: the tap is off", l);
         continue;
       }
       uint32_t frames = 1;
@@ -914,9 +914,9 @@ void PollControl(Tap& t, uint8_t* base) {
       }
       t.enabled = on;
       if (!on) t.trace_left = 0;
-      g_hook_all.store(on || REXCVAR_GET(pgr4_native_profile), std::memory_order_relaxed);
+      g_hook_all.store(on || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
     }
-    REXLOG_INFO("PGR4 D3D control: {} (skip mask {})", l, g_skip.load());
+    REXLOG_INFO("ReXNative D3D control: {} (skip mask {})", l, g_skip.load());
   }
 }
 
@@ -928,7 +928,7 @@ struct Window {
 
 std::FILE* FrameCsv() {
   static std::FILE* f = [] {
-    std::string p = REXCVAR_GET(pgr4_d3d_frame_csv);
+    std::string p = REXCVAR_GET(rexnative_d3d_frame_csv);
     std::FILE* f = p.empty() ? nullptr : std::fopen(p.c_str(), "w");
     if (f)
       std::fprintf(f,
@@ -965,11 +965,11 @@ void EndFrame(Tap& t, uint8_t* base) {
   w.unknown_ops += c.unknown_ops;
   w.min_draws = std::min(w.min_draws, c.tap_draws);
   w.max_draws = std::max(w.max_draws, c.tap_draws);
-  int32_t every = REXCVAR_GET(pgr4_d3d_stats_frames);
+  int32_t every = REXCVAR_GET(rexnative_d3d_stats_frames);
   if (every > 0 && w.frames >= uint64_t(every)) {
     double n = double(w.frames);
     REXLOG_INFO(
-        "PGR4 D3D: frames {} | per frame: calls {:.0f}, draw calls {:.1f}, tap draws {:.1f} "
+        "ReXNative D3D: frames {} | per frame: calls {:.0f}, draw calls {:.1f}, tap draws {:.1f} "
         "(min {} max {}), tap aux {:.1f}, tap resolves {:.1f}, dwords {:.0f}, segments {:.1f}, "
         "resyncs {}, torn {}, unknown ops {} | tap {} skip {}",
         t.frame_index, w.calls / n, w.draw_calls / n, w.tap_draws / n, w.min_draws, w.max_draws,
@@ -978,10 +978,10 @@ void EndFrame(Tap& t, uint8_t* base) {
     w = Window{};
   }
   if (t.check && c.differ) {
-    const pgr4::native::NativeRenderer* r = pgr4::native::NativeRenderer::Get();
-    PGR4_LOG_FIRST(
+    const rexnative::NativeRenderer* r = rexnative::NativeRenderer::Get();
+    REXNATIVE_LOG_FIRST(
         2000, INFO,
-        "PGR4 D3D check: frame {} (native {}): {} of {} draws differ from the stream; first {}",
+        "ReXNative D3D check: frame {} (native {}): {} of {} draws differ from the stream; first {}",
         t.frame_index, r ? r->frame_index() : 0, c.differ, c.checked, t.check_first);
   }
   t.check_first.clear();
@@ -1002,7 +1002,7 @@ void EndFrame(Tap& t, uint8_t* base) {
 // The game creates the device more than once (once more at the title screen); the device a Swap
 // or draw call runs on is the current one.
 [[gnu::noinline]] void FollowDevice(Tap& t, uint8_t* base, FnId id, uint32_t device) {
-  PGR4_LOG_FIRST(8, INFO, "PGR4 D3D: {} runs on device {:08X} (was {:08X}); following it",
+  REXNATIVE_LOG_FIRST(8, INFO, "ReXNative D3D: {} runs on device {:08X} (was {:08X}); following it",
                  kFns[id].name, device, t.device);
   t.device = device;
   t.cursor = Load32(base, t.device + dev::kPush);
@@ -1011,10 +1011,10 @@ void EndFrame(Tap& t, uint8_t* base) {
   // configured here.
   if (!t.configured) {
     t.configured = true;
-    t.enabled = REXCVAR_GET(pgr4_d3d_tap);
-    t.check = t.enabled && REXCVAR_GET(pgr4_d3d_tap_check);
-    g_hook_all.store(t.enabled || REXCVAR_GET(pgr4_native_profile), std::memory_order_relaxed);
-    g_skip.store(ParseSkip(REXCVAR_GET(pgr4_d3d_skip)));
+    t.enabled = REXCVAR_GET(rexnative_d3d_tap);
+    t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
+    g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+    g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
   }
 }
 
@@ -1055,12 +1055,12 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
       // Only once: a later device would undo the control commands sent since.
       if (!t.configured) {
         t.configured = true;
-        t.enabled = REXCVAR_GET(pgr4_d3d_tap);
-        t.check = t.enabled && REXCVAR_GET(pgr4_d3d_tap_check);
-        g_hook_all.store(t.enabled || REXCVAR_GET(pgr4_native_profile), std::memory_order_relaxed);
-        g_skip.store(ParseSkip(REXCVAR_GET(pgr4_d3d_skip)));
+        t.enabled = REXCVAR_GET(rexnative_d3d_tap);
+        t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
+        g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+        g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
       }
-      REXLOG_INFO("PGR4 D3D: device {:08X}, push {:08X}, tap {}{}, {} hooked functions", t.device,
+      REXLOG_INFO("ReXNative D3D: device {:08X}, push {:08X}, tap {}{}, {} hooked functions", t.device,
                   t.cursor, t.enabled ? "on" : "off", t.check ? " (state check)" : "",
                   uint32_t(kFnCount));
       return;
@@ -1116,7 +1116,7 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
   if constexpr (kId == kFnSwap) EndFrame(t, base);
 }
 
-// Native renderer dispatch (--pgr4_native). Only the outermost draw/clear/resolve/Swap call
+// Native renderer dispatch (--rexnative_beside_xenos). Only the outermost draw/clear/resolve/Swap call
 // reaches the renderer: the D3D's own draws inside them (Clear -> ClearF -> DrawIndx2Inline,
 // Resolve's copy quads, Swap -> DrawIndx2Split, BeginVertices inside DrawVerticesUP) are not
 // game draws. Other hooked functions do not count as outer calls (BeginTiling fn_820EC610
@@ -1145,9 +1145,9 @@ constexpr NativeClass NativeClassOf(Cat c) {
 
 thread_local uint32_t t_native_depth = 0;  // active draw/clear/resolve/Swap calls
 thread_local bool t_pending_vertices = false;
-thread_local pgr4::native::HookArgs t_pending_args;
+thread_local rexnative::HookArgs t_pending_args;
 thread_local uint32_t t_original_depth = 0;  // hooked originals running (profiler on)
-thread_local pgr4::native::TilingCall t_tiling_call = pgr4::native::TilingCall::kNone;
+thread_local rexnative::TilingCall t_tiling_call = rexnative::TilingCall::kNone;
 
 // Hooked functions that neither the renderer nor the state tracker needs to see: no draw,
 // clear, resolve or Swap, no state flush (d3d_state.h IsStateFlushingFn), not the tiling
@@ -1155,7 +1155,7 @@ thread_local pgr4::native::TilingCall t_tiling_call = pgr4::native::TilingCall::
 // profiler too they skip OnHook (HasFastPath).
 constexpr bool IsPassThrough(FnId id) {
   return NativeClassOf(kFns[id].cat) == kNatNone &&
-         !pgr4::native::IsStateFlushingFn(kFns[id].addr) && id != kFnBeginTiling &&
+         !rexnative::IsStateFlushingFn(kFns[id].addr) && id != kFnBeginTiling &&
          id != kFnEndTiling && id != kFnCreateDevice;
 }
 
@@ -1165,7 +1165,7 @@ constexpr bool HasFastPath(FnId id) { return IsPassThrough(id) && id != kFnResto
 
 using GuestFn = void (*)(PPCContext&, uint8_t*);
 
-// profile::kGuestD3d by function (--pgr4_native_profile), on the thread that calls Swap.
+// profile::kGuestD3d by function (--rexnative_profile), on the thread that calls Swap.
 struct GuestD3dTimes {
   uint64_t ticks[kFnCount];
   uint64_t calls[kFnCount];
@@ -1173,10 +1173,10 @@ struct GuestD3dTimes {
 };
 thread_local GuestD3dTimes t_guest_d3d_times;
 
-// Every --pgr4_d3d_stats_frames Swaps: the functions with the most guest D3D time.
+// Every --rexnative_d3d_stats_frames Swaps: the functions with the most guest D3D time.
 [[gnu::noinline]] void LogGuestD3dTimes() {
   GuestD3dTimes& t = t_guest_d3d_times;
-  const int32_t every = REXCVAR_GET(pgr4_d3d_stats_frames);
+  const int32_t every = REXCVAR_GET(rexnative_d3d_stats_frames);
   if (every <= 0 || ++t.frames < uint32_t(every)) return;
   uint32_t order[kFnCount];
   std::iota(order, order + kFnCount, 0u);
@@ -1189,11 +1189,11 @@ thread_local GuestD3dTimes t_guest_d3d_times;
   for (uint32_t k = 0; k < shown && t.ticks[order[k]]; ++k) {
     const uint32_t i = order[k];
     std::snprintf(item, sizeof(item), " %s %.0f us %.0f calls,", kFns[i].name,
-                  double(pgr4::native::TicksToNs(t.ticks[i])) / 1e3 / n, double(t.calls[i]) / n);
+                  double(rexnative::TicksToNs(t.ticks[i])) / 1e3 / n, double(t.calls[i]) / n);
     line += item;
   }
   if (!line.empty()) line.pop_back();
-  REXLOG_INFO("PGR4 native guest D3D: per frame by outermost call:{}", line);
+  REXLOG_INFO("ReXNative guest D3D: per frame by outermost call:{}", line);
   t = GuestD3dTimes{};
 }
 
@@ -1201,7 +1201,7 @@ thread_local GuestD3dTimes t_guest_d3d_times;
 // hooked calls it makes (Clear's ClearF and DrawIndx2Inline, for one) and their tracking.
 template <FnId kId, GuestFn kFn>
 inline void RunOriginal(PPCContext& c, uint8_t* b) {
-  namespace nat = pgr4::native;
+  namespace nat = rexnative;
   if (!nat::profile::On()) [[likely]] {
     kFn(c, b);
     return;
@@ -1219,16 +1219,16 @@ inline void RunOriginal(PPCContext& c, uint8_t* b) {
   --t_original_depth;
 }
 
-// The guest function, or its replacement (--pgr4_native_replace_draws, native/guest_d3d.h).
+// The guest function, or its replacement (--rexnative_replace_draws, native/guest_d3d.h).
 template <FnId kId, GuestFn kOriginal>
 void Body(PPCContext& c, uint8_t* b) {
   if constexpr (kId == kFnDrawIndexed)
-    if (pgr4::native::guest_d3d::DrawIndexed(c, b)) return;
+    if (rexnative::guest_d3d::DrawIndexed(c, b)) return;
   kOriginal(c, b);
 }
 
 // Queues the draw a top-level BeginVertices holds: the game has written its vertices by now.
-inline void QueuePendingVertices(pgr4::native::NativeRenderer* r, const uint8_t* base) {
+inline void QueuePendingVertices(rexnative::NativeRenderer* r, const uint8_t* base) {
   if (t_pending_vertices && r) {
     t_pending_vertices = false;
     r->OnDraw(base, t_pending_args);
@@ -1242,14 +1242,14 @@ inline std::array<uint32_t, 8> EntryRegs(const PPCContext& ctx) {
 }
 
 // A hooked call's arguments at its entry, before the guest function clobbers them.
-inline pgr4::native::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
-  pgr4::native::HookArgs a;
-  a.fn = pgr4::native::HookFn(fn);
+inline rexnative::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
+  rexnative::HookArgs a;
+  a.fn = rexnative::HookFn(fn);
   a.device = ctx.r3.u32;
   const std::array<uint32_t, 8> r = EntryRegs(ctx);
   std::copy(r.begin(), r.end(), a.r);
   if constexpr (rexnative::game::kResolveRemapArgs) {
-    if (a.fn == pgr4::native::HookFn::kResolve) {
+    if (a.fn == rexnative::HookFn::kResolve) {
       // The hooked Resolve is not the public one (an LTCG build's inner function): where each
       // public argument is at its entry (game_layer.h kResolveArgRegs; 0 = constant 0). The
       // stack arguments are where the public call has them.
@@ -1271,8 +1271,8 @@ inline pgr4::native::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
 
 // Whether the state tracker (native/d3d_state) follows the guest D3D: for the native renderer
 // `r` (NativeRenderer::Live) and for the tap's compare.
-inline bool TrackState(const pgr4::native::NativeRenderer* r) {
-  return r || g_tap.enabled || REXCVAR_GET(pgr4_d3d_tap);
+inline bool TrackState(const rexnative::NativeRenderer* r) {
+  return r || g_tap.enabled || REXCVAR_GET(rexnative_d3d_tap);
 }
 
 // The state tracker (native/d3d_state) needs the dirty masks at the entry of every flushing
@@ -1285,7 +1285,7 @@ std::atomic<uint32_t> g_main_device{0};
 
 template <FnId kId, GuestFn kOriginal>
 inline void OnHook(PPCContext& ctx, uint8_t* base) {
-  namespace nat = pgr4::native;
+  namespace nat = rexnative;
   constexpr uint32_t kAddr = kFns[kId].addr;
   constexpr NativeClass kClass = NativeClassOf(kFns[kId].cat);
   if constexpr (IsPassThrough(kId)) {
@@ -1310,7 +1310,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
                 (nat::IsStateFlushingFn(kAddr) || kClass != kNatNone)) {
     const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
     if (r && main_device && ctx.r3.u32 != main_device) [[unlikely]] {
-      PGR4_LOG_FIRST(4, INFO, "{} on device {:08X}, not the presenting {:08X}: "
+      REXNATIVE_LOG_FIRST(4, INFO, "{} on device {:08X}, not the presenting {:08X}: "
                      "guest only", kFns[kId].name, ctx.r3.u32, main_device);
       r = nullptr;
     }
@@ -1413,22 +1413,22 @@ extern "C" __declspec(dllexport) uint32_t rex_drawcount_api_counters(const uint6
   return uint32_t(kCount);
 }
 
-bool Pgr4Enable60Fps();  // games/pgr4/src/pgr4_hooks.cpp
+bool RexNativeGame60Fps();  // games/pgr4/src/pgr4_hooks.cpp
 
 // The presentation interval KickOffEx (sub_826CACA0) hands to the GPU, read from the device
 // (Pgr4PresentationIntervalHook). While the native renderer paces the frames on the display the
 // guest presents at once: waiting for a vblank as well would pace the game on ReXGlue's vblank
 // timer a second time (frame_pacer.h). Otherwise the game's own interval, or ONE with the 60 FPS
 // option.
-uint32_t Pgr4PresentationInterval(uint32_t guest) {
+uint32_t RexNativePresentationInterval(uint32_t guest) {
   constexpr uint32_t kOne = 1, kImmediate = 0x80000000;  // D3DPRESENT_INTERVAL_*
-  if (pgr4::native::NativeRenderer::PacesFrames()) return kImmediate;
-  return Pgr4Enable60Fps() ? kOne : guest;
+  if (rexnative::NativeRenderer::PacesFrames()) return kImmediate;
+  return RexNativeGame60Fps() ? kOne : guest;
 }
 
 // Whether the game runs faster than the console's 30 FPS.
-bool Pgr4FrameRateUnlocked() {
-  return pgr4::native::NativeRenderer::PacesFrames() || Pgr4Enable60Fps();
+bool RexNativeFrameRateUnlocked() {
+  return rexnative::NativeRenderer::PacesFrames() || RexNativeGame60Fps();
 }
 
 // The motion blur pass (sub_82859FC0) smears each pixel along its reprojection to the previous
@@ -1438,7 +1438,7 @@ bool Pgr4FrameRateUnlocked() {
 // frame at any frame rate: in the same race at 30 and 90 fps the reprojection moved 2.95 times as
 // far per frame at 30, and its product with the step matched within 2 % (td-127, td-128).
 // Pgr4MotionBlurStepHook calls this.
-float Pgr4MotionBlurStep(float step) {
+float RexNativeMotionBlurStep(float step) {
   constexpr double kConsoleFrameNs = 1e9 / 30;
   constexpr int64_t kMinStepNs = 1'000'000, kMaxStepNs = 100'000'000;
   // Not measured yet (the first frames): the console's step. Clamped: steps under 1 ms are frames
@@ -1469,9 +1469,9 @@ REX_EXTERN(REXNATIVE_IMP(REXNATIVE_IMMEDIATE_VS));
 REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_IMMEDIATE_VS)) {
   const std::array<uint32_t, 8> r = EntryRegs(ctx);
   REXNATIVE_IMP(REXNATIVE_IMMEDIATE_VS)(ctx, base);
-  if (TrackState(pgr4::native::NativeRenderer::Live())) {
-    pgr4::native::profile::Scope scope(pgr4::native::profile::kImmediateVs);
-    pgr4::native::GuestState().AfterImmediateVs(base, r.data());
+  if (TrackState(rexnative::NativeRenderer::Live())) {
+    rexnative::profile::Scope scope(rexnative::profile::kImmediateVs);
+    rexnative::GuestState().AfterImmediateVs(base, r.data());
   }
 }
 #endif

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the game's occlusion queries, counted on the host.
+// ReXNative renderer: the game's occlusion queries, counted on the host.
 //
 // The guest D3D's QueryIssue (sub_820DE1C8) brackets draws with EVENT_WRITE_ZPD reports into one
 // block per EDRAM tile: the block addresses (physical) at query+28, their count at query+148.
@@ -41,7 +41,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class OcclusionQueries {
  public:
@@ -96,7 +96,7 @@ class OcclusionQueries {
     bool known;           // BEGIN was recorded (not before a renderer switch)
   };
   // One guest query's recent underlying results: the delivered ZPass and Total are the sums of
-  // the frames recorded within --pgr4_native_occlusion_window_ms of its newest one. The game
+  // the frames recorded within --rexnative_occlusion_window_ms of its newest one. The game
   // fades a flare by 1 - ZPass / Total, so the sum averages the frames' visibilities: a flare
   // that alternates per frame (its sprite tested against the previous frame's depth of a moving
   // scene) dims briefly instead of blinking, and an occlusion fades over the window rather than
@@ -123,11 +123,11 @@ class OcclusionQueries {
   std::deque<std::pair<uint64_t, uint64_t>> resolves_;  // (pairs resolved up to, frame fence)
   uint64_t next_ = 0, resolved_ = 0, retired_ = 0;      // pairs, counted from the start
   uint64_t unknown_pairs_ = 0;
-  uint64_t window_ns_ = 0;      // --pgr4_native_occlusion_window_ms
-  std::FILE* trace_ = nullptr;  // --pgr4_native_occlusion_trace
+  uint64_t window_ns_ = 0;      // --rexnative_occlusion_window_ms
+  std::FILE* trace_ = nullptr;  // --rexnative_occlusion_trace
 
   std::mutex mutex_;
   std::unordered_map<uint32_t, Result> results_;  // the latest by query (mutex_)
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

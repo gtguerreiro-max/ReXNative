@@ -127,9 +127,12 @@ rexnative_add(mygame
 ```
 
 and in the game's app call `rexnative::hud::SetConfigPath`, `Initialize` and `Shutdown`
-(`renderer/src/hud/hud.h`). Run with `--pgr4_native_primary=true`.
+(`renderer/src/hud/hud.h`). ReXNative then draws the game by default (the layer's
+`kDefaultEnabled`); `--rexnative=false` hands it back to ReXGlue's Xenos plugin. Every option
+is a `rexnative_*` cvar; the names from PGR4Native (`pgr4_native_*`, `pgr4_d3d_*`) still work
+and log their new name.
 
-**3. Measure the scene for DLSS.** Run with `--pgr4_native_resolve_dump=<dir>`, create
+**3. Measure the scene for DLSS.** Run with `--rexnative_resolve_dump=<dir>`, create
 `<dir>/dump.request` in a 3D scene, then:
 
 ```bash
@@ -165,8 +168,8 @@ Improving it a little at a time:
    in game.~~ Done (2026-11-14).
 2. Find the scene surface at run time, so DLSS works without measuring it.
 3. Find the HDR pass before the game's tone mapping, for DLSS 5.
-4. Rename the `pgr4_native_*` options and the `pgr4::native` namespace (keeping the old names
-   working).
+4. ~~Rename the `pgr4_native_*` options and the `pgr4::native` namespace (keeping the old names
+   working).~~ Done: `rexnative`, `rexnative_*`; ReXNative is on by default.
 5. ~~Ship the SDK patch set the renderer needs, pinned, with a build script.~~ Done
    (`sdk/`, `scripts/build-sdk.ps1`); still to do: build a game end to end from it on a clean
    machine.

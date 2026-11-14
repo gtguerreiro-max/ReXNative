@@ -1,8 +1,8 @@
-// pgr4-native PGR4 native renderer: the upscaler's render size from the GPU's time per frame
-// (--pgr4_native_upscaler_target_fps).
+// ReXNative renderer: the upscaler's render size from the GPU's time per frame
+// (--rexnative_upscaler_target_fps).
 //
 // The render size is a level out of kSteps: level n renders n / kSteps of the largest size
-// (--pgr4_native_upscaler_width/height) on each axis, an area of (n / kSteps)^2. The budget is
+// (--rexnative_upscaler_width/height) on each axis, an area of (n / kSteps)^2. The budget is
 // kBudget of the frame time: the target frame rate's, or the frame rate the frames are paced at
 // when that is lower (a lower frame rate setting, frame generation).
 //
@@ -29,7 +29,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class DynamicResolution {
  public:
@@ -157,4 +157,4 @@ class DynamicResolution {
   uint32_t raise_frames_ = 0;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

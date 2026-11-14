@@ -1,23 +1,23 @@
-// pgr4-native PGR4 native renderer: frame pacing on the display's clock (primary mode).
+// ReXNative renderer: frame pacing on the display's clock (primary mode).
 //
 // Why. The game paces itself on guest vblanks: KickOffEx (sub_826CACA0) hands its presentation
 // interval to the GPU, and ReXGlue raises the vblanks from a timer at --video_mode_refresh_rate,
 // a clock beside the display's. The two drift apart: a frame that misses a tick by a little waits
 // a whole tick (a doubled frame at any frame rate), and under a frame limit (Steam's, which is
 // gamescope's) the game's time steps no longer match the intervals its frames are shown at. While
-// the pacer runs the guest presents immediately (Pgr4PresentationInterval) and the display is the
+// the pacer runs the guest presents immediately (RexNativePresentationInterval) and the display is the
 // only clock.
 //
 // The gate. Frame F + 1 begins once the display has shown frame F + 1 - L
-// (--pgr4_native_frame_latency). Frames then begin in step with the display whatever its refresh
+// (--rexnative_frame_latency). Frames then begin in step with the display whatever its refresh
 // rate, frame limit or VRR, and the game's time steps follow the intervals shown. L frames let the
 // game thread, the render thread and the GPU each work on one; fewer leave the GPU idle between
 // frames, and the Deck's GPU then lowers its clock.
 //
-// The delay (--pgr4_native_low_latency). The gate alone puts L display intervals between the game
+// The delay (--rexnative_low_latency). The gate alone puts L display intervals between the game
 // reading its input and the display showing the result, however short the pipeline: 67 ms under
 // a 45 fps limit at L = 3 (td-111). So frame F + 1 begins a delay D after its gate opened, D being
-// the frames' headroom less a margin (--pgr4_native_latency_margin_us): 31 ms then, with no frame
+// the frames' headroom less a margin (--rexnative_latency_margin_us): 31 ms then, with no frame
 // shown late (td-118). This is DXVK's latency sleep (dxvk_latency_builtin.cpp) measured against
 // the display, as the game cannot know the frame interval under gamescope's limiter.
 // - A shown frame's headroom is the time from the GPU finishing it (the frame fence) to the
@@ -68,7 +68,7 @@
 
 struct ID3D12Fence;
 
-namespace pgr4::native {
+namespace rexnative {
 
 class FramePacer {
  public:
@@ -201,4 +201,4 @@ class FramePacer {
   int64_t probe_delay_ns_ = 0;  // D's ceiling until probe_end_frame_
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

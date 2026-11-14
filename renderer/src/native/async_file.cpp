@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: a text file written off the threads that append to it
+// ReXNative renderer: a text file written off the threads that append to it
 // (async_file.h).
 #include "async_file.h"
 
@@ -9,7 +9,7 @@
 
 #include <cstdarg>
 
-namespace pgr4::native {
+namespace rexnative {
 
 std::unique_ptr<AsyncFile> AsyncFile::Create(const std::string& path) {
   std::FILE* file = std::fopen(path.c_str(), "w");
@@ -51,7 +51,7 @@ void AsyncFile::Printf(const char* format, ...) {
 }
 
 void AsyncFile::Run() {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native file");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative file");
   // Swapped with pending_, so both keep their capacity and appending stops allocating.
   std::string writing;
   std::unique_lock<std::mutex> lock(mutex_);
@@ -68,4 +68,4 @@ void AsyncFile::Run() {
   }
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

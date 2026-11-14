@@ -1,8 +1,8 @@
-// pgr4-native PGR4 native renderer: the app's own D3D12 queue, fence, frame command lists and
+// ReXNative renderer: the app's own D3D12 queue, fence, frame command lists and
 // swapchain, separate from ReXGlue's presenter and the Xenos plugin.
 //
 // Two window modes: the debug window (a top-level window of its own beside the game's), or, with
-// --pgr4_native_primary, the game window itself (the SDK's). There the swapchain exists only
+// --rexnative, the game window itself (the SDK's). There the swapchain exists only
 // between AttachSwapchain and DetachSwapchain, while the renderer owns the window; the rest of
 // the time ReXGlue's presenter has its swapchain there (renderer.h, OwnGameWindow). The game
 // window and not a child window over it: gamescope's WSI layer flips only the swapchain of a
@@ -36,7 +36,7 @@
 #include "command_stream.h"
 #include "win_handle.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 using Microsoft::WRL::ComPtr;
 
@@ -47,7 +47,7 @@ class D3D12Device {
   static constexpr uint32_t kFramesInFlight = 2;
   static constexpr uint32_t kBackBuffers = 3;
   static constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-  // With HDR output (--pgr4_native_hdr): HDR10, BT.2020 primaries and the PQ curve.
+  // With HDR output (--rexnative_hdr): HDR10, BT.2020 primaries and the PQ curve.
   static constexpr DXGI_FORMAT kHdrBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
 
   ~D3D12Device();
@@ -113,7 +113,7 @@ class D3D12Device {
   void SetGeneratedFrame(ID3D12Resource* generated) { generated_frame_ = generated; }
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
-  // The swapchain presents HDR10 (kHdrBackBufferFormat): --pgr4_native_hdr is on and the display
+  // The swapchain presents HDR10 (kHdrBackBufferFormat): --rexnative_hdr is on and the display
   // is in HDR mode (Windows' HDR setting; under Proton, gamescope with HDR on and DXVK_HDR=1, as
   // in Steam's Game Mode).
   bool hdr() const { return hdr_; }
@@ -280,7 +280,7 @@ class D3D12Device {
 // Logs a failed HRESULT with the call text; returns true when it failed.
 bool Failed(HRESULT hr, const char* what);
 
-// Once per run, when `device` was removed: the reason and, with --pgr4_native_dred, DRED's
+// Once per run, when `device` was removed: the reason and, with --rexnative_dred, DRED's
 // breadcrumbs (the last operations each command list completed) and page-fault data.
 void LogDeviceRemoved(ID3D12Device* device);
 
@@ -313,4 +313,4 @@ bool CreateBuffer(ID3D12Device* device, D3D12_HEAP_TYPE type, uint64_t size,
 // nullptr (logged) without it.
 pD3DCompile D3DCompiler();
 
-}  // namespace pgr4::native
+}  // namespace rexnative

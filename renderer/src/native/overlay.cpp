@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -238,4 +238,4 @@ void Overlay::Record(ID3D12Device* device, CommandStream* list, uint32_t slot,
   }
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

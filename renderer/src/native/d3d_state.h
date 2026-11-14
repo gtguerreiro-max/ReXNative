@@ -1,11 +1,11 @@
-// pgr4-native PGR4 native renderer: Xenos register state per draw, read from the guest D3D
+// ReXNative renderer: Xenos register state per draw, read from the guest D3D
 // device instead of the push buffer.
 //
 // The XDK D3D device keeps a shadow of the GPU registers (offsets below, from the flush calls
 // in DrawIndexedVertices DrawIndexedVertices) and six 64-bit dirty masks at device+0..+40. The draw
 // functions (and Clear/Resolve for the register blocks) flush the dirty parts of the shadow
 // into the push buffer and clear the masks. What the GPU sees therefore differs from the
-// shadow in three ways (seen in --pgr4_d3d_tap traces):
+// shadow in three ways (seen in --rexnative_d3d_tap traces):
 //   1. float constants written to the shadow without their dirty bit are never sent; the
 //      bound shaders' literal constants are loaded straight from the shader objects
 //      (LOAD_ALU_CONSTANT in sub_826DEBD8) when a shader is rebound, never into the shadow;
@@ -30,7 +30,7 @@
 
 #include "hook_args.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 constexpr uint32_t kGuestRegisterCount = 0x5000;
 
@@ -75,7 +75,7 @@ void MarkAllDirty(uint8_t* base, uint32_t device);
 
 // The D3D functions that flush the shadow (directly or through the internal draw builders):
 // every HookFn (hook_args.h). The dispatch calls ReadDirtyMasks before and
-// GuestState().AfterCall after each of them, at every nesting depth, whenever --pgr4_native or
+// GuestState().AfterCall after each of them, at every nesting depth, whenever --rexnative_beside_xenos or
 // the trace tap is on.
 constexpr bool IsStateFlushingFn(uint32_t addr) {
   switch (HookFn(addr)) {
@@ -202,7 +202,7 @@ class GuestStateTracker {
     vs_imm_pending_valid_ = false;
   }
 
-  // For the trace tap (--pgr4_d3d_tap): compares the registers the tap has seen written in the
+  // For the trace tap (--rexnative_d3d_tap): compares the registers the tap has seen written in the
   // push buffer (`tap_written[r] != 0`) with this view at the current draw. Returns the number
   // of differing registers and adds one per register to `per_reg[r]` (may be null). A register
   // whose last write in the stream was predicated (`tap_written[r] == kTapWrittenPredicated`: a
@@ -233,7 +233,7 @@ class GuestStateTracker {
   void CopyFlushed(const uint8_t* base, uint32_t device, const uint64_t flushed[6]);
   // The HUD's projection (c45) for the frame's height, in regs_ alone (d3d_state.cpp).
   void FrameHudProjection();
-  // --pgr4_native_track_verify: logs block registers whose shadow differs from regs_.
+  // --rexnative_track_verify: logs block registers whose shadow differs from regs_.
   void Verify(const uint8_t* base, uint32_t device, uint32_t fn_addr);
   void LoadLiterals(const uint8_t* base, uint32_t table, uint32_t data);
 
@@ -248,7 +248,7 @@ class GuestStateTracker {
   ShaderRef vs_imm_pending_ref_;
   bool vs_imm_pending_valid_ = false;
   uint32_t vs_imm_seq_ = 0;
-  bool verify_ = false;  // --pgr4_native_track_verify, read at Attach
+  bool verify_ = false;  // --rexnative_track_verify, read at Attach
   uint32_t regs_[kGuestRegisterCount] = {};
   uint32_t raw_[kGuestRegisterCount] = {};
   RegLog* sink_ = nullptr;  // RecordInto
@@ -258,4 +258,4 @@ class GuestStateTracker {
 
 GuestStateTracker& GuestState();
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -10,7 +10,7 @@
 
 #include "log.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -212,19 +212,19 @@ DxbcShader* BoolSpecializer::Create(DxbcShader& shader, const uint32_t* bools) {
                                 shader.writes_point_size_edge_flag_kill_vertex() &&
                             s->memexport_eM_written() == shader.memexport_eM_written();
   if (!same_outputs) {
-    PGR4_LOG_FIRST(kLogged, INFO,
-                   "PGR4 native: shader {:016X} stays generic for bools {:08X}{:08X}{:08X}{:08X} "
+    REXNATIVE_LOG_FIRST(kLogged, INFO,
+                   "ReXNative: shader {:016X} stays generic for bools {:08X}{:08X}{:08X}{:08X} "
                    "{:08X}{:08X}{:08X}{:08X} (outputs differ)",
                    shader.ucode_data_hash(), bools[0], bools[1], bools[2], bools[3], bools[4],
                    bools[5], bools[6], bools[7]);
     return &shader;
   }
-  PGR4_LOG_FIRST(kLogged, INFO,
-                 "PGR4 native: shader {:016X} for bools {:08X}{:08X}{:08X}{:08X} "
+  REXNATIVE_LOG_FIRST(kLogged, INFO,
+                 "ReXNative: shader {:016X} for bools {:08X}{:08X}{:08X}{:08X} "
                  "{:08X}{:08X}{:08X}{:08X} is {:016X}",
                  shader.ucode_data_hash(), bools[0], bools[1], bools[2], bools[3], bools[4],
                  bools[5], bools[6], bools[7], s->ucode_data_hash());
   return s;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

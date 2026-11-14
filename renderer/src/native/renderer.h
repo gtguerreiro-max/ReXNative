@@ -1,8 +1,8 @@
-// pgr4-native PGR4 native renderer: host of the native D3D12 path.
+// ReXNative renderer: host of the native D3D12 path.
 //
-// The guest D3D hooks in pgr4_d3d_trace.cpp forward every call to the guest D3D (without
-// --pgr4_native_primary the Xenos plugin keeps rendering, as the oracle) and, with
-// --pgr4_native, then call the NativeRenderer entry points below with the guest device and the
+// The guest D3D hooks in rexnative_d3d_trace.cpp forward every call to the guest D3D (without
+// --rexnative the Xenos plugin keeps rendering, as the oracle) and, with
+// --rexnative_beside_xenos, then call the NativeRenderer entry points below with the guest device and the
 // call's arguments. Only the outermost
 // draw/clear/resolve/Swap call is passed on (the D3D's internal clear, copy and Swap quads are
 // not game draws); a top-level BeginVertices reaches OnDraw at the entry of the next hooked
@@ -13,13 +13,13 @@
 // are called on that thread, after the original guest function returned, and are serialized
 // by the renderer. Modules may assume single-threaded access from the On* calls.
 //
-// With --pgr4_native_render_thread (default on; false keeps everything on the guest thread as
+// With --rexnative_render_thread (default on; false keeps everything on the guest thread as
 // above) the On* calls only capture, on the guest thread, what each call reads from guest
 // memory: the register changes since the last draw (which the tracker records straight into the
 // batch, GuestStateTracker::RecordInto), the DrawState, DrawRenderer::Prepare's shader lookup and
 // vertex/index copies, and the decoded Clear/Resolve/Swap arguments. They queue it in batches to
 // the render thread
-// ("PGR4 native render"), which replays it into the modules with its own copy of the register
+// ("ReXNative render"), which replays it into the modules with its own copy of the register
 // file. From then on the command list, the D3D12 objects and every module's state belong to
 // that thread (DrawRenderer's vertex upload pool and shader lookup stay on the guest thread).
 // The guest thread blocks at Swap while the render thread is more than one frame behind, and
@@ -41,9 +41,9 @@ struct ID3D12Device;
 struct ID3D12CommandList;
 struct ID3D12CommandQueue;
 
-REXCVAR_DECLARE(bool, pgr4_native_render_thread);  // record on a render thread (see above)
+REXCVAR_DECLARE(bool, rexnative_render_thread);  // record on a render thread (see above)
 
-namespace pgr4::native {
+namespace rexnative {
 
 class CommandStream;
 class D3D12Device;
@@ -81,7 +81,7 @@ struct FrameStats {
   uint64_t swap_untile_ns = 0, swap_submit_ns = 0, swap_present_ns = 0, swap_fence_ns = 0;
   uint64_t stream_ns = 0, stream_wait_ns = 0;  // D3D12Device::EndFrameTimes'
   uint64_t frames_held = 0;  // Swaps not presented (DrawRenderer::FrameIncomplete)
-  uint64_t submits = 0;      // lists submitted before the Swap's (--pgr4_native_submit_draws)
+  uint64_t submits = 0;      // lists submitted before the Swap's (--rexnative_submit_draws)
   // The guest's pad reads since the Swap before (rex_xam_take_frame_pad, taken at the Swap).
   uint64_t pad = 0;
   // Pacing (NowNs clock): when the guest thread began the frame (its previous Swap returned) and
@@ -92,7 +92,7 @@ struct FrameStats {
 
 class NativeRenderer {
  public:
-  // The renderer, created on first use when --pgr4_native is on; nullptr when it is off, when
+  // The renderer, created on first use when --rexnative_beside_xenos is on; nullptr when it is off, when
   // D3D12 initialization failed (logged once) and from a failed frame on (Fail).
   static NativeRenderer* Get();
   // The renderer while it draws the game: Get(), except after the renderer switch handed the
@@ -109,7 +109,7 @@ class NativeRenderer {
 
   // True while the renderer presents the game's frames and paces them on the display
   // (frame_pacer.h): the guest D3D then presents without waiting for a vblank
-  // (Pgr4PresentationInterval in pgr4_d3d_trace.cpp). Any thread.
+  // (RexNativePresentationInterval in rexnative_d3d_trace.cpp). Any thread.
   static bool PacesFrames() { return paces_frames_.load(std::memory_order_relaxed); }
 
   // Hook entry points. `base` is the guest memory base the hook received (guest virtual
@@ -145,15 +145,15 @@ class NativeRenderer {
   Resolver& resolver() { return *resolver_; }
   // The game's occlusion queries, counted by the draws; nullptr when they are not.
   OcclusionQueries* occlusion() { return occlusion_.get(); }
-  // The scene's upscaler while it replaces the scene's MSAA (--pgr4_native_upscaler, switched
+  // The scene's upscaler while it replaces the scene's MSAA (--rexnative_upscaler, switched
   // with bind_upscaler); nullptr otherwise.
   Upscaler* upscaler() { return upscaler_on_ ? upscaler_.get() : nullptr; }
 
   // The in-game settings (games/pgr4/src/pgr4_settings.cpp), from any thread.
-  // The scene's antialiasing settings changed (--pgr4_native_msaa, --pgr4_native_upscaler and
+  // The scene's antialiasing settings changed (--rexnative_msaa, --rexnative_upscaler and
   // its sizes): taken at the start of the next frame, the upscaler made again with them.
   void RequestAntialiasing() { antialiasing_requested_.store(true, std::memory_order_relaxed); }
-  // --pgr4_native_present_interval changed: taken at the start of the next frame.
+  // --rexnative_present_interval changed: taken at the start of the next frame.
   void RequestFrameRate() { frame_rate_requested_.store(true, std::memory_order_relaxed); }
   // Primary mode: the native renderer (true) or the Xenos plugin draws from the next Swap on,
   // as the renderer switch does.
@@ -168,11 +168,11 @@ class NativeRenderer {
   NativeRenderer() = default;
   bool Initialize();
   // At the end of each frame's ExecuteSwap: its row of the frame CSV, its share of the stats
-  // log (every --pgr4_d3d_stats_frames frames), then the per-frame counters start over.
+  // log (every --rexnative_d3d_stats_frames frames), then the per-frame counters start over.
   void WriteCsvRow(const FrameStats& s, uint64_t frame_ns);
   // The frame CSV's columns, their names (header) or this frame's values: those of every frame,
-  // with --pgr4_native_profile the stage times and texture counters, with
-  // --pgr4_native_luma_probe the probe's.
+  // with --rexnative_profile the stage times and texture counters, with
+  // --rexnative_luma_probe the probe's.
   void AppendCsvColumns(const FrameStats& s, uint64_t frame_ns, bool header, std::string* line);
   void AppendCsvProfileColumns(bool header, std::string* line);
   void AppendCsvLumaColumns(bool header, std::string* line);
@@ -196,7 +196,7 @@ class NativeRenderer {
     bool end;
   };
   void ExecuteQuery(const QueryCall& q);
-  // After a draw: submits the frame so far once --pgr4_native_submit_draws draws were recorded
+  // After a draw: submits the frame so far once --rexnative_submit_draws draws were recorded
   // since the last submission.
   void SubmitEarly();
   // Before each submission, once the untiles finished: the texture upload lists to submit first
@@ -245,36 +245,36 @@ class NativeRenderer {
   std::atomic<bool> antialiasing_requested_{false}, frame_rate_requested_{false};
   bool upscaler_bound_ = false;  // primary mode
   bool upscaler_on_ = false;
-  uint32_t scene_msaa_ = 2;  // --pgr4_native_msaa, as far as the GPU has it
-  void ReadSceneMsaa();      // scene_msaa_ from --pgr4_native_msaa
+  uint32_t scene_msaa_ = 2;  // --rexnative_msaa, as far as the GPU has it
+  void ReadSceneMsaa();      // scene_msaa_ from --rexnative_msaa
 
   static inline std::atomic<bool> paces_frames_{false};       // pacer_->pacing(), for any thread
   static inline std::atomic<NativeRenderer*> live_{nullptr};  // Live()
   std::atomic<bool> switch_requested_{false};
-  bool switch_bound_ = false;  // primary mode with --pgr4_native_renderer_switch
+  bool switch_bound_ = false;  // primary mode with --rexnative_renderer_switch
 
   std::unique_ptr<Queue> queue_;  // render thread mode only
 
   std::unique_ptr<D3D12Device> device_;
-  bool primary_ = false;       // --pgr4_native_primary: presenting into the game window
+  bool primary_ = false;       // --rexnative: presenting into the game window
   bool window_taken_ = false;  // OwnGameWindow disconnected ReXGlue's presenter from the window
   std::unique_ptr<RenderTargets> rt_;
   std::unique_ptr<Resolver> resolver_;
   std::unique_ptr<TextureCache> textures_;
   std::unique_ptr<DrawRenderer> draw_;
   std::unique_ptr<Presenter> present_;
-  std::unique_ptr<OcclusionQueries> occlusion_;  // primary mode with --pgr4_native_occlusion
+  std::unique_ptr<OcclusionQueries> occlusion_;  // primary mode with --rexnative_occlusion
   std::unique_ptr<Upscaler> upscaler_;
-  std::unique_ptr<FrameGeneration> frame_generation_;  // --pgr4_native_frame_generation, paced
-  std::unique_ptr<NeuralPass> neural_;                 // this port: --pgr4_native_dlss5
+  std::unique_ptr<FrameGeneration> frame_generation_;  // --rexnative_frame_generation, paced
+  std::unique_ptr<NeuralPass> neural_;                 // this port: --rexnative_dlss5
   // The scene's camera for the FidelityFX effects, found each frame by FindCamera (the defaults
   // until one matches); the upscaler reads it through the pointer set_camera gave it.
   FfxCamera camera_;
   uint32_t camera_scan_ = 0;  // this frame's scene depth draws still to scan for it
   bool camera_logged_ = false;
-  // Primary mode with --pgr4_native_frame_latency > 0, or observing only with --pgr4_native_csv.
+  // Primary mode with --rexnative_frame_latency > 0, or observing only with --rexnative_csv.
   std::unique_ptr<FramePacer> pacer_;
-  GpuTimer* gpu_timer_ = nullptr;  // device_'s, with --pgr4_native_gpu_timing
+  GpuTimer* gpu_timer_ = nullptr;  // device_'s, with --rexnative_gpu_timing
   bool frame_begun_ = false;
   uint64_t frame_index_ = 0;
   uint64_t frame_start_ns_ = 0;
@@ -285,11 +285,11 @@ class NativeRenderer {
   std::vector<ID3D12CommandList*> upload_lists_;  // CloseUploadLists'
   struct Csv;
   std::unique_ptr<Csv> csv_;
-  // This port: the front end's frame limit (--pgr4_native_menu_fps), on the guest thread at
+  // This port: the front end's frame limit (--rexnative_menu_fps), on the guest thread at
   // each Swap; returns the time it waited.
   uint64_t FrontEndLimit();
   uint64_t limit_ns_ = 0;
   void* limit_timer_ = nullptr;  // HANDLE
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

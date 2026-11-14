@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the FidelityFX API loader. See fidelityfx.h.
+// ReXNative renderer: the FidelityFX API loader. See fidelityfx.h.
 #include "fidelityfx.h"
 
 #include "d3d12_device.h"  // windows.h
@@ -9,14 +9,14 @@
 #include <algorithm>
 #include <cmath>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_fsr_debug, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_fsr_debug, false, "ReXNative",
                     "FidelityFX's debug views in place of the upscaled scene (its inputs and "
                     "history) and of the generated frames, and with FSR 4 AMD's watermark of the "
                     "model it runs; bind_upscaler_debug (F8) switches it");
 
-namespace pgr4::native {
+namespace rexnative {
 
-bool FfxDebug() { return REXCVAR_GET(pgr4_native_fsr_debug); }
+bool FfxDebug() { return REXCVAR_GET(rexnative_fsr_debug); }
 
 void SetFfxWatermark(const wchar_t* name, bool on) {
   // The driver asks only whether the variable exists, of the process's environment or of its
@@ -34,7 +34,7 @@ const FfxApi* LoadFfxApi() {
     FfxApi a;
     HMODULE dll = LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll");
     if (!dll) {
-      REXLOG_ERROR("PGR4 native: cannot load amd_fidelityfx_loader_dx12.dll ({})",
+      REXLOG_ERROR("ReXNative: cannot load amd_fidelityfx_loader_dx12.dll ({})",
                    uint32_t(GetLastError()));
       return a;
     }
@@ -44,7 +44,7 @@ const FfxApi* LoadFfxApi() {
     a.query = reinterpret_cast<PfnFfxQuery>(GetProcAddress(dll, "ffxQuery"));
     a.dispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(dll, "ffxDispatch"));
     if (!a.create || !a.destroy || !a.configure || !a.query || !a.dispatch) {
-      REXLOG_ERROR("PGR4 native: amd_fidelityfx_loader_dx12.dll lacks the ffx API");
+      REXLOG_ERROR("ReXNative: amd_fidelityfx_loader_dx12.dll lacks the ffx API");
       a = {};
     }
     return a;
@@ -73,4 +73,4 @@ bool CameraFromClipRows(const float* m, FfxCamera& out) {
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

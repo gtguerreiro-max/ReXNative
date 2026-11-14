@@ -26,7 +26,7 @@
 #include <rex/graphics/pipeline/shader/dxbc.h>
 #include <rex/graphics/pipeline/shader/dxbc_translator.h>
 
-namespace pgr4::native {
+namespace rexnative {
 
 using rex::graphics::DxbcShader;
 using rex::graphics::DxbcShaderTranslator;
@@ -119,4 +119,4 @@ enum BindlessRootParameter : uint32_t {
 Microsoft::WRL::ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(
     ID3D12Device* device, uint64_t* blob_hash = nullptr);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

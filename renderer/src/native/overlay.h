@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class CommandStream;
 
@@ -68,4 +68,4 @@ class Overlay {
   } slots_[D3D12Device::kFramesInFlight];
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

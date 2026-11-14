@@ -1,7 +1,7 @@
-// pgr4-native PGR4 native renderer: pipelines that survive runs.
+// ReXNative renderer: pipelines that survive runs.
 //
 // PipelineStore: the shaders (guest ucode) and pipeline keys DrawRenderer has created
-// pipelines for, in <cache_root>\pgr4-native\pipelines.bin. Every pipeline record carries the
+// pipelines for, in <cache_root>\rexnative\pipelines.bin. Every pipeline record carries the
 // session that last created or used it; a later session's use is a 16-byte touch record,
 // appended and flushed once per frame (the game is usually killed, not shut down). At
 // start-up the store counts its session up, drops the records no recent session used
@@ -10,7 +10,7 @@
 // ahead of the first draw) only what the last kHotSessions sessions used, most recently used
 // first. Threading: the renderer's thread (DrawRenderer's On* calls) only.
 //
-// PipelineLibrary: an ID3D12PipelineLibrary in <cache_root>\pgr4-native\pipelines.d3d12lib, so
+// PipelineLibrary: an ID3D12PipelineLibrary in <cache_root>\rexnative\pipelines.d3d12lib, so
 // the driver's compiled pipelines are loaded instead of compiled again. Saved by a pipeline
 // worker when they have been idle for a while. Threading: Open once, before any other call;
 // Create from any thread, Save from one at a time.
@@ -28,7 +28,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class PipelineStore {
  public:
@@ -125,4 +125,4 @@ class PipelineLibrary {
   std::unordered_set<uint64_t> busy_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

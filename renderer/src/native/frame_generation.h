@@ -1,6 +1,6 @@
-// pgr4-native PGR4 native renderer: frame generation with AMD FidelityFX Frame Generation, through
+// ReXNative renderer: frame generation with AMD FidelityFX Frame Generation, through
 // the FidelityFX API (fidelityfx.h; amd_fidelityfx_framegeneration_dx12.dll beside the loader, or
-// what OptiScaler puts behind it). --pgr4_native_frame_generation, with the upscaler and the frame
+// what OptiScaler puts behind it). --rexnative_frame_generation, with the upscaler and the frame
 // pacer.
 //
 // Each frame with the scene's inputs is presented after a frame generated between it and the one
@@ -45,11 +45,11 @@
 #include <cstdint>
 #include <optional>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class FrameGeneration {
  public:
-  // Whether --pgr4_native_frame_generation asks for it.
+  // Whether --rexnative_frame_generation asks for it.
   static bool Requested();
 
   FrameGeneration(D3D12Device& device, Resolver& resolver) : device_(device), resolver_(resolver) {}
@@ -124,4 +124,4 @@ class FrameGeneration {
   const ResolvedImage* copy_ = nullptr;     // its copy
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: CPU-to-GPU upload memory in persistently mapped UPLOAD-heap
+// ReXNative renderer: CPU-to-GPU upload memory in persistently mapped UPLOAD-heap
 // blocks, sub-allocated linearly and recycled once the GPU finished the frame that used them.
 // Used for vertex/index data and constants (draw.cpp) and texture uploads (textures.cpp).
 //
@@ -16,7 +16,7 @@
 #include <memory>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class UploadPool {
  public:
@@ -105,14 +105,14 @@ class UploadPool {
                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                                                   IID_PPV_ARGS(&b->resource));
     if (FAILED(hr)) {
-      REXLOG_ERROR("PGR4 native: upload block of {} bytes failed: {:08X}", size, uint32_t(hr));
+      REXLOG_ERROR("ReXNative: upload block of {} bytes failed: {:08X}", size, uint32_t(hr));
       return nullptr;
     }
     D3D12_RANGE none = {0, 0};
     void* p = nullptr;
     hr = b->resource->Map(0, &none, &p);
     if (FAILED(hr)) {
-      REXLOG_ERROR("PGR4 native: upload block map failed: {:08X}", uint32_t(hr));
+      REXLOG_ERROR("ReXNative: upload block map failed: {:08X}", uint32_t(hr));
       return nullptr;
     }
     b->cpu = static_cast<uint8_t*>(p);
@@ -122,7 +122,7 @@ class UploadPool {
     const double ms = (NowNs() - t0) / 1e6;
     if (created_ > reserved_ && created_ <= reserved_ + 32)
       REXLOG_INFO(
-          "PGR4 native: upload block {} of {} MB created during play in {:.2f} ms (pool "
+          "ReXNative: upload block {} of {} MB created during play in {:.2f} ms (pool "
           "of {} MB blocks, {} reserved)",
           created_, size >> 20, ms, block_size_ >> 20, reserved_);
     return b;
@@ -153,4 +153,4 @@ class UploadPool {
   std::vector<std::unique_ptr<Block>> active_, previous_, retired_, free_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

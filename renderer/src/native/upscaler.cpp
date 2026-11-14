@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the scene's upscaler. See upscaler.h. In this port it runs
+// ReXNative renderer: the scene's upscaler. See upscaler.h. In this port it runs
 // NVIDIA DLSS / DLAA (dlss.h) in place of FidelityFX Super Resolution.
 #include "upscaler.h"
 
@@ -17,34 +17,34 @@
 #include <cmath>
 #include <string>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_upscaler, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_upscaler, false, "ReXNative",
                     "Render the 3D scene without MSAA and antialias it with NVIDIA DLSS "
-                    "(--pgr4_native_dlss_mode; nvngx_dlss.dll beside the executable, an RTX GPU) "
+                    "(--rexnative_dlss_mode; nvngx_dlss.dll beside the executable, an RTX GPU) "
                     "from the start; bind_upscaler (F7) switches it");
-REXCVAR_DEFINE_INT32(pgr4_native_upscaler_width, 1280, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_upscaler_width, 1280, "ReXNative",
                      "Width the upscaler's scene renders at, upscaled to 1280 (320-1280; 1280 "
                      "with the height at the render height: antialiasing only)");
-REXCVAR_DEFINE_INT32(pgr4_native_upscaler_height, 800, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_upscaler_height, 800, "ReXNative",
                      "Height the upscaler's scene renders at, upscaled to the render height "
-                     "(--pgr4_render_height, 800 or 720; from a quarter of it up to it)");
-REXCVAR_DEFINE_INT32(pgr4_native_upscaler_target_fps, 0, "PGR4 native",
+                     "(--rexnative_render_height, 800 or 720; from a quarter of it up to it)");
+REXCVAR_DEFINE_INT32(rexnative_upscaler_target_fps, 0, "ReXNative",
                      "Vary the upscaler's render size each frame, from the width and height "
-                     "down to --pgr4_native_upscaler_min_height, so that the GPU keeps up with "
+                     "down to --rexnative_upscaler_min_height, so that the GPU keeps up with "
                      "this frame rate, or with the lower one the frames are shown at "
-                     "(--pgr4_native_present_interval, frame generation; 0: a fixed size)");
-REXCVAR_DEFINE_INT32(pgr4_native_upscaler_min_height, 360, "PGR4 native",
-                     "With --pgr4_native_upscaler_target_fps: the least height the scene renders "
+                     "(--rexnative_present_interval, frame generation; 0: a fixed size)");
+REXCVAR_DEFINE_INT32(rexnative_upscaler_min_height, 360, "ReXNative",
+                     "With --rexnative_upscaler_target_fps: the least height the scene renders "
                      "at (from a quarter of the render height up to it)");
 
-REXCVAR_DEFINE_STRING(pgr4_native_dlss_mode, "dlaa", "PGR4 native",
-                      "With --pgr4_native_upscaler: dlaa (the game's resolution, anti-aliased by DLSS), "
+REXCVAR_DEFINE_STRING(rexnative_dlss_mode, "dlaa", "ReXNative",
+                      "With --rexnative_upscaler: dlaa (the game's resolution, anti-aliased by DLSS), "
                       "quality, balanced, performance or ultra (DLSS Super Resolution from a smaller "
                       "render size)");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss_preset, 0, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss_preset, 0, "ReXNative",
                      "DLSS render preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*: 0 the DLL's default, "
                      "10 J, 11 K, ...)");
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -77,7 +77,7 @@ uint32_t RenderExtent(int32_t setting, uint32_t scene) {
 
 }  // namespace
 
-bool Upscaler::Requested() { return REXCVAR_GET(pgr4_native_upscaler); }
+bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler); }
 
 Upscaler::~Upscaler() {
   if (context_) api_->destroy(&context_, nullptr);
@@ -86,12 +86,12 @@ Upscaler::~Upscaler() {
 bool Upscaler::Initialize(ID3D12Device* device) {
   device_ = device;
   // This port: DLSS. The mode sets the render size (DLAA: the game's own); no dynamic resolution.
-  mode_ = Dlss::ModeFromName(REXCVAR_GET(pgr4_native_dlss_mode));
+  mode_ = Dlss::ModeFromName(REXCVAR_GET(rexnative_dlss_mode));
   const double scale = Dlss::RenderScale(mode_);
   max_width_ = RenderExtent(int32_t(std::lround(OutputWidth() * scale)), OutputWidth());
   max_height_ = RenderExtent(int32_t(std::lround(OutputHeight() * scale)), OutputHeight());
   if (!dlss_.Initialize(device_) || !CreateContext(false)) return false;
-  REXLOG_INFO("PGR4 native upscaler: {} from {}x{} to {}x{}", Dlss::Name(mode_), max_width_,
+  REXLOG_INFO("ReXNative upscaler: {} from {}x{} to {}x{}", Dlss::Name(mode_), max_width_,
               max_height_, OutputWidth(), OutputHeight());
   return SetLevel(DynamicResolution::kSteps) && CreateTargets() && CreateInputPass();
 }
@@ -121,12 +121,12 @@ bool Upscaler::CreateInputPass() {
   input_stride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   const pD3DCompile compile = D3DCompiler();
-  constexpr char kName[] = "pgr4_upscaler_input.hlsl";
+  constexpr char kName[] = "rexnative_upscaler_input.hlsl";
   ComPtr<ID3DBlob> code, error;
   if (!compile ||
       FAILED(compile(kInputHlsl, sizeof(kInputHlsl) - 1, kName, nullptr, nullptr, "main", "cs_5_0",
                      D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &error))) {
-    REXLOG_ERROR("PGR4 native upscaler: {}: {}", kName,
+    REXLOG_ERROR("ReXNative upscaler: {}: {}", kName,
                  error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
     return false;
   }
@@ -250,8 +250,8 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
       resized = true;
     }
     if (dynamic_->out_of_reach())
-      PGR4_WARN_ONCE(
-          "PGR4 native upscaler: {:.1f} ms of GPU time a frame at the least height "
+      REXNATIVE_WARN_ONCE(
+          "ReXNative upscaler: {:.1f} ms of GPU time a frame at the least height "
           "({} rows), over the budget of a frame shown for {:.1f} ms; a lower frame "
           "rate or frame generation gives each frame more",
           dynamic_->run_ns() * 1e-6, render_height_, double(paced_ns) * 1e-6);
@@ -308,7 +308,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   RenderTarget* depth = targets.GetDepth(regs, SceneHeight());
   if (!color || !depth || color->samples != 1 || depth->samples != 1 || color->scale != scale() ||
       depth->scale != scale() || color->srv_format != kOutputFormat) {
-    PGR4_WARN_ONCE("PGR4 native upscaler: unexpected scene targets (surface {:08X} color {:08X})",
+    REXNATIVE_WARN_ONCE("ReXNative upscaler: unexpected scene targets (surface {:08X} color {:08X})",
                    regs.surface_info, regs.color_info[0]);
     return nullptr;
   }
@@ -345,7 +345,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   setup.output_width = OutputWidth();
   setup.output_height = OutputHeight();
   setup.mode = mode_;
-  setup.preset = REXCVAR_GET(pgr4_native_dlss_preset);
+  setup.preset = REXCVAR_GET(rexnative_dlss_preset);
   Dlss::Frame f;
   f.color = input_.Get();
   f.depth = depth->resource.Get();
@@ -359,7 +359,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   f.reset = reset_;
   // On the stream's thread, which records the list: a failure shows from the next frame on.
   list->Call([this, setup, f](CommandStream::List* l) {
-    if (!dlss_.Evaluate(l, setup, f)) PGR4_WARN_ONCE("PGR4 native upscaler: DLSS evaluation failed");
+    if (!dlss_.Evaluate(l, setup, f)) REXNATIVE_WARN_ONCE("ReXNative upscaler: DLSS evaluation failed");
   });
   // This port: DLSS 5 on the HDR scene DLAA just made (neural.h's scene stage), before the
   // game's exposure, bloom, motion blur and tone mapping read it.
@@ -394,4 +394,4 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   return &output_;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

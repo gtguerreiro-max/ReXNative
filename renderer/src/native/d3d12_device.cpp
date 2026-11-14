@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: D3D12 device, frame command lists, swapchain and the debug
+// ReXNative renderer: D3D12 device, frame command lists, swapchain and the debug
 // window.
 #include "d3d12_device.h"
 
@@ -20,27 +20,27 @@
 #include <mutex>
 #include <utility>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_gpu_serialize, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_gpu_serialize, false, "ReXNative",
                     "Debug: wait for the GPU at the end of every frame, so no frame is in flight "
                     "while the next one is recorded (slow)");
 REXCVAR_DEFINE_BOOL(
-    pgr4_native_hdr, true, "PGR4 native",
+    rexnative_hdr, true, "ReXNative",
     "HDR10 output when the display is in HDR mode: the highlights the game renders above "
     "SDR white, which its front buffer clips, reach the screen");
-REXCVAR_DEFINE_INT32(pgr4_native_hdr_peak_nits, 0, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_hdr_peak_nits, 0, "ReXNative",
                      "HDR output: the peak luminance in nits the image is fitted to; 0: the "
                      "display's, or 1000 when it reports none");
-REXCVAR_DEFINE_BOOL(pgr4_native_dred, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dred, false, "ReXNative",
                     "Debug: D3D12 DRED (auto-breadcrumbs and page-fault data) on the native "
                     "renderer's device; when the GPU removes it (a hang, TDR, or a fault) the last "
                     "commands each command list completed and the faulting address are logged");
 REXCVAR_DECLARE(int32_t, d3d12_queue_priority);
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 constexpr UINT_PTR kTitleTimer = 1;
-const wchar_t kClassName[] = L"pgr4_native_debug";
+const wchar_t kClassName[] = L"rexnative_debug";
 }  // namespace
 
 namespace {
@@ -76,45 +76,45 @@ void LogDeviceRemoved(ID3D12Device* device) {
   static std::atomic<bool> logged{false};
   if (!device || logged.exchange(true)) return;
   const HRESULT reason = device->GetDeviceRemovedReason();
-  REXLOG_ERROR("PGR4 native DRED: device removed, reason {:08X}{}", uint32_t(reason),
-               REXCVAR_GET(pgr4_native_dred) ? "" : " (run with --pgr4_native_dred for details)");
+  REXLOG_ERROR("ReXNative DRED: device removed, reason {:08X}{}", uint32_t(reason),
+               REXCVAR_GET(rexnative_dred) ? "" : " (run with --rexnative_dred for details)");
   ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
-  if (!REXCVAR_GET(pgr4_native_dred) || FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
+  if (!REXCVAR_GET(rexnative_dred) || FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
   D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs = {};
   if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&crumbs))) {
     for (const D3D12_AUTO_BREADCRUMB_NODE1* n = crumbs.pHeadAutoBreadcrumbNode; n; n = n->pNext) {
       const uint32_t count = n->BreadcrumbCount;
       const uint32_t last = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
       if (last >= count) continue;  // this list finished
-      REXLOG_ERROR("PGR4 native DRED: list '{}' on queue '{}': {} of {} operations completed",
+      REXLOG_ERROR("ReXNative DRED: list '{}' on queue '{}': {} of {} operations completed",
                    Narrow(n->pCommandListDebugNameW), Narrow(n->pCommandQueueDebugNameW), last,
                    count);
       const uint32_t from = last > 8 ? last - 8 : 0, to = std::min(count, last + 8);
       for (uint32_t i = from; i < to && n->pCommandHistory; ++i)
-        REXLOG_ERROR("PGR4 native DRED:   {} {:4} {}", i == last ? "->" : "  ", i,
+        REXLOG_ERROR("ReXNative DRED:   {} {:4} {}", i == last ? "->" : "  ", i,
                      BreadcrumbOpName(n->pCommandHistory[i]));
       for (uint32_t c = 0; c < n->BreadcrumbContextsCount && n->pBreadcrumbContexts; ++c) {
         const D3D12_DRED_BREADCRUMB_CONTEXT& ctx = n->pBreadcrumbContexts[c];
         if (ctx.BreadcrumbIndex + 8 >= last && ctx.BreadcrumbIndex <= last + 8)
-          REXLOG_ERROR("PGR4 native DRED:   context at {}: {}", ctx.BreadcrumbIndex,
+          REXLOG_ERROR("ReXNative DRED:   context at {}: {}", ctx.BreadcrumbIndex,
                        Narrow(ctx.pContextString));
       }
     }
   }
   D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
   if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&fault)) && fault.PageFaultVA) {
-    REXLOG_ERROR("PGR4 native DRED: page fault at GPU address {:016X}", uint64_t(fault.PageFaultVA));
+    REXLOG_ERROR("ReXNative DRED: page fault at GPU address {:016X}", uint64_t(fault.PageFaultVA));
     for (const D3D12_DRED_ALLOCATION_NODE1* a = fault.pHeadExistingAllocationNode; a; a = a->pNext)
-      REXLOG_ERROR("PGR4 native DRED:   live allocation there: '{}'", Narrow(a->ObjectNameW));
+      REXLOG_ERROR("ReXNative DRED:   live allocation there: '{}'", Narrow(a->ObjectNameW));
     for (const D3D12_DRED_ALLOCATION_NODE1* a = fault.pHeadRecentFreedAllocationNode; a;
          a = a->pNext)
-      REXLOG_ERROR("PGR4 native DRED:   recently freed there: '{}'", Narrow(a->ObjectNameW));
+      REXLOG_ERROR("ReXNative DRED:   recently freed there: '{}'", Narrow(a->ObjectNameW));
   }
 }
 
 bool Failed(HRESULT hr, const char* what) {
   if (SUCCEEDED(hr)) return false;
-  REXLOG_ERROR("PGR4 native: {} failed: HRESULT {:08X}", what, uint32_t(hr));
+  REXLOG_ERROR("ReXNative: {} failed: HRESULT {:08X}", what, uint32_t(hr));
   return true;
 }
 
@@ -132,7 +132,7 @@ pD3DCompile D3DCompiler() {
     const HMODULE dll = LoadLibraryW(L"d3dcompiler_47.dll");
     const auto fn =
         dll ? reinterpret_cast<pD3DCompile>(GetProcAddress(dll, "D3DCompile")) : nullptr;
-    if (!fn) REXLOG_ERROR("PGR4 native: d3dcompiler_47.dll / D3DCompile not found");
+    if (!fn) REXLOG_ERROR("ReXNative: d3dcompiler_47.dll / D3DCompile not found");
     return fn;
   }();
   return compile;
@@ -153,7 +153,7 @@ LRESULT CALLBACK D3D12Device::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
       if (self && wp == kTitleTimer) {
         wchar_t title[96];
-        std::swprintf(title, 96, L"PGR4 native (debug) - frame %llu",
+        std::swprintf(title, 96, L"ReXNative (debug) - frame %llu",
                       (unsigned long long)self->title_frame_.load(std::memory_order_relaxed));
         SetWindowTextW(hwnd, title);
       }
@@ -219,7 +219,7 @@ bool D3D12Device::CreateWindowThread(const wchar_t* title) {
   std::unique_lock lock(m);
   cv.wait(lock, [&] { return done; });
   if (!hwnd_.load()) {
-    REXLOG_ERROR("PGR4 native: CreateWindowExW failed ({})", GetLastError());
+    REXLOG_ERROR("ReXNative: CreateWindowExW failed ({})", GetLastError());
     return false;
   }
   return true;
@@ -238,16 +238,16 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
                                                   IID_PPV_ARGS(adapter.GetAddressOf())),
              "EnumAdapterByGpuPreference"))
     return false;
-  if (REXCVAR_GET(pgr4_native_dred)) {
+  if (REXCVAR_GET(rexnative_dred)) {
     // Process-wide, for the devices created from here on (the Xenos plugin's is older).
     ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
       dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
       dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
       dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-      REXLOG_INFO("PGR4 native: D3D12 DRED on (breadcrumbs, page faults)");
+      REXLOG_INFO("ReXNative: D3D12 DRED on (breadcrumbs, page faults)");
     } else {
-      REXLOG_WARN("PGR4 native: --pgr4_native_dred: no DRED settings interface");
+      REXLOG_WARN("ReXNative: --rexnative_dred: no DRED settings interface");
     }
   }
   if (Failed(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
@@ -275,7 +275,7 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
     hr = device_->CreateCommandQueue(&qd, IID_PPV_ARGS(queue_.GetAddressOf()));
   }
   if (Failed(hr, "CreateCommandQueue")) return false;
-  queue_->SetName(L"pgr4 native queue");
+  queue_->SetName(L"rexnative queue");
   if (Failed(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence_.GetAddressOf())),
              "CreateFence") ||
       Failed(
@@ -286,7 +286,7 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
   stream_event_ = CreateAutoResetEvent();
   idle_event_ = CreateAutoResetEvent();
   if (!fence_event_ || !stream_event_ || !idle_event_) {
-    REXLOG_ERROR("PGR4 native: CreateEvent failed: error {}", GetLastError());
+    REXLOG_ERROR("ReXNative: CreateEvent failed: error {}", GetLastError());
     return false;
   }
   for (auto& a : allocators_)
@@ -298,8 +298,8 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
                                         nullptr, IID_PPV_ARGS(list_.GetAddressOf())),
              "CreateCommandList"))
     return false;
-  list_->SetName(L"pgr4 native frame");
-  stream_.Start(list_.Get(), L"PGR4 native list");
+  list_->SetName(L"rexnative frame");
+  stream_.Start(list_.Get(), L"ReXNative list");
   if (!CreateBusyTimer()) return false;
   StampBusy();
 
@@ -316,7 +316,7 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
     return false;
   rtv_stride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   if (!game_window_ && !(CreateWindowThread(title) && CreateSwapchain(hwnd_.load()))) return false;
-  REXLOG_INFO("PGR4 native: D3D12 on {} (feature level 11_0+), presenting into the {}, tearing {}",
+  REXLOG_INFO("ReXNative: D3D12 on {} (feature level 11_0+), presenting into the {}, tearing {}",
               name, game_window_ ? "game window" : "debug window", tearing_ ? "on" : "off");
   return true;
 }
@@ -328,7 +328,7 @@ bool D3D12Device::AttachSwapchain() {
   width_ = uint32_t((std::max)(LONG(64), r.right - r.left));
   height_ = uint32_t((std::max)(LONG(64), r.bottom - r.top));
   if (!CreateSwapchain(game_window_)) return false;
-  REXLOG_INFO("PGR4 native: swapchain {}x{} in the game window", width_, height_);
+  REXLOG_INFO("ReXNative: swapchain {}x{} in the game window", width_, height_);
   return true;
 }
 
@@ -337,14 +337,14 @@ void D3D12Device::DetachSwapchain() {
   for (auto& b : back_buffers_) b.Reset();
   held_image_.Reset();
   swapchain_.Reset();
-  REXLOG_INFO("PGR4 native: swapchain released");
+  REXLOG_INFO("ReXNative: swapchain released");
 }
 
 bool D3D12Device::CreateSwapchain(HWND hwnd) {
   DXGI_SWAP_CHAIN_DESC1 sd = {};
   sd.Width = width_;
   sd.Height = height_;
-  sd.Format = REXCVAR_GET(pgr4_native_hdr) ? kHdrBackBufferFormat : kBackBufferFormat;
+  sd.Format = REXCVAR_GET(rexnative_hdr) ? kHdrBackBufferFormat : kBackBufferFormat;
   sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   sd.BufferCount = kBackBuffers;
@@ -365,7 +365,7 @@ bool D3D12Device::CreateSwapchain(HWND hwnd) {
 
 bool D3D12Device::SetUpColorSpace() {
   constexpr DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-  const bool wanted = REXCVAR_GET(pgr4_native_hdr);
+  const bool wanted = REXCVAR_GET(rexnative_hdr);
   ComPtr<IDXGIOutput> output;
   ComPtr<IDXGIOutput6> output6;
   DXGI_OUTPUT_DESC1 od = {};
@@ -381,13 +381,13 @@ bool D3D12Device::SetUpColorSpace() {
          (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) &&
          !Failed(swapchain_->SetColorSpace1(kHdr10), "SetColorSpace1(HDR10)");
   if (!hdr_) {
-    REXLOG_INFO("PGR4 native: SDR output{}", wanted ? " (the display is not in HDR mode)" : "");
+    REXLOG_INFO("ReXNative: SDR output{}", wanted ? " (the display is not in HDR mode)" : "");
     return !wanted || !Failed(swapchain_->ResizeBuffers(kBackBuffers, width_, height_,
                                                         kBackBufferFormat, swapchain_flags_),
                               "ResizeBuffers(SDR)");
   }
   const float display_peak = od.MaxLuminance;
-  const int32_t peak = REXCVAR_GET(pgr4_native_hdr_peak_nits);
+  const int32_t peak = REXCVAR_GET(rexnative_hdr_peak_nits);
   hdr_peak_nits_ = peak > 0 ? float(peak) : display_peak > 0.0f ? display_peak : 1000.0f;
   // The image is fitted to the peak already, so the display has nothing left to tone map.
   // Primaries: the game's, BT.709 with a D65 white, in units of 0.00002.
@@ -401,7 +401,7 @@ bool D3D12Device::SetUpColorSpace() {
   ComPtr<IDXGISwapChain4> sc4;
   if (SUCCEEDED(swapchain_.As(&sc4)))
     Failed(sc4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(md), &md), "SetHDRMetaData");
-  REXLOG_INFO("PGR4 native: HDR10 output, peak {:.0f} nits (the display reports {:.0f})",
+  REXLOG_INFO("ReXNative: HDR10 output, peak {:.0f} nits (the display reports {:.0f})",
               hdr_peak_nits_, display_peak);
   return true;
 }
@@ -444,7 +444,7 @@ bool D3D12Device::FollowWindowSize() {
                                        swapchain_flags_),
              "ResizeBuffers"))
     return false;
-  REXLOG_INFO("PGR4 native: game window client {}x{} -> {}x{}", width_, height_, w, h);
+  REXLOG_INFO("ReXNative: game window client {}x{} -> {}x{}", width_, height_, w, h);
   width_ = w;
   height_ = h;
   return GetBackBuffers();
@@ -473,7 +473,7 @@ bool D3D12Device::CreateHeldImage() {
                                               IID_PPV_ARGS(held_image_.ReleaseAndGetAddressOf())),
              "CreateCommittedResource(held image)"))
     return false;
-  held_image_->SetName(L"pgr4 native held frame");
+  held_image_->SetName(L"rexnative held frame");
   D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
   h.ptr += size_t(kBackBuffers) * rtv_stride_;
   device_->CreateRenderTargetView(held_image_.Get(), nullptr, h);
@@ -596,8 +596,8 @@ void D3D12Device::FinishFrame(List* list, const FrameEnd& f) {
   if (f.presents && f.image) {
     CopyToBackBuffer(list, f.generated ? f.generated : f.image);
   } else if (f.presents && f.drawn != swapchain_->GetCurrentBackBufferIndex()) {
-    PGR4_LOG_FIRST(1, ERROR,
-                   "PGR4 native: the frame drew into back buffer {}, the swapchain's is {}",
+    REXNATIVE_LOG_FIRST(1, ERROR,
+                   "ReXNative: the frame drew into back buffer {}, the swapchain's is {}",
                    f.drawn, swapchain_->GetCurrentBackBufferIndex());
   }
   bool ok = ExecuteLists(list, f.first);
@@ -656,7 +656,7 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   end_frame_times_.present_ns = present_ns_.load(std::memory_order_relaxed);
   end_frame_times_.stream_ns = stream_.TakeBusyNs();
   end_frame_times_.stream_wait_ns = stream_wait_ns_.exchange(0, std::memory_order_relaxed);
-  if (REXCVAR_GET(pgr4_native_gpu_serialize)) WaitFence(slot_fence_[slot_]);
+  if (REXCVAR_GET(rexnative_gpu_serialize)) WaitFence(slot_fence_[slot_]);
   slot_ = (slot_ + 1) % kFramesInFlight;
   if (!FollowWindowSize()) return false;
   // The next frame's slot: its upload memory and timestamps are free once the GPU finished the
@@ -669,4 +669,4 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   if (gpu_timer_) gpu_timer_->BeginFrame(&stream_, slot_);
   return !stream_failed_.load(std::memory_order_acquire);
 }
-}  // namespace pgr4::native
+}  // namespace rexnative

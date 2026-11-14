@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: per-stage CPU time of the draw path (--pgr4_native_profile).
+// ReXNative renderer: per-stage CPU time of the draw path (--rexnative_profile).
 //
 // Stage boundaries are timestamped in Ticks (clock.h); NativeRenderer converts them to µs and
 // appends one column per stage to the native CSV. Off by default: then each Mark is one predictable
@@ -14,7 +14,7 @@
 #include <atomic>
 #include <cstdint>
 
-namespace pgr4::native::profile {
+namespace rexnative::profile {
 
 enum Stage : uint32_t {
   // NativeRenderer::OnDraw / DrawRenderer::Impl::Draw, in order.
@@ -31,7 +31,7 @@ enum Stage : uint32_t {
   kCbv,        // UploadCbv b0..b4
   kRecord,     // fixed-function state, render targets, IA, draw call
   kSubmit,     // NativeRenderer::SubmitEarly when it submits: CloseUploadLists, Submit
-  // Hook side (pgr4_d3d_trace.cpp), outside OnDraw.
+  // Hook side (rexnative_d3d_trace.cpp), outside OnDraw.
   kTrack,        // ReadDirtyMasks + GuestStateTracker::AfterCall, every flushing call
   kImmediateVs,  // GuestStateTracker::AfterImmediateVs
   // Guest thread, render thread mode (renderer.h): the hook-side half of the On* calls.
@@ -76,7 +76,7 @@ inline constexpr const char* kCounterNames[kCounterCount] = {
     "bind_hit",    "bind_mru",       "bind_miss_empty",  "bind_miss_fetch", "bind_miss_tex",
     "bind_nomemo", "get_miss_fetch", "get_miss_changed", "srv_memo_hit",    "tex_upload_skip"};
 
-// --pgr4_native_profile, set once by NativeRenderer::Initialize. Atomic because the hooks that
+// --rexnative_profile, set once by NativeRenderer::Initialize. Atomic because the hooks that
 // pass straight through read it on any guest thread without going through NativeRenderer::Get.
 inline std::atomic<bool> enabled{false};
 inline bool On() { return enabled.load(std::memory_order_relaxed); }
@@ -120,4 +120,4 @@ class Scope {
   uint64_t start_;
 };
 
-}  // namespace pgr4::native::profile
+}  // namespace rexnative::profile

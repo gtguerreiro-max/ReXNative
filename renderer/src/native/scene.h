@@ -1,5 +1,5 @@
 // ReXNative: the 3D scene's surface, which the upscaler (DLSS / DLAA / FSR), the MSAA override
-// (--pgr4_native_msaa) and DLSS 5 work on, and its detection at run time.
+// (--rexnative_msaa) and DLSS 5 work on, and its detection at run time.
 //
 // A game's scene is the colour surface it draws its 3D frame into before post-processing and the
 // HUD: RB_SURFACE_INFO's pitch and MSAA identify it (the guest's value, whatever the host
@@ -23,7 +23,7 @@
 
 #include <cstdint>
 
-namespace pgr4::native {
+namespace rexnative {
 
 struct ResolveParams;
 
@@ -55,4 +55,4 @@ uint32_t ScenePitch();   // the layer's kScenePitch until a scene is learned
 void SceneNoteResolve(const ResolveParams& p);
 bool SceneEndFrame(uint64_t frame);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

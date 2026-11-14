@@ -1,13 +1,13 @@
-// pgr4-native PGR4 native renderer: the arguments of a hooked guest D3D call.
+// ReXNative renderer: the arguments of a hooked guest D3D call.
 //
-// What the hook dispatch (pgr4_d3d_trace.cpp) hands the native path for each call: which guest
+// What the hook dispatch (rexnative_d3d_trace.cpp) hands the native path for each call: which guest
 // function it is, its PPC arguments at entry and the tiling call it is nested in.
 #pragma once
 
 #include <cstdint>
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
-namespace pgr4::native {
+namespace rexnative {
 
 // Guest D3D functions the native path hears of (addresses in the base-disc default.xex; names
 // from src/d3d_surface.inc). All of them flush the device's register shadow
@@ -68,4 +68,4 @@ struct HookArgs {
   TilingCall tiling = TilingCall::kNone;  // the tiling call this one is nested in
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

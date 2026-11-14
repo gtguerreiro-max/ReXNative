@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: Xenos register state per draw from the guest D3D device.
+// ReXNative renderer: Xenos register state per draw from the guest D3D device.
 // See d3d_state.h for the model.
 #include "d3d_state.h"
 
@@ -18,11 +18,11 @@
 #include <span>
 #include <utility>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_track_verify, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_track_verify, false, "ReXNative",
                     "After each game draw, compare the guest register shadow with the tracked "
                     "registers and log the ones that differ (state tracker check)");
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 // The state the flushing calls send by dirty mask: (device offset, first register, registers,
@@ -209,13 +209,13 @@ void GuestStateTracker::Verify(const uint8_t* base, uint32_t device, uint32_t fn
         seen[reg] = true;
         ++reported;
         REXLOG_INFO(
-            "PGR4 native state verify: register {:04X} shadow {:08X} tracked {:08X} after {:08X}",
+            "ReXNative state verify: register {:04X} shadow {:08X} tracked {:08X} after {:08X}",
             reg, __builtin_bswap32(v), regs_[reg], fn_addr);
       }
     }
   }
   if (checks >= 1024 && (checks & (checks - 1)) == 0)
-    REXLOG_INFO("PGR4 native state verify: {} draws checked, {} differing register values", checks,
+    REXLOG_INFO("ReXNative state verify: {} draws checked, {} differing register values", checks,
                 differing);
 }
 
@@ -279,9 +279,9 @@ void GuestStateTracker::Attach(const uint8_t* base, uint32_t device) {
   // A new device (the game creates a second one at the title screen): start from its shadow.
   static uint32_t attaches = 0;
   if (++attaches <= 8)
-    REXLOG_INFO("PGR4 native state: tracking device {:08X} (was {:08X})", device, device_);
+    REXLOG_INFO("ReXNative state: tracking device {:08X} (was {:08X})", device, device_);
   device_ = device;
-  verify_ = REXCVAR_GET(pgr4_native_track_verify);
+  verify_ = REXCVAR_GET(rexnative_track_verify);
   constexpr uint64_t kAll[6] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
   CopyFlushed(base, device, kAll);
   vs_ = ps_ = {};
@@ -435,7 +435,7 @@ void GuestStateTracker::AfterImmediateVs(const uint8_t* base, const uint32_t r[8
       Load32(base, start - 8) != 0 || Load32(base, start - 4) != dwords) {
     static uint32_t misses = 0;
     if (++misses <= 4)
-      REXLOG_WARN("PGR4 native state: no IM_LOAD_IMMEDIATE before push cursor {:08X} (vs {:08X})",
+      REXLOG_WARN("ReXNative state: no IM_LOAD_IMMEDIATE before push cursor {:08X} (vs {:08X})",
                   start, vs);
     return;
   }
@@ -511,4 +511,4 @@ uint32_t GuestStateTracker::CompareWithTap(const uint32_t* tap_regs, const uint8
   return bad;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -16,7 +16,7 @@
 
 #include "shader_translate.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 struct ShaderCacheStats {
   uint64_t shaders = 0;       // distinct ucode loaded
@@ -55,4 +55,4 @@ class ShaderCache {
   ShaderCacheStats stats_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -14,10 +14,10 @@
 #include <rex/graphics/xenos.h>
 #include <rex/math.h>
 
-// thirdparty/dxbc/DXBCChecksum.cpp, compiled into pgr4_shader_xlate (shader_xlate.cmake).
+// thirdparty/dxbc/DXBCChecksum.cpp, compiled into rexnative_shader_xlate (shader_xlate.cmake).
 void CalculateDXBCChecksum(unsigned char* pData, unsigned int dwSize, unsigned int dwHash[4]);
 
-namespace pgr4::native {
+namespace rexnative {
 
 using namespace rex::graphics;
 using PipelineGeometryShader = GeometryShaderType;
@@ -1124,4 +1124,4 @@ std::vector<uint32_t> CreateGeometryShader(GeometryShaderKey key) {
   return shader;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

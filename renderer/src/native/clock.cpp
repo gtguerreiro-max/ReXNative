@@ -1,9 +1,9 @@
-// pgr4-native PGR4 native renderer: the CPU clock (clock.h).
+// ReXNative renderer: the CPU clock (clock.h).
 #include "clock.h"
 
 #include <windows.h>
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 struct Calibration {
@@ -41,4 +41,4 @@ uint64_t NowNs() {
 
 uint64_t TicksToNs(uint64_t ticks) { return uint64_t(double(ticks) * Calibrated().ns_per_tick); }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

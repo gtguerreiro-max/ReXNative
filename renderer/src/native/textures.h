@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest texture fetch constants -> D3D12 textures.
+// ReXNative renderer: guest texture fetch constants -> D3D12 textures.
 //
 // TextureCache keeps one host texture per TextureKey (texture_layout.h: base/mip address,
 // size, pitch, format, endianness, tiling, packed mips, mip count). Get() returns the texture
@@ -48,7 +48,7 @@ namespace rex::memory {
 class Memory;
 }
 
-namespace pgr4::native {
+namespace rexnative {
 
 // Returns the image last resolved to a guest physical address (Resolver::Find), or nullptr.
 using ResolvedLookup = std::function<const ResolvedImage*(uint32_t guest_physical)>;
@@ -94,7 +94,7 @@ class TextureCache {
   // Texture memory budget, by the resources' allocation sizes. Over soft_bytes, textures unused
   // for soft_lifetime_ms are evicted; over hard_bytes, the least recently used ones regardless.
   // Either way only textures no frame in flight uses. Offline
-  // (PGR4_TEXTURES_OFFLINE): unlimited.
+  // (REXNATIVE_TEXTURES_OFFLINE): unlimited.
   struct Budget {
     uint64_t soft_bytes = ~0ull, hard_bytes = ~0ull;
     uint64_t soft_lifetime_ms = 30000;
@@ -106,7 +106,7 @@ class TextureCache {
   // In the game: memory = rex::system::kernel_memory(); textures are read from its physical
   // memory and their pages watched through it.
   TextureCache(ID3D12Device* device, rex::memory::Memory* memory);
-  // Offline (PGR4_TEXTURES_OFFLINE): guest physical memory at physical_membase, no write
+  // Offline (REXNATIVE_TEXTURES_OFFLINE): guest physical memory at physical_membase, no write
   // tracking (a texture uploads once).
   TextureCache(ID3D12Device* device, const uint8_t* physical_membase);
   ~TextureCache();
@@ -336,7 +336,7 @@ class TextureCache {
   } capture_seq_;
   bool capture_order_ = true;
   uint64_t unsupported_logged_ = 0;  // bit per xenos::TextureFormat
-  uint32_t trace_address_ = 0;       // --pgr4_native_texture_trace (0: none)
+  uint32_t trace_address_ = 0;       // --rexnative_texture_trace (0: none)
 
   std::vector<Slot> slots_;  // owns the textures
   std::vector<uint32_t> free_slots_;
@@ -395,4 +395,4 @@ class TextureCache {
   Stats stats_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

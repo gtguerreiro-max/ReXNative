@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: NVIDIA DLSS through the NGX SDK (dlss.h).
+// ReXNative renderer: NVIDIA DLSS through the NGX SDK (dlss.h).
 #include "dlss.h"
 
 #include "log.h"
@@ -22,10 +22,10 @@
 #include <string>
 #include <vector>
 
-REXCVAR_DEFINE_INT32(pgr4_native_ngx_log, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_ngx_log, 1, "ReXNative",
                      "NGX's log in the game's: 0 off, 1 on, 2 verbose (every evaluation)");
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -122,10 +122,10 @@ bool Dlss::Initialize(ID3D12Device* device) {
   device_ = device;
   wchar_t path[MAX_PATH] = L".";
   GetTempPathW(MAX_PATH, path);
-  // NGX's own log in ours (--pgr4_native_ngx_log): DLSS 5's feature creation, its network size and
+  // NGX's own log in ours (--rexnative_ngx_log): DLSS 5's feature creation, its network size and
   // the evaluations it skips are only told there.
   NVSDK_NGX_FeatureCommonInfo info = {};
-  const int32_t log_level = std::clamp(REXCVAR_GET(pgr4_native_ngx_log), 0, 2);
+  const int32_t log_level = std::clamp(REXCVAR_GET(rexnative_ngx_log), 0, 2);
   info.LoggingInfo.LoggingCallback = NgxLog;
   info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_Logging_Level(log_level);
   info.LoggingInfo.DisableOtherLoggingSinks = false;
@@ -133,7 +133,7 @@ bool Dlss::Initialize(ID3D12Device* device) {
       NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", path, device,
                                           log_level > 0 ? &info : nullptr);
   if (NVSDK_NGX_FAILED(r)) {
-    REXLOG_WARN("PGR4 native DLSS: NGX initialization failed ({:08X}): needs an NVIDIA RTX GPU, its driver "
+    REXLOG_WARN("ReXNative DLSS: NGX initialization failed ({:08X}): needs an NVIDIA RTX GPU, its driver "
                 "and nvngx_dlss.dll beside the executable", uint32_t(r));
     return false;
   }
@@ -143,12 +143,12 @@ bool Dlss::Initialize(ID3D12Device* device) {
     NVSDK_NGX_Parameter_GetI(params_, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
   }
   if (!supported) {
-    REXLOG_WARN("PGR4 native DLSS: not available{}", needs_driver ? " (the driver needs an update)" : "");
+    REXLOG_WARN("ReXNative DLSS: not available{}", needs_driver ? " (the driver needs an update)" : "");
     NVSDK_NGX_D3D12_Shutdown1(device_);
     return false;
   }
   available_ = true;
-  REXLOG_INFO("PGR4 native DLSS: ready");
+  REXLOG_INFO("ReXNative DLSS: ready");
   // DLSS 5 Neural Rendering: what NGX answers for this application, used as it is.
   int nr_available = 0, nr_needs_driver = 0, nr_init = 0;
   unsigned int nr_major = 0, nr_minor = 0;
@@ -158,7 +158,7 @@ bool Dlss::Initialize(ID3D12Device* device) {
   NVSDK_NGX_Parameter_GetUI(params_, NVSDK_NGX_Parameter_DLSSNR_MinDriverVersionMinor, &nr_minor);
   NVSDK_NGX_Parameter_GetI(params_, NVSDK_NGX_Parameter_DLSSNR_FeatureInitResult, &nr_init);
   neural_available_ = nr_available != 0;
-  REXLOG_INFO("PGR4 native DLSS 5: available {}, needs driver {} (min {}.{}), init result {:08X}",
+  REXLOG_INFO("ReXNative DLSS 5: available {}, needs driver {} (min {}.{}), init result {:08X}",
               nr_available, nr_needs_driver, nr_major, nr_minor, uint32_t(nr_init));
   return true;
 }
@@ -199,7 +199,7 @@ bool Dlss::EvaluateNeural(ID3D12GraphicsCommandList* list, const NeuralFrame& f,
         NVSDK_NGX_D3D12_CreateFeature(list, NVSDK_NGX_Feature_DLSSNR, params_, &n.handle);
     if (NVSDK_NGX_FAILED(r)) {
       // These settings only (an unsupported preset, say): tried again when they change.
-      REXLOG_ERROR("PGR4 native DLSS 5: create failed ({:08X}) for {}x{}, preset {}", uint32_t(r),
+      REXLOG_ERROR("ReXNative DLSS 5: create failed ({:08X}) for {}x{}, preset {}", uint32_t(r),
                    f.width, f.height, f.settings.preset);
       n.handle = nullptr;
       n.failed = true;
@@ -212,11 +212,11 @@ bool Dlss::EvaluateNeural(ID3D12GraphicsCommandList* list, const NeuralFrame& f,
     n.width = f.width;
     n.height = f.height;
     n.settings = f.settings;
-    REXLOG_INFO("PGR4 native DLSS 5 pass {}: {}x{} (depth and motion {}x{}), style {}, intensity {}, "
+    REXLOG_INFO("ReXNative DLSS 5 pass {}: {}x{} (depth and motion {}x{}), style {}, intensity {}, "
                 "structure {}, tone {}, preset {}", pass + 1, f.width, f.height, f.render_width,
                 f.render_height, f.settings.style, f.settings.intensity, f.settings.structure,
                 f.settings.tone, f.settings.preset);
-    REXLOG_INFO("PGR4 native DLSS 5 pass {}: skin auto mask {}", pass + 1,
+    REXLOG_INFO("ReXNative DLSS 5 pass {}: skin auto mask {}", pass + 1,
                 f.settings.automask == 0 ? "off" : f.settings.automask == 1 ? "min" : "none");
   }
   NVSDK_NGX_Parameter* p = params_;
@@ -264,7 +264,7 @@ bool Dlss::EvaluateNeural(ID3D12GraphicsCommandList* list, const NeuralFrame& f,
   // colour (DLAA's output, or the finished image) is not jittered.
   const NVSDK_NGX_Result r = NVSDK_NGX_D3D12_EvaluateFeature(list, n.handle, p, nullptr);
   if (NVSDK_NGX_FAILED(r)) {
-    PGR4_LOG_FIRST(3, ERROR, "PGR4 native DLSS 5: evaluate failed ({:08X})", uint32_t(r));
+    REXNATIVE_LOG_FIRST(3, ERROR, "ReXNative DLSS 5: evaluate failed ({:08X})", uint32_t(r));
     return false;
   }
   return true;
@@ -303,14 +303,14 @@ bool Dlss::Evaluate(ID3D12GraphicsCommandList* list, const Setup& setup, const F
                                   (setup.hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0);
     const NVSDK_NGX_Result r = NGX_D3D12_CREATE_DLSS_EXT(list, 1, 1, &feature_, params_, &create);
     if (NVSDK_NGX_FAILED(r)) {
-      REXLOG_ERROR("PGR4 native DLSS: create failed ({:08X}) for {}x{} -> {}x{}", uint32_t(r), setup.render_width,
+      REXLOG_ERROR("ReXNative DLSS: create failed ({:08X}) for {}x{} -> {}x{}", uint32_t(r), setup.render_width,
                    setup.render_height, setup.output_width, setup.output_height);
       feature_ = nullptr;
       available_ = false;
       return false;
     }
     current_ = setup;
-    REXLOG_INFO("PGR4 native DLSS: {} {}x{} -> {}x{}", Name(setup.mode), setup.render_width, setup.render_height,
+    REXLOG_INFO("ReXNative DLSS: {} {}x{} -> {}x{}", Name(setup.mode), setup.render_width, setup.render_height,
                 setup.output_width, setup.output_height);
   }
   NVSDK_NGX_D3D12_DLSS_Eval_Params eval{};
@@ -327,10 +327,10 @@ bool Dlss::Evaluate(ID3D12GraphicsCommandList* list, const Setup& setup, const F
   eval.InFrameTimeDeltaInMsec = frame.frame_ms;
   const NVSDK_NGX_Result r = NGX_D3D12_EVALUATE_DLSS_EXT(list, feature_, params_, &eval);
   if (NVSDK_NGX_FAILED(r)) {
-    PGR4_LOG_FIRST(3, ERROR, "PGR4 native DLSS: evaluate failed ({:08X})", uint32_t(r));
+    REXNATIVE_LOG_FIRST(3, ERROR, "ReXNative DLSS: evaluate failed ({:08X})", uint32_t(r));
     return false;
   }
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

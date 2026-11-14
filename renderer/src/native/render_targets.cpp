@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: host render targets and Clear. See render_targets.h for the
+// ReXNative renderer: host render targets and Clear. See render_targets.h for the
 // model (one host target per guest surface, no EDRAM emulation).
 #include "render_targets.h"
 
@@ -15,7 +15,7 @@
 #include <cstring>
 #include <utility>
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 namespace xenos = rex::graphics::xenos;
@@ -287,14 +287,14 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
   // read it then.
   const uint32_t view_index = AllocView(rt->depth);
   if (view_index == UINT32_MAX) {
-    REXLOG_ERROR("PGR4 native RT: out of {} views", rt->depth ? "depth" : "color");
+    REXLOG_ERROR("ReXNative RT: out of {} views", rt->depth ? "depth" : "color");
     return false;
   }
   ComPtr<ID3D12Resource> res;
   HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, initial, nullptr,
                                                 IID_PPV_ARGS(&res));
   if (FAILED(hr)) {
-    REXLOG_ERROR("PGR4 native RT: CreateCommittedResource {}x{} fmt {} x{} failed: {:08X}", d.Width,
+    REXLOG_ERROR("ReXNative RT: CreateCommittedResource {}x{} fmt {} x{} failed: {:08X}", d.Width,
                  d.Height, int(d.Format), rt->samples, uint32_t(hr));
     (rt->depth ? free_dsv_ : free_rtv_).push_back(view_index);
     return false;
@@ -356,7 +356,7 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
     guest_format = (info >> 16) & 0xF;
     view = ColorFormat(guest_format);
     if (view == DXGI_FORMAT_UNKNOWN) {
-      PGR4_LOG_FIRST(8, WARN, "PGR4 native RT: unsupported color format {}", guest_format);
+      REXNATIVE_LOG_FIRST(8, WARN, "ReXNative RT: unsupported color format {}", guest_format);
       return nullptr;
     }
     resource = srv = view;
@@ -404,7 +404,7 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
     if (std::min(height, kMaxHeight) > rt->height) {
       // Taller than anything this surface had: a new, taller target. The old content is lost
       // (not seen in PGR4's traces: every surface is created at its EDRAM height or more).
-      REXLOG_WARN("PGR4 native RT: growing {} base {} pitch {} x{} from {} to {} rows",
+      REXLOG_WARN("ReXNative RT: growing {} base {} pitch {} x{} from {} to {} rows",
                   depth ? "depth" : "color", base, pitch, samples, rt->height, want);
       if (!Create(rt, want)) return nullptr;
     }
@@ -710,18 +710,18 @@ void RenderTargets::SyncEdram(CommandStream* list, RenderTarget* rt) {
   for (const EdramFill& f : fills_) {
     if (f.seq <= since || f.first_tile() >= end || f.end_tile() <= g.base) continue;
     if (f.format != format) {
-      PGR4_LOG_FIRST(
+      REXNATIVE_LOG_FIRST(
           4, INFO,
-          "PGR4 native RT: EDRAM fill of format {} at tile {} not applied to format {} at base {}",
+          "ReXNative RT: EDRAM fill of format {} at tile {} not applied to format {} at base {}",
           f.format, f.base, format, g.base);
       continue;
     }
     GridSpan spans[3];
     const int32_t n = MapSpan(f.base, f.pitch, {f.x0, f.x1, f.y0, f.y1}, g, spans);
     if (n < 0) {
-      PGR4_LOG_FIRST(
+      REXNATIVE_LOG_FIRST(
           4, INFO,
-          "PGR4 native RT: EDRAM fill at tile {} pitch {} ({}x{} dwords x rows) does not map onto "
+          "ReXNative RT: EDRAM fill at tile {} pitch {} ({}x{} dwords x rows) does not map onto "
           "base {} pitch {}",
           f.base, f.pitch, f.x1 - f.x0, f.y1 - f.y0, g.base, g.pitch);
       continue;
@@ -752,8 +752,8 @@ void RenderTargets::SyncEdram(CommandStream* list, RenderTarget* rt) {
                    (unsigned long long)f.seq, f.base, f.pitch, f.color[0], f.color[1], f.color[2],
                    f.color[3], g.base, g.pitch, rt->samples, rects[0].top, rects[nr - 1].bottom,
                    nr);
-    PGR4_LOG_FIRST(4, INFO,
-                   "PGR4 native RT: EDRAM fill at tile {} pitch {} (alpha {}) applied to base {} "
+    REXNATIVE_LOG_FIRST(4, INFO,
+                   "ReXNative RT: EDRAM fill at tile {} pitch {} (alpha {}) applied to base {} "
                    "pitch {} x{} rows {}-{}",
                    f.base, f.pitch, f.color[3], g.base, g.pitch, rt->samples, rects[0].top,
                    rects[nr - 1].bottom);
@@ -789,4 +789,4 @@ void RenderTargets::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t co
   }
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer (this port): DLSS 5 on the HDR scene, right after DLAA. See
+// ReXNative renderer: DLSS 5 on the HDR scene, right after DLAA. See
 // neural.h.
 //
 // The community's OptiScaler DLSS 5 forks (Dagherbou's module and the Skynizz, janblade and
@@ -32,45 +32,45 @@
 #include <cmath>
 #include <memory>
 
-REXCVAR_DECLARE(bool, pgr4_native_dlss5_paused);
-REXCVAR_DECLARE(bool, pgr4_native_dlss5_menus);
-REXCVAR_DECLARE(bool, pgr4_native_dlss5_compare);
-REXCVAR_DECLARE(int32_t, pgr4_native_dlss5_split);
-REXCVAR_DECLARE(double, pgr4_native_dlss5_max_ratio);
-REXCVAR_DECLARE(double, pgr4_native_dlss5_scale);
+REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
+REXCVAR_DECLARE(bool, rexnative_dlss5_menus);
+REXCVAR_DECLARE(bool, rexnative_dlss5_compare);
+REXCVAR_DECLARE(int32_t, rexnative_dlss5_split);
+REXCVAR_DECLARE(double, rexnative_dlss5_max_ratio);
+REXCVAR_DECLARE(double, rexnative_dlss5_scale);
 
-REXCVAR_DEFINE_STRING(pgr4_native_dlss5_stage, "scene", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_dlss5_stage, "scene", "ReXNative",
                       "Where DLSS 5 runs: scene (the HDR scene right after DLAA, before the game's "
                       "exposure, bloom, motion blur and tone mapping, as the community's "
                       "OptiScaler forks run it) or front (the finished image before the HUD)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_white, 0.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_white, 0.0, "ReXNative",
                       "DLSS 5 at the scene: the scene's white point for its SDR encode (0: metered "
                       "from the scene, the Skynizz fork's automatic white point)");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_view, 0, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss5_view, 0, "ReXNative",
                      "DLSS 5 at the scene, diagnostic: 0 the composition, 1 the model's raw output "
                      "(not stabilised), 2 its input (the encode alone)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_stability, 0.5, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_stability, 0.5, "ReXNative",
                       "DLSS 5 at the scene: how much of the previous frame's change each frame "
                       "keeps, reprojected and rejected on disocclusions (0-0.95; the model's own "
                       "output flickers from frame to frame)");
-REXCVAR_DEFINE_BOOL(pgr4_native_dlss5_log_white, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dlss5_log_white, false, "ReXNative",
                     "DLSS 5 at the scene, diagnostic: log the metered white point every 120 frames");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_meter_up, 0.8, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_meter_up, 0.8, "ReXNative",
                       "DLSS 5 at the scene: the white point meter's time constant (seconds) when "
                       "the scene brightens (the Skynizz meter: 0.8)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_meter_down, 1.6, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_meter_down, 1.6, "ReXNative",
                       "DLSS 5 at the scene: the meter's time constant (seconds) when it darkens");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_meter_band, 0.4, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_meter_band, 0.4, "ReXNative",
                       "DLSS 5 at the scene: the meter's dead band (stops): changes smaller than "
                       "this leave the white point as it is");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_transfer, 1.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_transfer, 1.0, "ReXNative",
                       "DLSS 5 at the scene: how much of the model's lighting is taken (the forks' "
                       "TransferStrength, 0-2)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_colour, 1.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_colour, 1.0, "ReXNative",
                       "DLSS 5 at the scene: 0 keeps the game's hue, 1 takes the model's (the "
                       "forks' ColourStrength)");
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -336,7 +336,7 @@ static_assert(sizeof(SceneConstants) == 64);
 
 }  // namespace
 
-bool NeuralPass::SceneStage() { return REXCVAR_GET(pgr4_native_dlss5_stage) != "front"; }
+bool NeuralPass::SceneStage() { return REXCVAR_GET(rexnative_dlss5_stage) != "front"; }
 
 bool NeuralPass::CreateScenePasses() {
   if (scene_compose_pso_) return true;
@@ -383,7 +383,7 @@ bool NeuralPass::CreateScenePasses() {
     return false;
   scene_stride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   const pD3DCompile compile = D3DCompiler();
-  constexpr char kName[] = "pgr4_dlss5_scene.hlsl";
+  constexpr char kName[] = "rexnative_dlss5_scene.hlsl";
   // std::addressof: ComPtr's operator& is its own.
   ComPtr<ID3D12PipelineState>* psos[] = {std::addressof(scene_meter_pso_),
                                          std::addressof(scene_exposure_pso_),
@@ -397,7 +397,7 @@ bool NeuralPass::CreateScenePasses() {
     if (!compile ||
         FAILED(compile(kSceneHlsl, sizeof(kSceneHlsl) - 1, kName, nullptr, nullptr, entries[i],
                        "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &error))) {
-      REXLOG_ERROR("PGR4 native DLSS 5: {} {}: {}", kName, entries[i],
+      REXLOG_ERROR("ReXNative DLSS 5: {} {}: {}", kName, entries[i],
                    error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
       return false;
     }
@@ -561,14 +561,14 @@ void NeuralPass::SceneDispatch(CommandStream* list, uint64_t frame, uint32_t tab
 }
 
 bool NeuralPass::SceneWanted(const Dlss& dlss) {
-  if (!SceneStage() || !dlss.neural_available() || REXCVAR_GET(pgr4_native_dlss5_paused))
+  if (!SceneStage() || !dlss.neural_available() || REXCVAR_GET(rexnative_dlss5_paused))
     return false;
   const bool racing = CarsSimulated();
   if (racing != scene_racing_) {
     scene_racing_ = racing;
-    REXLOG_INFO("PGR4 native DLSS 5 (scene): {}", racing ? "the player drives" : "the front end");
+    REXLOG_INFO("ReXNative DLSS 5 (scene): {}", racing ? "the player drives" : "the front end");
   }
-  return racing || REXCVAR_GET(pgr4_native_dlss5_menus);
+  return racing || REXCVAR_GET(rexnative_dlss5_menus);
 }
 
 bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, RenderTarget* scene,
@@ -581,10 +581,10 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   std::erase_if(retired_, [frame](const auto& r) {
     return r.first + D3D12Device::kFramesInFlight + 2 < frame;
   });
-  // The model's working size (--pgr4_native_dlss5_scale, the forks' WorkingScale; its cost falls
+  // The model's working size (--rexnative_dlss5_scale, the forks' WorkingScale; its cost falls
   // with the square); the comparison split needs the full one.
-  const int32_t split = REXCVAR_GET(pgr4_native_dlss5_split);
-  double work_scale = std::clamp(REXCVAR_GET(pgr4_native_dlss5_scale), 0.5, 1.0);
+  const int32_t split = REXCVAR_GET(rexnative_dlss5_split);
+  double work_scale = std::clamp(REXCVAR_GET(rexnative_dlss5_scale), 0.5, 1.0);
   if (split == 2) work_scale = 1.0;
   uint32_t work_width = width, work_height = height;
   if (work_scale < 0.999) {
@@ -596,10 +596,10 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     return false;
   if (!scene_logged_) {
     scene_logged_ = true;
-    REXLOG_INFO("PGR4 native DLSS 5 (scene): on the HDR scene after DLAA, {}x{}, the model at "
+    REXLOG_INFO("ReXNative DLSS 5 (scene): on the HDR scene after DLAA, {}x{}, the model at "
                 "{}x{} (depth and motion {}x{}), white point {}", width, height, work_width,
                 work_height, in.render_width, in.render_height,
-                REXCVAR_GET(pgr4_native_dlss5_white) > 0.0 ? "fixed" : "metered");
+                REXCVAR_GET(rexnative_dlss5_white) > 0.0 ? "fixed" : "metered");
   }
 
   Dlss::NeuralFrame nf;
@@ -613,23 +613,23 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   c.size[0] = width;
   c.size[1] = height;
   // 0 (or less): no clamp, the change as the model made it.
-  const double max_ratio = REXCVAR_GET(pgr4_native_dlss5_max_ratio);
+  const double max_ratio = REXCVAR_GET(rexnative_dlss5_max_ratio);
   c.max_ratio = max_ratio <= 0.0 ? 0.0f : float(std::clamp(max_ratio, 1.0, 16.0));
-  c.transfer = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_transfer), 0.0, 2.0));
-  c.colour = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_colour), 0.0, 1.0));
-  c.white_fixed = float(std::max(REXCVAR_GET(pgr4_native_dlss5_white), 0.0));
+  c.transfer = float(std::clamp(REXCVAR_GET(rexnative_dlss5_transfer), 0.0, 2.0));
+  c.colour = float(std::clamp(REXCVAR_GET(rexnative_dlss5_colour), 0.0, 1.0));
+  c.white_fixed = float(std::max(REXCVAR_GET(rexnative_dlss5_white), 0.0));
   c.dt = std::clamp(in.frame_ms * 0.001f, 0.0f, 0.25f);
   c.flags = (split == 1 ? 1u : 0u) | (gap ? 2u : 0u) |
-            (REXCVAR_GET(pgr4_native_dlss5_view) == 1 ? 4u : 0u) |
-            (REXCVAR_GET(pgr4_native_dlss5_view) == 2 ? 8u : 0u) | (split == 2 ? 16u : 0u);
+            (REXCVAR_GET(rexnative_dlss5_view) == 1 ? 4u : 0u) |
+            (REXCVAR_GET(rexnative_dlss5_view) == 2 ? 8u : 0u) | (split == 2 ? 16u : 0u);
   c.work[0] = work_width;
   c.work[1] = work_height;
   c.render[0] = in.render_width;
   c.render[1] = in.render_height;
-  c.tau_up = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_meter_up), 0.05, 60.0));
-  c.tau_down = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_meter_down), 0.05, 60.0));
-  c.dead_band = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_meter_band), 0.0, 4.0));
-  c.stability = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_stability), 0.0, 0.95));
+  c.tau_up = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_up), 0.05, 60.0));
+  c.tau_down = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_down), 0.05, 60.0));
+  c.dead_band = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_band), 0.0, 4.0));
+  c.stability = float(std::clamp(REXCVAR_GET(rexnative_dlss5_stability), 0.0, 0.95));
 
   D3D12_RESOURCE_BARRIER bs[4];
   uint32_t nb = 0;
@@ -746,8 +746,8 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
                   "DLSS 5 exposure readback") &&
           SUCCEEDED(scene_readback_->Map(0, nullptr, &p)))
         scene_readback_data_ = static_cast<const float*>(p);
-    } else if (scene_readback_data_ && REXCVAR_GET(pgr4_native_dlss5_log_white)) {
-      REXLOG_INFO("PGR4 native DLSS 5 (scene): white point {:.4f} (log2 {:.2f}) at frame {}, {} "
+    } else if (scene_readback_data_ && REXCVAR_GET(rexnative_dlss5_log_white)) {
+      REXLOG_INFO("ReXNative DLSS 5 (scene): white point {:.4f} (log2 {:.2f}) at frame {}, {} "
                   "history resets since the last line", scene_readback_data_[4],
                   scene_readback_data_[0], frame - 120, scene_resets_);
       scene_resets_ = 0;
@@ -787,7 +787,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
 
   // Compare mode: the frames not shown keep the scene as DLAA made it (the model still ran, for
   // its history).
-  if (REXCVAR_GET(pgr4_native_dlss5_compare) && !((frame >> 1) & 1)) return true;
+  if (REXCVAR_GET(rexnative_dlss5_compare) && !((frame >> 1) & 1)) return true;
 
   to(scene_composed_.Get(), &scene_composed_state_, kUav);
   flush();
@@ -811,4 +811,4 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

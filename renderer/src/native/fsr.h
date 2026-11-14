@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class CommandStream;
 
@@ -48,4 +48,4 @@ class Fsr1 {
   D3D12_GPU_DESCRIPTOR_HANDLE Srv(uint32_t i) const;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

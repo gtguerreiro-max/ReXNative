@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest Resolve -> host texture copies.
+// ReXNative renderer: guest Resolve -> host texture copies.
 //
 // A guest Resolve(Flags, pSourceRect, pDestTexture, pDestPoint, DestLevel, DestSliceOrFace,
 // pClearColor, ClearZ, ClearStencil, pParameters) copies a rectangle of a render target
@@ -21,14 +21,14 @@
 // DecodeResolve also compares the decoded copy registers with the ones the D3D wrote into its
 // register shadow and logs mismatches.
 //
-// Oracle dumps (--pgr4_native_resolve_dump=<dir>, resolve_debug.cpp, with the self test):
+// Oracle dumps (--rexnative_resolve_dump=<dir>, resolve_debug.cpp, with the self test):
 // creating <dir>\dump.request arms a dump of the next frame's resolves: for each, the native
 // texels (`f<F>-r<i>-native.bin`, tight rows), the guest memory Xenos wrote at the same address
 // in the same frame (`-guest.bin`, tiled, big-endian; read in AfterSwap with the plugin on full
 // readback, see HoldFullReadback), and one JSON line in `f<F>-resolves.jsonl`. When a frame
 // resolves twice into one address, every entry's guest copy is the last write.
 // tools/compare_resolves.py untiles and compares them. AfterSwap's wait holds the guest only
-// when frames are recorded on the guest thread, so dumps need --pgr4_native_render_thread off.
+// when frames are recorded on the guest thread, so dumps need --rexnative_render_thread off.
 //
 // Pipeline state: Resolve sets its own compute root signature, PSO and shader-visible
 // descriptor heap on the command list; callers that draw afterwards must set theirs again.
@@ -44,7 +44,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class GpuTimer;
 class Upscaler;
@@ -65,7 +65,7 @@ struct ResolvedImage {
   // size and state as `texture`; nullptr otherwise.
   ID3D12Resource* linear = nullptr;
   uint64_t seq = 0;  // increases with every write (global resolve counter)
-  // This port: host texels per guest texel (--pgr4_native_resolution_scale for the screen-sized
+  // This port: host texels per guest texel (--rexnative_resolution_scale for the screen-sized
   // surfaces' resolves); the textures are width x height times it.
   uint32_t scale = 1;
 };
@@ -120,14 +120,14 @@ class Resolver {
   Resolver();
   ~Resolver();
 
-  // `queue` runs SelfTest at start when --pgr4_native_resolve_selftest is set.
+  // `queue` runs SelfTest at start when --rexnative_resolve_selftest is set.
   bool Initialize(ID3D12Device* device, RenderTargets* targets, ID3D12CommandQueue* queue);
 
   // Once per frame before recording it, like RenderTargets::BeginFrame (handles dumps too).
   // On the frame-recording thread, as are AfterSwap and Resolve.
   void BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t completed_fence);
 
-  // After the swap's EndFrame: for a dumped frame, sleeps --pgr4_native_capture_hold_ms so the
+  // After the swap's EndFrame: for a dumped frame, sleeps --rexnative_capture_hold_ms so the
   // Xenos plugin can execute the frame, then copies the guest memory of its resolves. That
   // sleep holds the guest only when frames are recorded on the guest thread: with the render
   // thread (the default) the guest runs on and the copies may hold a later frame.
@@ -158,7 +158,7 @@ class Resolver {
   // Clears host targets of the formats PGR4 resolves from (8888, 7e3, 16F, 32F, D24FS8/D24S8;
   // 1x/2x/4x) to known values, resolves them into the destination formats PGR4 uses on its own
   // command list, and checks the read-back texels against hand-computed Xenos encodings. Logs
-  // each case; returns true when all pass. Initialize runs it with --pgr4_native_resolve_selftest.
+  // each case; returns true when all pass. Initialize runs it with --rexnative_resolve_selftest.
   bool SelfTest(ID3D12CommandQueue* queue);
 
  private:
@@ -220,4 +220,4 @@ class Resolver {
   Upscaler* upscaler_ = nullptr;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

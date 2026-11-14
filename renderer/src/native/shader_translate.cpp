@@ -34,7 +34,7 @@ const int8_t kD3D10StandardSamplePositions2x[2][2] = {{4, 4}, {-4, -4}};
 const int8_t kD3D10StandardSamplePositions4x[4][2] = {{-2, -6}, {6, -2}, {-6, 2}, {2, 6}};
 }  // namespace rex::graphics::draw_util
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace reg = rex::graphics::reg;
 namespace xenos = rex::graphics::xenos;
@@ -255,4 +255,4 @@ ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(ID3D12Device* device, ui
   return Create(device, desc, blob_hash);
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

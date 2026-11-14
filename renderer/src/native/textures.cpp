@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: texture cache (see textures.h).
+// ReXNative renderer: texture cache (see textures.h).
 #include "textures.h"
 
 #include "clock.h"
@@ -6,7 +6,7 @@
 
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
-#ifdef PGR4_TEXTURES_OFFLINE
+#ifdef REXNATIVE_TEXTURES_OFFLINE
 // Offline build, outside the game: no ReXGlue runtime, no write tracking.
 #include <fmt/format.h>
 #include <cstdio>
@@ -22,15 +22,15 @@
 
 #include "log.h"
 
-REXCVAR_DEFINE_STRING(pgr4_native_texture_trace, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_texture_trace, "", "ReXNative",
                       "Log every TextureCache::Get of the texture at this guest physical address "
                       "(hex): dirty upload, resolved image seq, copy");
-REXCVAR_DEFINE_INT32(pgr4_native_texture_memory_soft_mb, 512, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_texture_memory_soft_mb, 512, "ReXNative",
                      "Texture memory above which textures unused for "
-                     "--pgr4_native_texture_memory_soft_lifetime_s are evicted (0: no limit)");
-REXCVAR_DEFINE_INT32(pgr4_native_texture_memory_soft_lifetime_s, 30, "PGR4 native",
-                     "See --pgr4_native_texture_memory_soft_mb");
-REXCVAR_DEFINE_INT32(pgr4_native_texture_memory_hard_mb, 1024, "PGR4 native",
+                     "--rexnative_texture_memory_soft_lifetime_s are evicted (0: no limit)");
+REXCVAR_DEFINE_INT32(rexnative_texture_memory_soft_lifetime_s, 30, "ReXNative",
+                     "See --rexnative_texture_memory_soft_mb");
+REXCVAR_DEFINE_INT32(rexnative_texture_memory_hard_mb, 1024, "ReXNative",
                      "Texture memory above which the least recently used textures are evicted, "
                      "once no frame in flight uses them (0: no limit)");
 #endif
@@ -40,7 +40,7 @@ REXCVAR_DEFINE_INT32(pgr4_native_texture_memory_hard_mb, 1024, "PGR4 native",
 #include <cstring>
 #include <string_view>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
@@ -169,22 +169,22 @@ TextureCache::TextureCache(ID3D12Device* device, const uint8_t* physical_membase
                                              sizeof(options8)))) {
     unaligned_bc_supported_ = options8.UnalignedBlockTexturesSupported;
   }
-  REXLOG_INFO("PGR4 native textures: cache up (unaligned BC textures {})",
+  REXLOG_INFO("ReXNative textures: cache up (unaligned BC textures {})",
               unaligned_bc_supported_ ? "supported" : "not supported");
 }
 
-#ifndef PGR4_TEXTURES_OFFLINE
+#ifndef REXNATIVE_TEXTURES_OFFLINE
 TextureCache::TextureCache(ID3D12Device* device, rex::memory::Memory* memory)
     : TextureCache(device, memory->physical_membase()) {
   memory_ = memory;
   invalidation_handle_ =
       memory_->RegisterPhysicalMemoryInvalidationCallback(InvalidationThunk, this);
   auto limit = [](int32_t mb) { return mb > 0 ? uint64_t(mb) << 20 : ~0ull; };
-  budget_.soft_bytes = limit(REXCVAR_GET(pgr4_native_texture_memory_soft_mb));
-  budget_.hard_bytes = limit(REXCVAR_GET(pgr4_native_texture_memory_hard_mb));
+  budget_.soft_bytes = limit(REXCVAR_GET(rexnative_texture_memory_soft_mb));
+  budget_.hard_bytes = limit(REXCVAR_GET(rexnative_texture_memory_hard_mb));
   budget_.soft_lifetime_ms =
-      uint64_t(std::max(REXCVAR_GET(pgr4_native_texture_memory_soft_lifetime_s), 0)) * 1000;
-  std::string_view trace = REXCVAR_GET(pgr4_native_texture_trace);
+      uint64_t(std::max(REXCVAR_GET(rexnative_texture_memory_soft_lifetime_s), 0)) * 1000;
+  std::string_view trace = REXCVAR_GET(rexnative_texture_trace);
   if (trace.starts_with("0x") || trace.starts_with("0X")) trace.remove_prefix(2);
   std::from_chars(trace.data(), trace.data() + trace.size(), trace_address_, 16);
   // A quarter of the hardware threads, 1-4: 4 on an i9-13900K, 2 on a Steam Deck.
@@ -203,14 +203,14 @@ TextureCache::~TextureCache() {
   }
   jobs_cv_.notify_all();
   for (std::thread& w : workers_) w.join();  // after the queued jobs ran
-#ifndef PGR4_TEXTURES_OFFLINE
+#ifndef REXNATIVE_TEXTURES_OFFLINE
   if (invalidation_handle_)
     memory_->UnregisterPhysicalMemoryInvalidationCallback(invalidation_handle_);
 #endif
 }
 
 void TextureCache::WorkerMain(UploadList* uploads) {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native untile");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative untile");
   std::vector<uint8_t> scratch;
   std::unique_lock<std::mutex> lock(jobs_mutex_);
   for (;;) {
@@ -248,9 +248,9 @@ uint64_t TextureCache::RunUntile(const UntileJob& job, std::vector<uint8_t>* scr
   const uint64_t ns = NowNs() - t0;
   if (ns > 500000) {
     const TextureKey& key = job.key;
-    PGR4_LOG_FIRST(
+    REXNATIVE_LOG_FIRST(
         40, INFO,
-        "PGR4 native textures: slow upload #{} of {:08X} {}x{}x{} {} dim{} tiled{} endian{} "
+        "ReXNative textures: slow upload #{} of {:08X} {}x{}x{} {} dim{} tiled{} endian{} "
         "mips{} packed{} conv{}: host {} B, guest base {} B mips {} B, untile {} us",
         job.upload_number, key.base_page << 12, key.width, key.height, key.depth_or_array_size,
         rex::graphics::FormatInfo::Get(key.format)->name, uint32_t(key.dimension),
@@ -267,7 +267,7 @@ bool TextureCache::ClampRange(uint32_t start, uint32_t length, uint32_t* end) {
 }
 
 void TextureCache::ArmWatches(const TextureKey& key, uint32_t base_bytes, uint32_t mips_bytes) {
-#ifndef PGR4_TEXTURES_OFFLINE
+#ifndef REXNATIVE_TEXTURES_OFFLINE
   if (!memory_) return;
   const uint32_t base = key.base_page << 12, mips = key.mip_page << 12;
   // Mips from the page after the base's last: one protection change for both.
@@ -432,8 +432,8 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
   const rex::graphics::FormatInfo* info = rex::graphics::FormatInfo::Get(key.format);
   bool unaligned = (key.width % info->block_width) || (key.height % info->block_height);
   if (host.block_compressed && unaligned && !unaligned_bc_supported_) {
-    PGR4_WARN_ONCE(
-        "PGR4 native textures: {}x{} {} needs decompression (no unaligned BC support); "
+    REXNATIVE_WARN_ONCE(
+        "ReXNative textures: {}x{} {} needs decompression (no unaligned BC support); "
         "not supported (logged once)",
         key.width, key.height, info->name);
     t.failed = true;
@@ -457,8 +457,8 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
         D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     HRESULT hr = CreateTextureResource(desc, small_placement, &t.resource, &t.placed, &t.bytes);
     if (FAILED(hr)) {
-      PGR4_LOG_FIRST(1, ERROR,
-                     "PGR4 native textures: texture resource {}x{}x{} {} failed: {:08X} (logged "
+      REXNATIVE_LOG_FIRST(1, ERROR,
+                     "ReXNative textures: texture resource {}x{}x{} {} failed: {:08X} (logged "
                      "once)",
                      key.width, key.height, key.depth_or_array_size, info->name, uint32_t(hr));
       t.failed = true;
@@ -527,7 +527,7 @@ void TextureCache::EvictOverBudget(uint64_t completed_fence) {
   if (evict_batch_.empty()) return;
   if (!stats_.evicted)
     REXLOG_INFO(
-        "PGR4 native textures: {} MB in {} textures, over the budget (soft {} MB for {} s "
+        "ReXNative textures: {} MB in {} textures, over the budget (soft {} MB for {} s "
         "unused, hard {} MB): evicting",
         resident_bytes_ >> 20, textures_.size(), budget_.soft_bytes >> 20,
         budget_.soft_lifetime_ms / 1000, budget_.hard_bytes >> 20);
@@ -594,11 +594,11 @@ bool TextureCache::AddHeap() {
   ComPtr<ID3D12Heap> heap = spare_heap_.get();
   const uint64_t wait_ns = NowNs() - t0;
   if (wait_ns >= 1000000)
-    REXLOG_INFO("PGR4 native textures: waited {:.1f} ms for texture heap {}", wait_ns / 1e6,
+    REXLOG_INFO("ReXNative textures: waited {:.1f} ms for texture heap {}", wait_ns / 1e6,
                 heaps_.size() + 1);
   if (!heap) {
     heap_failed_ = true;
-    PGR4_WARN_ONCE("PGR4 native textures: heap creation failed; committed textures");
+    REXNATIVE_WARN_ONCE("ReXNative textures: heap creation failed; committed textures");
     return false;
   }
   AddFreeRange(heaps_.size() * kTextureHeapSize, kTextureHeapSize);
@@ -655,7 +655,7 @@ void TextureCache::StartSpareHeap() {
     hd.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     ComPtr<ID3D12Heap> heap;
     if (FAILED(device->CreateHeap(&hd, IID_PPV_ARGS(&heap)))) return ComPtr<ID3D12Heap>();
-    REXLOG_INFO("PGR4 native textures: texture heap {} created in {:.1f} ms (background)", n,
+    REXLOG_INFO("ReXNative textures: texture heap {} created in {:.1f} ms (background)", n,
                 (NowNs() - t0) / 1e6);
     return heap;
   });
@@ -819,7 +819,7 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
       ++stats_.resolved_copies;
     } else {
       // An image at the resolution scale: the guest-sized resource cannot take it whole.
-      PGR4_LOG_FIRST(8, WARN, "PGR4 native textures: {}x{} texture leaves a {}x{} resolved image "
+      REXNATIVE_LOG_FIRST(8, WARN, "ReXNative textures: {}x{} texture leaves a {}x{} resolved image "
                      "without its texels", key.width, key.height, ad.Width, ad.Height);
     }
     SetAlias(t, nullptr);
@@ -837,7 +837,7 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
     if (image->scale > 1) {
       // This port: a scaled image into a guest-sized subresource (a mip level, a cube face):
       // a plain copy would take its top-left part. Not seen in PGR4's screen-sized resolves.
-      PGR4_LOG_FIRST(8, WARN, "PGR4 native textures: {}x{} texture (level {} of {}) takes a "
+      REXNATIVE_LOG_FIRST(8, WARN, "ReXNative textures: {}x{} texture (level {} of {}) takes a "
                      "resolved image at {}x; skipped", key.width, key.height,
                      uint32_t(index % key.mip_levels()), key.mip_levels(), image->scale);
       return;
@@ -897,7 +897,7 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
       const uint64_t bit = uint64_t(1) << (uint32_t(key.format) & 63);
       if (!(unsupported_logged_ & bit)) {
         unsupported_logged_ |= bit;
-        REXLOG_WARN("PGR4 native textures: unsupported format {} (first {}x{} at {:08X})",
+        REXLOG_WARN("ReXNative textures: unsupported format {} (first {}x{} at {:08X})",
                     rex::graphics::FormatInfo::Get(key.format)->name, key.width, key.height,
                     key.base_page << 12);
       }
@@ -917,8 +917,8 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
   // Logged at its 1st, 256th, 512th, 1024th... stale Get.
   if (stale &&
       (++t->stale_gets == 1 || (t->stale_gets >= 256 && !(t->stale_gets & (t->stale_gets - 1))))) {
-    PGR4_LOG_FIRST(96, INFO,
-                   "PGR4 native textures: {:08X} {}x{}x{} {} mips {} rewritten after a draw that "
+    REXNATIVE_LOG_FIRST(96, INFO,
+                   "ReXNative textures: {:08X} {}x{}x{} {} mips {} rewritten after a draw that "
                    "reads it was queued: {} times (upload {}, get {})",
                    key.base_page << 12, key.width, key.height, key.depth_or_array_size,
                    rex::graphics::FormatInfo::Get(key.format)->name, key.mip_levels(),
@@ -930,7 +930,7 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
     stats_.upload_ns += NowNs() - u0;
     if (!uploaded) return false;
   }
-#ifndef PGR4_TEXTURES_OFFLINE
+#ifndef REXNATIVE_TEXTURES_OFFLINE
   const uint64_t seq_before = t->resolved_seq.empty() ? 0 : t->resolved_seq[0];
 #endif
   // CopyResolved only changes anything after an Upload or a resolve into one of the texture's
@@ -943,11 +943,11 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
     }
     t->resolve_pending = false;
   }
-#ifndef PGR4_TEXTURES_OFFLINE
+#ifndef REXNATIVE_TEXTURES_OFFLINE
   if (trace_address_ && (key.base_page << 12) == trace_address_) [[unlikely]] {
     const ResolvedImage* image = resolved_lookup_ ? resolved_lookup_(trace_address_) : nullptr;
     REXLOG_INFO(
-        "PGR4 native texture trace {:08X} {}x{} fmt{}: get #{} dirty_upload={} image_seq={} "
+        "ReXNative texture trace {:08X} {}x{} fmt{}: get #{} dirty_upload={} image_seq={} "
         "level0_seq {} -> {} image_fmt={} image_size={}x{}",
         trace_address_, key.width, key.height, uint32_t(key.format), stats_.gets, was_dirty,
         image ? image->seq : 0, seq_before, t->resolved_seq.empty() ? 0 : t->resolved_seq[0],
@@ -1053,7 +1053,7 @@ ID3D12GraphicsCommandList* TextureCache::OpenUploadList(UploadList* uploads, uin
                                            IID_PPV_ARGS(u.allocator.GetAddressOf()));
     }
     if (FAILED(hr)) {
-      REXLOG_ERROR("PGR4 native textures: upload list allocator failed: {:08X}", uint32_t(hr));
+      REXLOG_ERROR("ReXNative textures: upload list allocator failed: {:08X}", uint32_t(hr));
       u.allocator.Reset();
       return nullptr;
     }
@@ -1066,10 +1066,10 @@ ID3D12GraphicsCommandList* TextureCache::OpenUploadList(UploadList* uploads, uin
   } else {
     hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, u.allocator.Get(), nullptr,
                                     IID_PPV_ARGS(u.list.GetAddressOf()));
-    if (SUCCEEDED(hr)) u.list->SetName(L"pgr4 native uploads");
+    if (SUCCEEDED(hr)) u.list->SetName(L"rexnative uploads");
   }
   if (FAILED(hr)) {
-    REXLOG_ERROR("PGR4 native textures: upload list reset failed: {:08X}", uint32_t(hr));
+    REXLOG_ERROR("ReXNative textures: upload list reset failed: {:08X}", uint32_t(hr));
     u.list.Reset();
     return nullptr;
   }
@@ -1081,7 +1081,7 @@ bool TextureCache::CloseUploadLists(std::vector<ID3D12CommandList*>* lists) {
     if (!u.list) continue;
     const HRESULT hr = u.list->Close();
     if (FAILED(hr)) {
-      REXLOG_ERROR("PGR4 native textures: upload list close failed: {:08X}", uint32_t(hr));
+      REXLOG_ERROR("ReXNative textures: upload list close failed: {:08X}", uint32_t(hr));
       return false;
     }
     lists->push_back(u.list.Get());
@@ -1097,4 +1097,4 @@ void TextureCache::Retire(uint64_t completed_fence) {
   EvictOverBudget(completed_fence);
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

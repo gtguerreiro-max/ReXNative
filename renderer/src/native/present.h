@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest Swap -> the debug window, and captures.
+// ReXNative renderer: guest Swap -> the debug window, and captures.
 //
 // OnSwap reads the front buffer texture of the guest Swap (r4, a D3DBaseTexture; fetch
 // constant at +28, the same object the frame's last Resolve wrote), finds its host image in the
@@ -6,16 +6,16 @@
 // constant's swizzle and the display controller's gamma ramp (present.cpp). Without a
 // resolved image the back buffer is cleared to black.
 //
-// Captures (the image check against Xenos): --pgr4_native_capture_dir (empty by default: no
+// Captures (the image check against Xenos): --rexnative_capture_dir (empty by default: no
 // requests polled) and either the file <dir>\capture.request (deleted when taken, read every 16
-// frames), a mark (F12), or --pgr4_native_capture_frame=N. A request at Swap F-1 switches the
+// frames), a mark (F12), or --rexnative_capture_frame=N. A request at Swap F-1 switches the
 // Xenos plugin to full readback (HoldFullReadback in resolve.h; with "fast" guest memory holds
 // the previous frame's resolves) and captures frame F (or the next frame shown, when F is held
 // back):
 //   f<F>-native.png  the native front buffer (read back after the frame's fence)
 //   f<F>-xenos.png   the same front buffer as the Xenos plugin wrote it into guest memory
 //                    (read after the guest thread was held in the Swap hook for
-//                    --pgr4_native_capture_hold_ms so the plugin's GPU thread finishes frame
+//                    --rexnative_capture_hold_ms so the plugin's GPU thread finishes frame
 //                    F), untiled with TextureMod's UntileTexture
 // and logs the PSNR (RGB, 8 bit) of the pair and appends it to <dir>\captures.csv.
 // Both images are the front buffer before the presenter's gamma ramp.
@@ -36,12 +36,12 @@
 #include <cstdint>
 #include <memory>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class NativeRenderer;
 struct ResolvedImage;
 
-// --pgr4_native_luma_probe: the mean brightness (0-255, before the gamma ramp) of each quarter
+// --rexnative_luma_probe: the mean brightness (0-255, before the gamma ramp) of each quarter
 // of three rows of a front buffer, at 10, 40 and 80 % of its height (left to right), read
 // kFramesInFlight frames after it was drawn. Quarters, as a whole-row mean hides a flash
 // confined to one object.
@@ -86,10 +86,10 @@ class Presenter {
 
   // Reads the Swap's front buffer texture object from guest memory.
   static void ReadSwap(const uint8_t* base, const HookArgs& args, SwapCall* out);
-  // A capture was requested (file, F12 or --pgr4_native_capture_frame == frame).
+  // A capture was requested (file, F12 or --rexnative_capture_frame == frame).
   bool CaptureRequested(uint64_t frame);
   // A capture runs its Swaps with the guest thread held (to read the Xenos plugin's copy of the
-  // frame, --pgr4_native_capture_xenos).
+  // frame, --rexnative_capture_xenos).
   bool capture_holds_guest() const;
   // Such a capture is armed and not taken yet: from the OnSwap that armed it to the
   // AfterEndFrame that took it (the next frame shown). Any thread.
@@ -118,4 +118,4 @@ class Presenter {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

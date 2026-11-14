@@ -17,6 +17,9 @@ from . import abi, constants, listing, matcher, offsets, profile as prof, xex
 from .i18n import tr
 
 EMIT = ('high', 'medium')  # confidences written to the layer; 'low' ones are only reported
+# The defaults' keys before the options were renamed (pgr4_* -> rexnative_*).
+OLD_DEFAULT_KEYS = {'pgr4_render_height': 'render_height', 'pgr4_native_occlusion': 'occlusion',
+                    'pgr4_native_display_aspect': 'display_aspect', 'pgr4_native_primary': 'enabled'}
 
 
 def score_reference(target_info, ref_profile):
@@ -200,9 +203,10 @@ def adapt(target, refs, overrides=None, log=print):
         # The game's own frame height (PGR4's 800 is its Steam Deck mode, made by its own
         # hooks), occlusion queries on the host off (From Dust hung with them; a new game's
         # query hooks are often not found), the console's 16:9.
-        'defaults': {'pgr4_render_height': p['scene'].get('height', 720),
-                     'pgr4_native_occlusion': False,
-                     'pgr4_native_display_aspect': '16.0 / 9.0'},
+        'defaults': {'enabled': True,
+                     'render_height': p['scene'].get('height', 720),
+                     'occlusion': False,
+                     'display_aspect': '16.0 / 9.0'},
         'devices': {
             'follow_swap_device_only': False,
             'configure_at_first_device': funcs['CreateDevice']['address'] is None,
@@ -230,6 +234,9 @@ def apply_overrides(result, ov):
         # A measured scene: the renderer uses it as it is, unless the file says "auto": true.
         result['scene'].update(ov['scene'])
         result['scene']['auto'] = bool(ov['scene'].get('auto', False))
+    for old, new in OLD_DEFAULT_KEYS.items():  # overrides.json written before ReXNative 4
+        if old in ov.get('defaults', {}):
+            ov.setdefault('defaults', {}).setdefault(new, ov['defaults'].pop(old))
     for key in ('defaults', 'devices'):
         result[key].update(ov.get(key, {}))
     if 'clear_color' in ov:

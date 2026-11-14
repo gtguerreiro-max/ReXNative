@@ -25,7 +25,8 @@ the same folder and run `adapt` again, rather than editing the files.
 | `kFollowSwapDeviceOnly`, `kConfigureAtFirstDevice` | follow only the device the game presents with (a game that drives a second device while loading); configure the trace at the first device seen when CreateDevice is not hooked |
 | `kSceneSurfaceMask`, `kSceneSurface`, `kSceneWidth`, `kScenePitch`, `kGameFrameHeight` | the scene the upscaler, the MSAA option, DLSS and DLSS 5 work on (RB_SURFACE_INFO pitch and MSAA, size), when it is measured (`rexnative scene`); the fallback otherwise |
 | `REXNATIVE_SCENE_AUTO` | 1: the renderer learns the scene at run time (`renderer/src/native/scene.h`): the colour surface with MSAA or an HDR format resolved at nearly the frame's full size, earliest in the frame, adopted after 30 frames in a row and logged as `ReXNative scene: learned at frame ...`; the upscaler and the scene's targets are then made again for it. `adapt` writes 1 unless `overrides.json` gives a measured scene. Absent (older layers) = 0. `--rexnative_scene_auto=1` / `0` forces either at run time |
-| `kDefaultRenderHeight`, `kDefaultOcclusion`, `kDefaultDisplayAspect` | defaults of `pgr4_render_height`, `pgr4_native_occlusion`, `pgr4_native_display_aspect` |
+| `kDefaultEnabled` | whether ReXNative draws and presents the game without any option (the `rexnative` cvar's default; `--rexnative=false` / `true` overrides it) |
+| `kDefaultRenderHeight`, `kDefaultOcclusion`, `kDefaultDisplayAspect` | defaults of `rexnative_render_height`, `rexnative_occlusion`, `rexnative_display_aspect` |
 
 ## overrides.json
 
@@ -37,7 +38,7 @@ the same folder and run `adapt` again, rather than editing the files.
             "scaled_pitch": 1040, "height": 600},
   "clear_color": {"address": "82007F50", "vector": true},
   "resolve_args": [3, 4, 5, 6, 7, 8, 9, 10],
-  "defaults": {"pgr4_render_height": 600, "pgr4_native_occlusion": false}
+  "defaults": {"enabled": true, "render_height": 600, "occlusion": false}
 }
 ```
 
@@ -45,8 +46,8 @@ the same folder and run `adapt` again, rather than editing the files.
 
 Besides the layer, the renderer calls four functions the game may define (build with
 `rexnative_add(... NO_DEFAULT_GLUE)`); `renderer/src/glue_defaults.cpp` has the values for a game
-with nothing special: `Pgr4Enable60Fps()` (the game's own 60 FPS option), `Pgr4LastCarStepNs()`
-(its last simulation step, for DLSS 5's timing), `FromDustWorldStepped()` and
+with nothing special: `RexNativeGame60Fps()` (the game's own 60 FPS option), `RexNativeGameStepNs()`
+(its last simulation step, for DLSS 5's timing), `RexNativeGameWorldStepped()` and
 `rex_xam_take_frame_pad()`.
 
 ## The HUD
@@ -66,6 +67,6 @@ loading screens without a 3D scene keep the last one. A game whose 3D scene has 
 an HDR format is not found this way: measure it (`rexnative scene`) and give it in
 `overrides.json`. Still fixed when the renderer starts, from the layer's constants: frame
 generation's largest render size (`frame_generation.cpp`), and with
-`--pgr4_native_resolution_scale` above 1 the targets made before the scene is learned keep the
-scale they were made with. PGR4's own `pgr4_render_height` / `kGameFrameHeight` machinery
+`--rexnative_resolution_scale` above 1 the targets made before the scene is learned keep the
+scale they were made with. The `rexnative_render_height` / `kGameFrameHeight` machinery (PGR4's Steam Deck frame height)
 (`frame_height.h`, `d3d_state.cpp`) is unchanged.

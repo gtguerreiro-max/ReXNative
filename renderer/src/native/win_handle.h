@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: owning Win32 handles.
+// ReXNative renderer: owning Win32 handles.
 #pragma once
 
 #ifndef NOMINMAX
@@ -9,7 +9,7 @@
 #include <memory>
 #include <type_traits>
 
-namespace pgr4::native {
+namespace rexnative {
 
 // For objects whose creation returns null on failure (events, waitable timers, threads), not
 // INVALID_HANDLE_VALUE (files).
@@ -23,4 +23,4 @@ inline UniqueHandle CreateAutoResetEvent() {
   return UniqueHandle(CreateEventW(nullptr, FALSE, FALSE, nullptr));
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

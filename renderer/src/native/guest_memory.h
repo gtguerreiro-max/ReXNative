@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest memory as the generated code addresses it.
+// ReXNative renderer: guest memory as the generated code addresses it.
 #pragma once
 
 #include <rex/memory/utils.h>
@@ -8,7 +8,7 @@
 #include <bit>
 #include <cstdint>
 
-namespace pgr4::native {
+namespace rexnative {
 
 // The host address of guest virtual address `a`, translated like the generated code's loads and
 // stores (on Windows the 0xE0000000 view of physical memory sits 4 KiB higher in the mapping).
@@ -43,4 +43,4 @@ inline void Store64(uint8_t* base, uint32_t a, uint64_t v) {
   rex::memory::store_and_swap<uint64_t>(HostPtr(base, a), v);
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

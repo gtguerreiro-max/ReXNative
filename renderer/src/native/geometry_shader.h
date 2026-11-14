@@ -10,7 +10,7 @@
 
 #include <rex/graphics/xenos.h>
 
-namespace pgr4::native {
+namespace rexnative {
 
 enum class GeometryShaderType : uint32_t { kNone, kPointList, kRectangleList, kQuadList };
 
@@ -44,4 +44,4 @@ uint32_t GeometryShaderKeyFor(rex::graphics::xenos::PrimitiveType type,
 // DXBC of the geometry shader for a key (cache the result per key).
 std::vector<uint32_t> CreateGeometryShader(GeometryShaderKey key);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the previous frame's constants of each draw, for the motion
+// ReXNative renderer: the previous frame's constants of each draw, for the motion
 // vector pass of the upscaler's scene (DxbcShaderTranslator's motion_vectors).
 //
 // A draw is matched with the previous frame's by its identity (its vertex shader, index buffer
@@ -42,7 +42,7 @@
 #include <utility>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class MotionHistory {
  public:
@@ -198,4 +198,4 @@ class MotionHistory {
   std::vector<uint8_t> camera_floats_;  // Camera's
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

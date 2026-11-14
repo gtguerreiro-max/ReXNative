@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: one guest draw -> one host D3D12 draw.
+// ReXNative renderer: one guest draw -> one host D3D12 draw.
 //
 // Per draw (DrawRenderer::OnDraw, after ReadDrawState):
 //   - shaders: ShaderCache::Load of the bound VS/PS ucode, SelectModifications (the Xenos
@@ -31,7 +31,7 @@
 // other than 0xFFFF.
 //
 // Threading: the renderer's On* calls only (one guest thread). With the render thread
-// (renderer.h, --pgr4_native_render_thread) the work is split: Prepare and EndFramePrepare run
+// (renderer.h, --rexnative_render_thread) the work is split: Prepare and EndFramePrepare run
 // on the guest thread at the draw's call (shader lookup, vertex/index copies out of guest
 // memory, which the game may rewrite right after the draw); everything else runs on the
 // render thread, later, from the DrawPrep the hook side made.
@@ -50,7 +50,7 @@ namespace rex::graphics {
 class DxbcShader;
 }
 
-namespace pgr4::native {
+namespace rexnative {
 
 class NativeRenderer;
 struct ClearCall;
@@ -64,7 +64,7 @@ struct VertexCopy {
   uint32_t dst, size;
 };
 
-// --pgr4_native_mark_audit: a guest range a draw reads, with the XXH3 of its bytes when the draw
+// --rexnative_mark_audit: a guest range a draw reads, with the XXH3 of its bytes when the draw
 // was prepared, which shared memory must hold when the GPU reaches the draw.
 struct AuditRange {
   uint32_t start, size;
@@ -84,10 +84,10 @@ struct DrawPrep {
   uint32_t fan_count = 0;
   bool fan_wide = false;
   uint64_t captured = ~0ull;  // TextureCache::MarkCapture stamp (kCapturedNow: none)
-  // --pgr4_native_coherency_check: XXH3 of the register file's blocks as Prepare saw them
+  // --rexnative_coherency_check: XXH3 of the register file's blocks as Prepare saw them
   // (render state, float constants VS and PS, fetch and bool/loop constants), 0: not taken.
   uint64_t regs_hash[5] = {};
-  // --pgr4_native_mark_audit: the ranges to check, set by the render side like `copies`.
+  // --rexnative_mark_audit: the ranges to check, set by the render side like `copies`.
   const AuditRange* audit = nullptr;
   uint32_t audit_count = 0;
 };
@@ -116,7 +116,7 @@ class DrawRenderer {
     // ... pages found written between their copy and the arm, and the watch thread's time.
     uint64_t watch_arm_changed = 0, watch_arm_ns = 0;
     uint64_t hash_pages = 0, hash_copies = 0;  // pages hashed, and copied as they changed
-    // --pgr4_native_coherency_check: pages whose guest memory differed from shared memory's
+    // --rexnative_coherency_check: pages whose guest memory differed from shared memory's
     // copy although the page watch said it was current, and pages rewritten after a draw of
     // the frame read them.
     uint64_t stale_pages = 0, late_pages = 0;
@@ -125,7 +125,7 @@ class DrawRenderer {
     uint64_t gpu_mismatch_pages = 0;
     uint64_t reg_mismatches = 0;  // draws whose register file differs from Prepare's
   };
-  // Prepare's draw path counters (the draw diag of --pgr4_native_profile).
+  // Prepare's draw path counters (the draw diag of --rexnative_profile).
   struct PrepareDiag {
     uint64_t shader_loads = 0, shader_loads_immediate = 0;
     uint64_t ranges = 0, range_pages = 0, range_runs = 0;  // watched ranges, their pages, copies
@@ -215,4 +215,4 @@ class DrawRenderer {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

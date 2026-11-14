@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the game's occlusion queries, counted on the host.
+// ReXNative renderer: the game's occlusion queries, counted on the host.
 #include "occlusion.h"
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
@@ -14,17 +14,17 @@
 #include <cstring>
 #include <string>
 
-REXCVAR_DEFINE_STRING(pgr4_native_occlusion_trace, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_occlusion_trace, "", "ReXNative",
                       "Log every occlusion query result the game reads to this file: frame, query "
                       "and its ZPass and Total, or why none was written");
-REXCVAR_DEFINE_INT32(pgr4_native_occlusion_window_ms, 100, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_occlusion_window_ms, 100, "ReXNative",
                      "Milliseconds of an occlusion query's newest results whose ZPass and Total "
                      "sums it delivers (0-300, 0 = the latest frame only). A light flare's test "
                      "covers a few pixels, so one frame's result is nearly all or nothing; the "
                      "game fades the flare by 1 - ZPass / Total, and the sum makes that a fade "
                      "over the window instead of a blink");
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -81,12 +81,12 @@ bool OcclusionQueries::Initialize(ID3D12Device* device) {
   counts_ = static_cast<const uint64_t*>(data);
   coverage_.assign(kPairs, 0);
   guest_per_host_.assign(kPairs, 1.0f);
-  if (const std::string& trace = REXCVAR_GET(pgr4_native_occlusion_trace); !trace.empty()) {
+  if (const std::string& trace = REXCVAR_GET(rexnative_occlusion_trace); !trace.empty()) {
     trace_ = std::fopen(trace.c_str(), "wb");
-    if (!trace_) REXLOG_ERROR("PGR4 native: cannot write the occlusion trace ({})", trace);
+    if (!trace_) REXLOG_ERROR("ReXNative: cannot write the occlusion trace ({})", trace);
   }
-  window_ns_ = uint64_t(std::clamp(REXCVAR_GET(pgr4_native_occlusion_window_ms), 0, 300)) * 1000000;
-  REXLOG_INFO("PGR4 native: the game's occlusion queries are counted on the host");
+  window_ns_ = uint64_t(std::clamp(REXCVAR_GET(rexnative_occlusion_window_ms), 0, 300)) * 1000000;
+  REXLOG_INFO("ReXNative: the game's occlusion queries are counted on the host");
   return true;
 }
 
@@ -123,7 +123,7 @@ uint32_t OcclusionQueries::Acquire() {
   for (const Open& o : open_) oldest = std::min(oldest, o.first);
   for (const Ended& e : ended_) oldest = std::min(oldest, e.first);
   if (next_ - oldest >= kPairs) {
-    PGR4_WARN_ONCE("PGR4 native: occlusion query ring full; draws inside queries go uncounted");
+    REXNATIVE_WARN_ONCE("ReXNative: occlusion query ring full; draws inside queries go uncounted");
     return kNoPair;
   }
   return uint32_t(next_++ % kPairs);
@@ -270,4 +270,4 @@ void OcclusionQueries::WriteResult(uint8_t* base, uint32_t query, uint64_t frame
               sizeof(SampleCounts) - offsetof(SampleCounts, z_pass));
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer (this port): DLSS 5 before the HUD. See neural.h.
+// ReXNative renderer: DLSS 5 before the HUD. See neural.h.
 #include "neural.h"
 
 #include "command_stream.h"
@@ -21,61 +21,61 @@
 #include <cstring>
 #include <string>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_dlss5, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dlss5, false, "ReXNative",
                     "NVIDIA DLSS 5 Neural Rendering of the finished image before the HUD "
                     "(nvngx_dlssnr.dll beside the executable, an RTX GPU and its driver), with "
-                    "--pgr4_native_upscaler");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_intensity, 1.0, "PGR4 native",
+                    "--rexnative_upscaler");
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_intensity, 1.0, "ReXNative",
                       "DLSS 5: intensity (0-2; 1 the modding community's baseline)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_structure, 1.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_structure, 1.0, "ReXNative",
                       "DLSS 5: local structure strength, fine detail (0-2)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_tone, 1.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_tone, 1.0, "ReXNative",
                       "DLSS 5: local tone strength, light and contrast (0-2)");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_style, 2, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss5_style, 2, "ReXNative",
                      "DLSS 5: style (0 Default, the strongest; 1 Natural; 2 Cinematic)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_scale, 1.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_scale, 1.0, "ReXNative",
                       "DLSS 5's working scale, 0.5-1 (the community forks' WorkingScale): the model "
                       "runs on a frame this much smaller and its change is added to the full one; "
                       "its cost falls with the square");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_dlss5_max_ratio, 2.0, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_max_ratio, 2.0, "ReXNative",
                       "DLSS 5's change as a ratio to the game's colour, at most this much either "
                       "way per channel (the community forks' MaxRatio: 2); 0 adds the change as it "
                       "is");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_passes, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss5_passes, 1, "ReXNative",
                      "DLSS 5 passes, 1-3: each one reworks the previous one's result, with a "
                      "history of its own (the community's multi-pass forks); each costs as much as "
                      "the first");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_automask, 0, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss5_automask, 0, "ReXNative",
                      "DLSS 5's skin auto mask: 0 off (the white control mask alone: the effect "
                      "everywhere), 1 combined with the control mask by min (RTX Remix's), 2 on "
                      "with the control mask taking precedence");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_preset, 0, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_dlss5_preset, 0, "ReXNative",
                      "DLSS 5: network preset (0 the DLL's default, 1 A, 2 B ...)");
-REXCVAR_DEFINE_BOOL(pgr4_native_dlss5_compare, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dlss5_compare, false, "ReXNative",
                     "DLSS 5 comparison: evaluated every frame, its result shown in frames 2-3 of "
                     "every 4 (a capture burst takes every other frame: frames without and with "
                     "DLSS 5 at the same moment). At the scene stage the game's eye adaptation "
                     "follows the mix of both, so the frames without are not quite as the game "
                     "would expose them");
-REXCVAR_DEFINE_BOOL(pgr4_native_dlss5_paused, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dlss5_paused, false, "ReXNative",
                     "DLSS 5 off for now (F8 cycles balanced, strong and off)");
-REXCVAR_DEFINE_BOOL(pgr4_native_dlss5_menus, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dlss5_menus, false, "ReXNative",
                     "DLSS 5 on the front end's menus too (it greys their white backdrops); "
                     "false: only while cars are being simulated");
-REXCVAR_DEFINE_STRING(pgr4_native_dlss5_skip_composites, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_dlss5_skip_composites, "", "ReXNative",
                       "DLSS 5 stays off in the frames composited by these pixel shaders "
                       "(comma-separated ucode hashes, as the log names them): the front end's "
                       "stylized menus, which it would turn grey. The front stage only "
-                      "(--pgr4_native_dlss5_stage=front)");
-REXCVAR_DEFINE_INT32(pgr4_native_dlss5_split, 0, "PGR4 native",
+                      "(--rexnative_dlss5_stage=front)");
+REXCVAR_DEFINE_INT32(rexnative_dlss5_split, 0, "ReXNative",
                      "DLSS 5 comparison: 0 the whole image, 1 the right half only (the left "
                      "half as the game draws it), 2 the middle half twice: as the game draws it "
                      "| with DLSS 5 (the same pixels of the same frame)");
 
 // The time of the last car's gearbox step, steady clock ns (games/pgr4/src/pgr4_hooks.cpp).
-uint64_t Pgr4LastCarStepNs();
+uint64_t RexNativeGameStepNs();
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -135,7 +135,7 @@ constexpr uint32_t kViewsPerTable = 4;
 constexpr uint32_t kViewsPerFrame = 2 * kViewsPerTable;
 constexpr D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-// PGR4_DLSS5_SWEEP (diagnostic): "<s>:<style>:<intensity>:<structure>:<tone>,..." switches the
+// REXNATIVE_DLSS5_SWEEP (diagnostic): "<s>:<style>:<intensity>:<structure>:<tone>,..." switches the
 // settings at those seconds after the renderer started, for captures of each in one run.
 struct SweepStep {
   double at;
@@ -149,7 +149,7 @@ const std::chrono::steady_clock::time_point kStart = std::chrono::steady_clock::
 
 std::vector<SweepStep> ParseSweep() {
   std::vector<SweepStep> steps;
-  const char* env = std::getenv("PGR4_DLSS5_SWEEP");
+  const char* env = std::getenv("REXNATIVE_DLSS5_SWEEP");
   for (const char* p = env; p && *p;) {
     SweepStep s;
     double i = 1, st = 1, t = 1;
@@ -173,13 +173,13 @@ std::vector<SweepStep> ParseSweep() {
 
 }  // namespace
 
-bool NeuralPass::Requested() { return REXCVAR_GET(pgr4_native_dlss5); }
+bool NeuralPass::Requested() { return REXCVAR_GET(rexnative_dlss5); }
 
 bool NeuralPass::CarsSimulated() {
   const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count());
-  const uint64_t last = Pgr4LastCarStepNs();
+  const uint64_t last = RexNativeGameStepNs();
   return last && now - last < 500'000'000ull;
 }
 
@@ -193,7 +193,7 @@ void NeuralPass::OnSwap(uint32_t front_base) {
 bool NeuralPass::Skipped(uint64_t composite_ps) {
   if (!skip_parsed_) {
     skip_parsed_ = true;
-    const std::string list = REXCVAR_GET(pgr4_native_dlss5_skip_composites);
+    const std::string list = REXCVAR_GET(rexnative_dlss5_skip_composites);
     for (size_t i = 0; i < list.size();) {
       size_t j = list.find(',', i);
       if (j == std::string::npos) j = list.size();
@@ -205,21 +205,21 @@ bool NeuralPass::Skipped(uint64_t composite_ps) {
   const bool skip = std::find(skip_.begin(), skip_.end(), composite_ps) != skip_.end();
   if (std::find(seen_.begin(), seen_.end(), composite_ps) == seen_.end()) {
     seen_.push_back(composite_ps);
-    REXLOG_INFO("PGR4 native DLSS 5: composite pixel shader {:016X} ({})", composite_ps,
+    REXLOG_INFO("ReXNative DLSS 5: composite pixel shader {:016X} ({})", composite_ps,
                 skip ? "skipped" : "DLSS 5 on");
   }
   return skip;
 }
 
 void NeuralPass::ReadSettings(Dlss::NeuralSettings& s, uint32_t& passes) {
-  s.intensity = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_intensity), 0.0, 2.0));
-  s.structure = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_structure), 0.0, 2.0));
-  s.tone = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_tone), 0.0, 2.0));
-  s.style = uint32_t(std::clamp(REXCVAR_GET(pgr4_native_dlss5_style), 0, 2));
-  s.preset = std::clamp(REXCVAR_GET(pgr4_native_dlss5_preset), 0, 7);
-  s.automask = std::clamp(REXCVAR_GET(pgr4_native_dlss5_automask), 0, 2);
+  s.intensity = float(std::clamp(REXCVAR_GET(rexnative_dlss5_intensity), 0.0, 2.0));
+  s.structure = float(std::clamp(REXCVAR_GET(rexnative_dlss5_structure), 0.0, 2.0));
+  s.tone = float(std::clamp(REXCVAR_GET(rexnative_dlss5_tone), 0.0, 2.0));
+  s.style = uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_style), 0, 2));
+  s.preset = std::clamp(REXCVAR_GET(rexnative_dlss5_preset), 0, 7);
+  s.automask = std::clamp(REXCVAR_GET(rexnative_dlss5_automask), 0, 2);
   passes =
-      uint32_t(std::clamp(REXCVAR_GET(pgr4_native_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
+      uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
   static const std::vector<SweepStep> sweep = ParseSweep();
   if (sweep.empty()) return;
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count();
@@ -234,7 +234,7 @@ void NeuralPass::ReadSettings(Dlss::NeuralSettings& s, uint32_t& passes) {
     if (st.automask >= 0) s.automask = st.automask;
   }
   if (!(s == sweep_settings_) || passes != sweep_passes_) {
-    REXLOG_INFO("PGR4 native DLSS 5 sweep at {:.1f} s: style {} intensity {} structure {} tone {} "
+    REXLOG_INFO("ReXNative DLSS 5 sweep at {:.1f} s: style {} intensity {} structure {} tone {} "
                 "passes {} preset {} automask {}", now, s.style, s.intensity, s.structure, s.tone,
                 passes, s.preset, s.automask);
     sweep_settings_ = s;
@@ -266,15 +266,15 @@ bool NeuralPass::BeforeDraw(CommandStream* list, uint64_t frame, const uint32_t*
   if (Skipped(composite_ps_)) return false;
   // The front end's stylized menus (silhouettes on white) turn grey through DLSS 5: it runs
   // while cars are being simulated (a race, a replay), or everywhere with
-  // --pgr4_native_dlss5_menus.
+  // --rexnative_dlss5_menus.
   const bool racing = CarsSimulated();
   if (racing != racing_) {
     racing_ = racing;
-    REXLOG_INFO("PGR4 native DLSS 5: {} at frame {}", racing ? "the player drives, on" : "no player driving (front end), off",
+    REXLOG_INFO("ReXNative DLSS 5: {} at frame {}", racing ? "the player drives, on" : "no player driving (front end), off",
                 frame);
   }
-  if (!racing && !REXCVAR_GET(pgr4_native_dlss5_menus)) return false;
-  if (REXCVAR_GET(pgr4_native_dlss5_paused)) return false;
+  if (!racing && !REXCVAR_GET(rexnative_dlss5_menus)) return false;
+  if (REXCVAR_GET(rexnative_dlss5_paused)) return false;
   return Run(list, frame, targets, *upscaler);
 }
 
@@ -392,13 +392,13 @@ bool NeuralPass::CreateInputPass() {
     return false;
   input_stride_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   const pD3DCompile compile = D3DCompiler();
-  constexpr char kName[] = "pgr4_dlss5.hlsl";
+  constexpr char kName[] = "rexnative_dlss5.hlsl";
   for (const char* entry : {"input_main", "compose_main"}) {
     ComPtr<ID3DBlob> code, error;
     if (!compile ||
         FAILED(compile(kNeuralHlsl, sizeof(kNeuralHlsl) - 1, kName, nullptr, nullptr, entry,
                        "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &error))) {
-      REXLOG_ERROR("PGR4 native DLSS 5: {} {}: {}", kName, entry,
+      REXLOG_ERROR("ReXNative DLSS 5: {} {}: {}", kName, entry,
                    error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
       return false;
     }
@@ -441,7 +441,7 @@ void NeuralPass::Dispatch(CommandStream* list, uint64_t frame, uint32_t table,
     float max_ratio;
   } constants = {{width, height},
                  {uv_scale_x, uv_scale_y},
-                 float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_max_ratio), 0.0, 16.0))};
+                 float(std::clamp(REXCVAR_GET(rexnative_dlss5_max_ratio), 0.0, 16.0))};
   ID3D12DescriptorHeap* heaps[] = {input_heap_.Get()};
   list->SetDescriptorHeaps(1, heaps);
   list->SetComputeRootSignature(input_signature_.Get());
@@ -474,7 +474,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   Dlss& dlss = upscaler.dlss();
   if (!dlss.neural_available()) {
     if (!warned_)
-      REXLOG_WARN("PGR4 native DLSS 5: not available on this GPU, driver or DLL; the image "
+      REXLOG_WARN("ReXNative DLSS 5: not available on this GPU, driver or DLL; the image "
                   "stays as the game draws it");
     warned_ = true;
     return false;
@@ -486,7 +486,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
     logged_swap_ = fp.dest_swap;
     logged_dest_format_ = fp.dest_format;
     logged_exp_bias_ = fp.exp_bias;
-    REXLOG_INFO("PGR4 native DLSS 5: front buffer at frame {}: color info {:08X} (format {}), "
+    REXLOG_INFO("ReXNative DLSS 5: front buffer at frame {}: color info {:08X} (format {}), "
                 "surface {:08X}, {}x{}, to texture format {} number {} swap {} exp bias {}",
                 frame, logged_color_info_, (logged_color_info_ >> 16) & 0xF, fp.regs.surface_info,
                 fp.x1 - fp.x0, fp.y1 - fp.y0, fp.dest_format, fp.dest_number, fp.dest_swap ? 1 : 0,
@@ -497,7 +497,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   RenderTarget* color = targets.GetColor(fp.regs, fp.source, uint32_t(fp.y1));
   if (!color || color->samples != 1 || fp.x0 != 0 || fp.y0 != 0 || !width || !height ||
       color->resource_format != DXGI_FORMAT_R16G16B16A16_FLOAT) {
-    PGR4_WARN_ONCE("PGR4 native DLSS 5: unexpected front buffer ({}x{} at {},{}, {} samples)",
+    REXNATIVE_WARN_ONCE("ReXNative DLSS 5: unexpected front buffer ({}x{} at {},{}, {} samples)",
                    width, height, fp.x0, fp.y0, color ? color->samples : 0);
     return false;
   }
@@ -509,9 +509,9 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   const uint32_t guest_width = width, guest_height = height;
   width = color->scale.Extent(guest_width, 0);
   height = color->scale.Extent(guest_height, 1);
-  // DLSS 5's working size (--pgr4_native_dlss5_scale); the comparison split needs the full one.
-  double work_scale = std::clamp(REXCVAR_GET(pgr4_native_dlss5_scale), 0.5, 1.0);
-  if (REXCVAR_GET(pgr4_native_dlss5_split) == 2) work_scale = 1.0;
+  // DLSS 5's working size (--rexnative_dlss5_scale); the comparison split needs the full one.
+  double work_scale = std::clamp(REXCVAR_GET(rexnative_dlss5_scale), 0.5, 1.0);
+  if (REXCVAR_GET(rexnative_dlss5_split) == 2) work_scale = 1.0;
   const uint32_t full_width = width, full_height = height;
   width = std::max(8u, uint32_t(std::lround(full_width * work_scale)));
   height = std::max(8u, uint32_t(std::lround(full_height * work_scale)));
@@ -540,7 +540,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
   src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
   const uint32_t quarter = width / 4;
-  if (REXCVAR_GET(pgr4_native_dlss5_split) == 2) {
+  if (REXCVAR_GET(rexnative_dlss5_split) == 2) {
     // The input's middle half, as the game drew it, for the left half afterwards.
     if (!original_) {
       D3D12_HEAP_PROPERTIES hp = {};
@@ -581,13 +581,13 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   nf.motion_scale_x = float(in.width);
   nf.motion_scale_y = float(in.height);
   nf.reset = in.reset || last_run_frame_ + 1 != frame;
-  nf.settings.intensity = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_intensity), 0.0, 2.0));
-  nf.settings.structure = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_structure), 0.0, 2.0));
-  nf.settings.tone = float(std::clamp(REXCVAR_GET(pgr4_native_dlss5_tone), 0.0, 2.0));
-  nf.settings.style = uint32_t(std::clamp(REXCVAR_GET(pgr4_native_dlss5_style), 0, 2));
-  nf.settings.preset = std::clamp(REXCVAR_GET(pgr4_native_dlss5_preset), 0, 7);
+  nf.settings.intensity = float(std::clamp(REXCVAR_GET(rexnative_dlss5_intensity), 0.0, 2.0));
+  nf.settings.structure = float(std::clamp(REXCVAR_GET(rexnative_dlss5_structure), 0.0, 2.0));
+  nf.settings.tone = float(std::clamp(REXCVAR_GET(rexnative_dlss5_tone), 0.0, 2.0));
+  nf.settings.style = uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_style), 0, 2));
+  nf.settings.preset = std::clamp(REXCVAR_GET(rexnative_dlss5_preset), 0, 7);
   uint32_t passes =
-      uint32_t(std::clamp(REXCVAR_GET(pgr4_native_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
+      uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
   static const std::vector<SweepStep> sweep = ParseSweep();
   if (!sweep.empty()) {
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count();
@@ -600,14 +600,14 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
       passes = uint32_t(s.passes);
     }
     if (!(nf.settings == sweep_settings_) || passes != sweep_passes_) {
-      REXLOG_INFO("PGR4 native DLSS 5 sweep at {:.1f} s: style {} intensity {} structure {} tone {} "
+      REXLOG_INFO("ReXNative DLSS 5 sweep at {:.1f} s: style {} intensity {} structure {} tone {} "
                   "passes {}", now, nf.settings.style, nf.settings.intensity, nf.settings.structure,
                   nf.settings.tone, passes);
       sweep_settings_ = nf.settings;
       sweep_passes_ = passes;
     }
   }
-  const int32_t split = REXCVAR_GET(pgr4_native_dlss5_split);
+  const int32_t split = REXCVAR_GET(rexnative_dlss5_split);
   last_run_frame_ = frame;
   // Pass 1 reads input_ into output_, pass 2 output_ into work_, pass 3 work_ into output_:
   // input_ stays the model's input for the composition. On the stream's thread, which records
@@ -664,7 +664,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   RenderTargets::Transition(list, color, D3D12_RESOURCE_STATE_COPY_DEST);
   dst.pResource = color->resource.Get();
   src.pResource = result;
-  if (REXCVAR_GET(pgr4_native_dlss5_compare) && !((frame >> 1) & 1)) {
+  if (REXCVAR_GET(rexnative_dlss5_compare) && !((frame >> 1) & 1)) {
     // Even frames as the game draws them (DLSS 5 evaluated, for its history).
     return true;
   }
@@ -685,4 +685,4 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

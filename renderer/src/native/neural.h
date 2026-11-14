@@ -1,6 +1,6 @@
-// pgr4-native PGR4 native renderer (this port): NVIDIA DLSS 5 Neural Rendering.
+// ReXNative renderer: NVIDIA DLSS 5 Neural Rendering.
 //
-// Two stages (--pgr4_native_dlss5_stage). "scene", the default: on the HDR scene right after
+// Two stages (--rexnative_dlss5_stage). "scene", the default: on the HDR scene right after
 // DLAA, before the game's exposure, bloom, motion blur and tone mapping, as the community's
 // OptiScaler forks run it on DLSS Super Resolution's output (neural_scene.cpp, called from
 // Upscaler::Upscale). "front": on the finished image before the HUD, as below.
@@ -29,14 +29,14 @@
 #include <utility>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class CommandStream;
 class Upscaler;
 
 class NeuralPass {
  public:
-  // Whether --pgr4_native_dlss5 asks for it.
+  // Whether --rexnative_dlss5 asks for it.
   static bool Requested();
   // Whether the player's car stepped in the last half second (Pgr4CarStepHook): a race, not the
   // front end.
@@ -55,7 +55,7 @@ class NeuralPass {
   };
   static bool SceneStage();
   // Whether DLSS 5 runs on this frame's scene (the stage, the GPU, F8, the player driving or
-  // --pgr4_native_dlss5_menus).
+  // --rexnative_dlss5_menus).
   bool SceneWanted(const Dlss& dlss);
   // Records DLSS 5 over `scene` (the upscaler's output: linear light in R16G16B16A16_FLOAT,
   // width x height host pixels, its state tracked) into `list`. False when it did not run.
@@ -73,7 +73,7 @@ class NeuralPass {
 
  private:
   bool Run(CommandStream* list, uint64_t frame, RenderTargets& targets, Upscaler& upscaler);
-  // The model's settings and passes this frame (the cvars, PGR4_DLSS5_SWEEP).
+  // The model's settings and passes this frame (the cvars, REXNATIVE_DLSS5_SWEEP).
   void ReadSettings(Dlss::NeuralSettings& s, uint32_t& passes);
 
   // The scene stage's passes and textures (neural_scene.cpp).
@@ -98,7 +98,7 @@ class NeuralPass {
       scene_exposure_;
   // The model's depth and motion at its working size.
   ComPtr<ID3D12Resource> scene_depth_w_, scene_motion_w_;
-  ComPtr<ID3D12Resource> scene_readback_;  // --pgr4_native_dlss5_log_white
+  ComPtr<ID3D12Resource> scene_readback_;  // --rexnative_dlss5_log_white
   const float* scene_readback_data_ = nullptr;
   uint32_t scene_resets_ = 0;  // history resets (gaps, the upscaler's), for the log
   D3D12_RESOURCE_STATES scene_guides_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -125,7 +125,7 @@ class NeuralPass {
   // DLSS 5's textures at the working size (width x height), the composed frame at the full one.
   bool CreateTargets(uint32_t width, uint32_t height, uint32_t mask_width, uint32_t mask_height,
                      uint32_t full_width, uint32_t full_height);
-  // Whether --pgr4_native_dlss5_skip_composites names the frame's composite shader (each one
+  // Whether --rexnative_dlss5_skip_composites names the frame's composite shader (each one
   // seen is logged once).
   bool Skipped(uint64_t composite_ps);
   bool racing_ = false;
@@ -142,7 +142,7 @@ class NeuralPass {
   bool warned_ = false;
   // DLSS 5's output (the front target's format) and its control mask (white: everywhere).
   ComPtr<ID3D12Resource> output_, mask_;
-  ComPtr<ID3D12Resource> original_;  // --pgr4_native_dlss5_split=2: the input's middle half
+  ComPtr<ID3D12Resource> original_;  // --rexnative_dlss5_split=2: the input's middle half
   // DLSS 5's input (kNeuralHlsl): the composite in [0, 1] with alpha 1 at the working size, and
   // the composition of its change into the full frame.
   bool CreateInputPass();
@@ -162,7 +162,7 @@ class NeuralPass {
   ComPtr<ID3D12PipelineState> input_pso_;
   ComPtr<ID3D12DescriptorHeap> input_heap_;
   uint32_t input_stride_ = 0;
-  Dlss::NeuralSettings sweep_settings_;  // PGR4_DLSS5_SWEEP's last step, for its log
+  Dlss::NeuralSettings sweep_settings_;  // REXNATIVE_DLSS5_SWEEP's last step, for its log
   uint32_t sweep_passes_ = 0;
   // The front buffer's resolve last logged.
   uint32_t logged_color_info_ = 0, logged_dest_format_ = 0;
@@ -175,4 +175,4 @@ class NeuralPass {
   DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

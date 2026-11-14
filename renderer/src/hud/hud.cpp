@@ -4,6 +4,7 @@
 #include "hud/hud.h"
 
 #include "game_layer.h"
+#include "native/legacy_names.h"
 #include "native/overlay.h"
 #include "native/renderer.h"
 
@@ -43,7 +44,7 @@ const char* const kTitle = [] {
   return title.c_str();
 }();
 
-using pgr4::native::NativeRenderer;
+using rexnative::NativeRenderer;
 
 struct Choice {
   std::string label;
@@ -91,9 +92,9 @@ std::vector<Option> MakeOptions() {
   std::vector<Option> o;
   o.push_back({"Display", "antialiasing", "Antialiasing",
                {{"Off", "1"}, {"MSAA 2x (console)", "2"}, {"MSAA 4x", "4"}, {"MSAA 8x", "8"}},
-               false, [] { return Nearest(Find("antialiasing"), FlagInt("pgr4_native_msaa")); },
+               false, [] { return Nearest(Find("antialiasing"), FlagInt("rexnative_msaa")); },
                [](const std::string& v) {
-                 return Assignments{{"pgr4_native_upscaler", "false"}, {"pgr4_native_msaa", v}};
+                 return Assignments{{"rexnative_upscaler", "false"}, {"rexnative_msaa", v}};
                },
                [] {
                  if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
@@ -101,27 +102,27 @@ std::vector<Option> MakeOptions() {
                "The 3D scene's multisampling (most games draw 2x on the console). Choosing it "
                "turns the DLSS / FSR upscaler off."});
   o.push_back({"Display", "upscaling", "Screen scaling", {{"Bilinear", "false"}, {"AMD FSR 1", "true"}},
-               false, [] { return Flag("pgr4_native_fsr"); },
-               [](const std::string& v) { return Bool("pgr4_native_fsr", v); }, nullptr,
+               false, [] { return Flag("rexnative_fsr"); },
+               [](const std::string& v) { return Bool("rexnative_fsr", v); }, nullptr,
                "How the game's picture is scaled to the screen. FSR 1 keeps edges sharp; "
                "bilinear is softer."});
   o.push_back({"Display", "sharpening", "FSR sharpening",
                {{"Soft", "1"}, {"Medium", "0.5"}, {"Sharp", "0.2"}, {"Sharpest", "0"}}, false,
-               [] { return Nearest(Find("sharpening"), std::atof(Flag("pgr4_native_fsr_sharpness").c_str())); },
-               [](const std::string& v) { return Assignments{{"pgr4_native_fsr_sharpness", v}}; },
+               [] { return Nearest(Find("sharpening"), std::atof(Flag("rexnative_fsr_sharpness").c_str())); },
+               [](const std::string& v) { return Assignments{{"rexnative_fsr_sharpness", v}}; },
                nullptr, "How much FSR 1 sharpens the scaled picture (RCAS)."});
   o.push_back({"Display", "anisotropy", "Texture filtering",
                {{"Game's", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}}, true,
-               [] { return Nearest(Find("anisotropy"), FlagInt("pgr4_native_anisotropy")); },
-               [](const std::string& v) { return Assignments{{"pgr4_native_anisotropy", v}}; },
+               [] { return Nearest(Find("anisotropy"), FlagInt("rexnative_anisotropy")); },
+               [](const std::string& v) { return Assignments{{"rexnative_anisotropy", v}}; },
                nullptr, "Anisotropic filtering: sharper ground seen at grazing angles."});
   std::vector<Choice> frame_rates;
   for (int n = 1; n <= 2; ++n)
     frame_rates.push_back({std::to_string(RefreshRate() / n) + " fps", std::to_string(n)});
   o.push_back({"Display", "frame_rate", "Frame rate", std::move(frame_rates), false,
-               [] { return Nearest(Find("frame_rate"), FlagInt("pgr4_native_present_interval")); },
+               [] { return Nearest(Find("frame_rate"), FlagInt("rexnative_present_interval")); },
                [](const std::string& v) {
-                 return Assignments{{"pgr4_native_present_interval", v}};
+                 return Assignments{{"rexnative_present_interval", v}};
                },
                [] {
                  if (NativeRenderer* r = NativeRenderer::Get()) r->RequestFrameRate();
@@ -130,17 +131,17 @@ std::vector<Option> MakeOptions() {
                "the game."});
   o.push_back({"Display", "frame_latency", "Frame latency", {{"1", "1"}, {"2", "2"}, {"3", "3"}},
                true,
-               [] { return Nearest(Find("frame_latency"), FlagInt("pgr4_native_frame_latency")); },
+               [] { return Nearest(Find("frame_latency"), FlagInt("rexnative_frame_latency")); },
                [](const std::string& v) {
-                 return Assignments{{"pgr4_native_frame_latency", v}};
+                 return Assignments{{"rexnative_frame_latency", v}};
                },
                nullptr, "Frames begun but not shown yet: fewer respond sooner, more are steadier."});
   // NVIDIA DLSS (upscaler.h, dlss.h) and DLSS 5 neural rendering (neural.h). They work on the
   // scene surface game_layer.h names (kSceneSurface), which has to be measured for each game
   // (python -m rexnative scene); without it the upscaler never sees the scene.
   o.push_back({"DLSS", "upscaler", "DLSS / FSR upscaler", on_off, false,
-               [] { return Flag("pgr4_native_upscaler"); },
-               [](const std::string& v) { return Bool("pgr4_native_upscaler", v); },
+               [] { return Flag("rexnative_upscaler"); },
+               [](const std::string& v) { return Bool("rexnative_upscaler", v); },
                [] {
                  if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
                },
@@ -152,29 +153,29 @@ std::vector<Option> MakeOptions() {
                 {"Balanced", "balanced"},
                 {"Performance", "performance"},
                 {"Ultra performance", "ultra"}},
-               true, [] { return Flag("pgr4_native_dlss_mode"); },
-               [](const std::string& v) { return Assignments{{"pgr4_native_dlss_mode", v, true}}; },
+               true, [] { return Flag("rexnative_dlss_mode"); },
+               [](const std::string& v) { return Assignments{{"rexnative_dlss_mode", v, true}}; },
                nullptr,
                "DLAA keeps the game's resolution and only anti-aliases; the others render smaller "
                "and let DLSS rebuild the picture."});
   o.push_back({"DLSS", "dlss5", "DLSS 5 neural rendering", on_off, false,
-               [] { return Flag("pgr4_native_dlss5"); },
-               [](const std::string& v) { return Bool("pgr4_native_dlss5", v); }, nullptr,
+               [] { return Flag("rexnative_dlss5"); },
+               [](const std::string& v) { return Bool("rexnative_dlss5", v); }, nullptr,
                "NVIDIA DLSS 5 on the scene, with the upscaler on: an RTX GPU, its driver and "
                "nvngx_dlssnr.dll beside the executable."});
   o.push_back({"DLSS", "dlss5_intensity", "DLSS 5 intensity",
                {{"Low", "0.5"}, {"Medium", "0.75"}, {"Full", "1"}, {"Strong", "1.25"}}, false,
                [] {
                  return Nearest(Find("dlss5_intensity"),
-                                std::atof(Flag("pgr4_native_dlss5_intensity").c_str()));
+                                std::atof(Flag("rexnative_dlss5_intensity").c_str()));
                },
                [](const std::string& v) {
-                 return Assignments{{"pgr4_native_dlss5_intensity", v}};
+                 return Assignments{{"rexnative_dlss5_intensity", v}};
                },
                nullptr, "How strongly DLSS 5 changes the picture."});
   o.push_back({"Developer", "occlusion", "Occlusion queries", on_off, true,
-               [] { return Flag("pgr4_native_occlusion"); },
-               [](const std::string& v) { return Bool("pgr4_native_occlusion", v); }, nullptr,
+               [] { return Flag("rexnative_occlusion"); },
+               [](const std::string& v) { return Bool("rexnative_occlusion", v); }, nullptr,
                "The game's visibility tests counted on the GPU. Off: everything drawn; on can "
                "hide objects for a frame in games that read results in the same frame."});
   o.push_back({"Developer", "log_level", "Log level",
@@ -280,7 +281,19 @@ bool Write(const Lines& set) {
   bool header = std::ranges::contains(lines, kAdded);
   for (const auto& [cvar, value] : set) {
     const std::string line = cvar + " = " + value;
-    if (const auto it = at.find(cvar); it != at.end()) {
+    auto it = at.find(cvar);
+    if (it == at.end()) {
+      // A line with the option's old name (legacy_names.cpp) takes the new name: left as it was,
+      // it would still be applied at the next start (as the command line is) over the new line.
+      if (const char* old = rexnative::OldNameOf(cvar)) {
+        if (const auto o = at.find(std::string_view(old)); o != at.end()) {
+          const size_t line = o->second;
+          at.erase(o);
+          it = at.emplace(cvar, line).first;
+        }
+      }
+    }
+    if (it != at.end()) {
       std::string& old = lines[it->second];
       old = line + std::string(Comment(old, old.find('=') + 1));
       continue;
@@ -327,10 +340,10 @@ void Save(const Option& o) {
 // draws the triangles of the last one over the game (native/overlay.h). The game keeps running
 // behind the menu; while it is up the game's pad reads see a neutral pad.
 
-using pgr4::native::OverlayDraw;
-using pgr4::native::OverlayFont;
-using pgr4::native::OverlayFrame;
-using pgr4::native::OverlayVertex;
+using rexnative::OverlayDraw;
+using rexnative::OverlayFont;
+using rexnative::OverlayFrame;
+using rexnative::OverlayVertex;
 
 constexpr uint16_t kPadUp = 0x0001, kPadDown = 0x0002, kPadLeft = 0x0004, kPadRight = 0x0008,
                    kPadStart = 0x0010, kPadBack = 0x0020, kPadA = 0x1000, kPadB = 0x2000;
@@ -433,7 +446,7 @@ void CreateContext() {
   io.IniFilename = nullptr;
   io.LogFilename = nullptr;
   io.BackendPlatformName = "rexnative_hud";
-  io.BackendRendererName = "pgr4_native_overlay";
+  io.BackendRendererName = "rexnative_overlay";
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
   io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
   ImGuiStyle& style = g_base_style;
@@ -856,7 +869,7 @@ bool FilterPad(uint32_t user, uint8_t* pad) {
 
 }  // namespace rexnative::hud
 
-namespace pgr4::native {
+namespace rexnative {
 
 bool OverlayFrameFor(uint32_t width, uint32_t height, OverlayFrame* frame) {
   using namespace rexnative::hud;
@@ -886,4 +899,4 @@ bool OverlayFontIfChanged(uint32_t version, OverlayFont* font) {
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the presenter's debug tools, the PNG writer of captures,
+// ReXNative renderer: the presenter's debug tools, the PNG writer of captures,
 // the glitch catcher and the luma probe.
 #include "present_debug.h"
 
@@ -22,14 +22,14 @@
 #include <vector>
 
 REXCVAR_DEFINE_STRING(
-    pgr4_native_glitch_catch, "", "PGR4 native",
+    rexnative_glitch_catch, "", "ReXNative",
     "Keep the frames shown, at half size and after the gamma ramp, in memory "
     "and write <this prefix>glitch-<frame>.rec when 1 to 4 frames jump away "
     "from the image and back, and <prefix>mark-<frame>.rec with the last 5 s "
-    "at a mark (F12, with --pgr4_native_capture_dir); scripts/analysis/flicker.py "
+    "at a mark (F12, with --rexnative_capture_dir); scripts/analysis/flicker.py "
     "and marks.py show them");
 
-namespace pgr4::native::present_debug {
+namespace rexnative::present_debug {
 
 namespace {
 
@@ -162,7 +162,7 @@ void Catcher::Add(const RecordHeader& h, const uint8_t* rgba) {
     const float back = Diff(f, At(i - 1));
     if (back * 2.0f >= s.step) continue;
     consumed = n + 1;
-    REXLOG_INFO("PGR4 native glitch catch: frames {}-{} ({}) jump {:.1f} ({:.1f}x), back to {:.1f}",
+    REXLOG_INFO("ReXNative glitch catch: frames {}-{} ({}) jump {:.1f} ({:.1f}x), back to {:.1f}",
                 At(i).h.frame, At(n - 1).h.frame, n - i, s.step, s.step / s.floor, back);
     const uint64_t from = i > kPad ? i - kPad : 0;
     if (!dump_pending) {
@@ -193,7 +193,7 @@ void Catcher::Dump(uint64_t from, uint64_t to, const char* kind, uint64_t label)
   const std::string path = prefix + kind + "-" + std::to_string(label) + ".rec";
   std::FILE* out = std::fopen(path.c_str(), "wb");
   if (!out) {
-    REXLOG_ERROR("PGR4 native glitch catch: cannot open {}", path);
+    REXLOG_ERROR("ReXNative glitch catch: cannot open {}", path);
     return;
   }
   bool ok = true;
@@ -203,7 +203,7 @@ void Catcher::Dump(uint64_t from, uint64_t to, const char* kind, uint64_t label)
          std::fwrite(f.rgb.data(), 1, f.rgb.size(), out) == f.rgb.size();
   }
   std::fclose(out);
-  REXLOG_INFO("PGR4 native glitch catch: frames {}-{} {} {}", At(from).h.frame, At(to).h.frame,
+  REXLOG_INFO("ReXNative glitch catch: frames {}-{} {} {}", At(from).h.frame, At(to).h.frame,
               ok ? "written to" : "failed writing", path);
 }
 
@@ -341,7 +341,7 @@ bool GlitchCatch::State::Start(ID3D12Device* device, uint32_t w, uint32_t h) {
                                  rtv_heap->GetCPUDescriptorHandleForHeapStart());
   writer = std::thread([this] { Write(); });
   REXLOG_INFO(
-      "PGR4 native glitch catch: the last {} frames at {}x{} kept, jumps written to "
+      "ReXNative glitch catch: the last {} frames at {}x{} kept, jumps written to "
       "{}glitch-<frame>.rec",
       Catcher::kRing, w, h, catcher.prefix);
   return true;
@@ -379,7 +379,7 @@ void GlitchCatch::State::Push(const Slot& s, uint32_t slot) {
 }
 
 void GlitchCatch::State::Write() {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native glitch catch");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative glitch catch");
   std::unique_lock<std::mutex> lock(mutex);
   for (;;) {
     cv.wait(lock, [this] { return stopping || !queue.empty(); });
@@ -395,7 +395,7 @@ void GlitchCatch::State::Write() {
     spare.push_back(std::move(buf));
     ++written;
   }
-  REXLOG_INFO("PGR4 native glitch catch: {} frames seen, {} dropped (catcher behind)", written,
+  REXLOG_INFO("ReXNative glitch catch: {} frames seen, {} dropped (catcher behind)", written,
               dropped);
 }
 
@@ -403,7 +403,7 @@ GlitchCatch::GlitchCatch() = default;
 GlitchCatch::~GlitchCatch() = default;
 
 void GlitchCatch::Initialize() {
-  std::string prefix = REXCVAR_GET(pgr4_native_glitch_catch);
+  std::string prefix = REXCVAR_GET(rexnative_glitch_catch);
   if (prefix.empty()) return;
   state_ = std::make_unique<State>();
   state_->catcher.prefix = std::move(prefix);
@@ -524,4 +524,4 @@ void LumaProbeReadback::Record(ID3D12Device* device, CommandStream* list, uint32
   ps = {frame, w, mapping, rgb10a2, true};
 }
 
-}  // namespace pgr4::native::present_debug
+}  // namespace rexnative::present_debug

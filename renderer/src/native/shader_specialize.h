@@ -20,7 +20,7 @@
 
 #include "shader_cache.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 // Rewrites the control flow of `ucode` (host byte order; cf_pair_bound pairs of control flow
 // instructions, Shader::cf_pair_index_bound) for the bool constants `bools` (the 256 bits of the
@@ -56,4 +56,4 @@ class BoolSpecializer {
   DxbcShader* last_result_ = nullptr;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the presenter's debug tools (present_debug.cpp), on the
+// ReXNative renderer: the presenter's debug tools (present_debug.cpp), on the
 // presenter's thread unless noted. Only present.cpp uses them.
 #pragma once
 
@@ -11,11 +11,11 @@
 struct ID3D12Device;
 struct ID3D12Resource;
 
-namespace pgr4::native {
+namespace rexnative {
 class CommandStream;
 }
 
-namespace pgr4::native::present_debug {
+namespace rexnative::present_debug {
 
 // The blit shader's root constants (present.cpp's kBlitHlsl, b0).
 struct BlitConstants {
@@ -34,7 +34,7 @@ void ToRgb(const uint8_t* src, uint32_t pitch, uint32_t width, uint32_t height, 
 bool WritePng(const wchar_t* path, const std::vector<uint8_t>& rgb, uint32_t width,
               uint32_t height);
 
-// --pgr4_native_glitch_catch: the blit drawn again at half the image's size (a 2x2 box filter),
+// --rexnative_glitch_catch: the blit drawn again at half the image's size (a 2x2 box filter),
 // copied to a readback slot per frame in flight and handed, when the slot comes round, to a
 // thread of its own. That thread keeps the last frames in a ring and writes .rec files of the
 // frames around a short jump away from the image and back, and of the whole ring at a mark.
@@ -45,7 +45,7 @@ class GlitchCatch {
   GlitchCatch(const GlitchCatch&) = delete;
   GlitchCatch& operator=(const GlitchCatch&) = delete;
 
-  // Reads --pgr4_native_glitch_catch; when it is empty the catcher stays off.
+  // Reads --rexnative_glitch_catch; when it is empty the catcher stays off.
   void Initialize();
   bool on() const { return state_ != nullptr; }
   // Every Swap, before Record: hands the slot's previous frame (its fence was waited for) over.
@@ -62,7 +62,7 @@ class GlitchCatch {
   std::unique_ptr<State> state_;
 };
 
-// --pgr4_native_luma_probe: LumaProbe::kRows rows of each front buffer, copied to a readback
+// --rexnative_luma_probe: LumaProbe::kRows rows of each front buffer, copied to a readback
 // slot per frame in flight and read when the slot comes round again (its frame has completed).
 class LumaProbeReadback {
  public:
@@ -83,4 +83,4 @@ class LumaProbeReadback {
   LumaProbe result_;
 };
 
-}  // namespace pgr4::native::present_debug
+}  // namespace rexnative::present_debug

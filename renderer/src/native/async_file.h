@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: a text file written off the threads that append to it.
+// ReXNative renderer: a text file written off the threads that append to it.
 //
 // The frame CSV and the pacer's present log were written and flushed once a frame on the render
 // and pacer threads, and one such write held the render thread for 27 ms (td-153). Here Printf
@@ -15,7 +15,7 @@
 #include <string_view>
 #include <thread>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class AsyncFile {
  public:
@@ -43,4 +43,4 @@ class AsyncFile {
   std::thread thread_;    // last: starts once the members above exist
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

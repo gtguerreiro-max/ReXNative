@@ -1,5 +1,5 @@
-// pgr4-native PGR4 native renderer: GPU time per pass of the native frame
-// (--pgr4_native_gpu_timing).
+// ReXNative renderer: GPU time per pass of the native frame
+// (--rexnative_gpu_timing).
 //
 // The renderer names the pass each command it records belongs to: draws on one set of render
 // targets, a clear, a resolve, a pass of the upscaler, the present blit (Key*). Whenever the pass
@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 struct ClearCall;
 struct ResolveParams;
@@ -77,7 +77,7 @@ class GpuTimer {
   // timestamp in the next list, the GPU's wait for that list.
   static uint64_t KeySubmit();
 
-  // --pgr4_native_gpu_timing_shaders: draws are timed per (vertex shader, pixel shader) pair on
+  // --rexnative_gpu_timing_shaders: draws are timed per (vertex shader, pixel shader) pair on
   // a surface pitch and MSAA mode instead of per render target set (KeyDrawShaders), and all
   // of a pair's spans in a frame form one group.
   void set_per_shader(bool on) { per_shader_ = on; }
@@ -147,4 +147,4 @@ class GpuTimer {
   std::vector<SpikeSpan> spike_spans_;
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

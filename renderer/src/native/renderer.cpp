@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: NativeRenderer host.
+// ReXNative renderer: NativeRenderer host.
 #include "renderer.h"
 
 #include "async_file.h"
@@ -51,54 +51,57 @@ extern "C" uint64_t rex_xam_take_frame_pad();
 
 namespace reg = rex::graphics::reg;
 
-REXCVAR_DEFINE_BOOL(pgr4_native, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_beside_xenos, false, "ReXNative",
                     "Run the native D3D12 renderer beside the Xenos plugin (debug window)");
-REXCVAR_DEFINE_BOOL(pgr4_native_primary, false, "PGR4 native",
-                    "The native renderer is the game's output: it presents into the game window "
-                    "and the Xenos plugin skips all draws, resolves and swaps (gpu_skip_draws, "
-                    "patches/0031); implies --pgr4_native");
-REXCVAR_DEFINE_INT32(pgr4_native_msaa, 2, "PGR4 native",
+// On by default where the game's layer says so (game_layer.h kDefaultEnabled): --rexnative=false
+// gives the game back to the Xenos plugin.
+REXCVAR_DEFINE_BOOL(rexnative, rexnative::game::kDefaultEnabled, "ReXNative",
+                    "ReXNative draws and presents the game: it presents into the game window and "
+                    "the Xenos plugin skips all draws, resolves and swaps (gpu_skip_draws, "
+                    "patches/0031); implies --rexnative_beside_xenos. On by default where the "
+                    "game's layer says so");
+REXCVAR_DEFINE_INT32(rexnative_msaa, 2, "ReXNative",
                      "Samples of the 3D scene's MSAA without the upscaler: 1, 2 (the game's), 4 "
                      "or 8 (fewer if the GPU lacks them)");
-REXCVAR_DEFINE_INT32(pgr4_render_height, rexnative::game::kDefaultRenderHeight, "PGR4",
+REXCVAR_DEFINE_INT32(rexnative_render_height, rexnative::game::kDefaultRenderHeight, "ReXNative",
                      "The render height the 16:10 patch gives every hooked 720 while the native "
                      "renderer draws from the start (720 disables it; the Xenos plugin always "
                      "draws the game's 720, frame_height.h)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_INT32(pgr4_native_resolution_scale, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_resolution_scale, 1, "ReXNative",
                      "This port: the game's screen-sized surfaces (the scene, its post-processing "
                      "and the front buffer, 1280 wide) render at this many host pixels per guest "
                      "pixel, 1-3 (2: 2560x1440 for the game's 1280x720), with their resolves, "
                      "DLSS and DLSS 5 at that size")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_INT32(pgr4_native_menu_fps, 60, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_menu_fps, 60, "ReXNative",
                      "This port: the front end's frame rate while the player is not driving "
                      "(menus, garage, pause): the menus' cursor repeats once per frame, too fast "
                      "at the display's 240 Hz; 0: no limit");
-REXCVAR_DEFINE_STRING(pgr4_native_csv, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_csv, "", "ReXNative",
                       "Per-frame CSV of the native path: counts and CPU time per hook class");
-REXCVAR_DEFINE_INT32(pgr4_native_width, 1280, "PGR4 native", "Debug window width");
-REXCVAR_DEFINE_INT32(pgr4_native_height, 720, "PGR4 native", "Debug window height");
-REXCVAR_DEFINE_BOOL(pgr4_native_profile, false, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_width, 1280, "ReXNative", "Debug window width");
+REXCVAR_DEFINE_INT32(rexnative_height, 720, "ReXNative", "Debug window height");
+REXCVAR_DEFINE_BOOL(rexnative_profile, false, "ReXNative",
                     "Per-stage CPU time of the draw path (RDTSC), appended to the native CSV as "
                     "st_<stage>_us columns and to the stats log line");
-REXCVAR_DEFINE_BOOL(pgr4_native_gpu_timing, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_gpu_timing, false, "ReXNative",
                     "GPU timestamps around every pass of the native frame (draws per render "
                     "target set, clears, resolves, present); the costliest passes are logged "
-                    "every --pgr4_d3d_stats_frames frames");
-REXCVAR_DEFINE_BOOL(pgr4_native_gpu_timing_shaders, false, "PGR4 native",
-                    "With --pgr4_native_gpu_timing: time draws per vertex/pixel shader pair "
+                    "every --rexnative_d3d_stats_frames frames");
+REXCVAR_DEFINE_BOOL(rexnative_gpu_timing_shaders, false, "ReXNative",
+                    "With --rexnative_gpu_timing: time draws per vertex/pixel shader pair "
                     "instead of per render target set, and log the ucode of the costliest "
                     "shaders once (render thread mode)");
-REXCVAR_DEFINE_BOOL(pgr4_native_texture_capture_order, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_texture_capture_order, true, "ReXNative",
                     "Bind textures as they were when the game queued the draw: a texture the game "
                     "rewrites before the render thread reaches the draw keeps its older data for "
                     "it (TextureCache::MarkCapture)");
-REXCVAR_DEFINE_BOOL(pgr4_native_render_thread, true, "PGR4 native",
-                    "Record the native frames on their own thread (\"PGR4 native render\"): the "
+REXCVAR_DEFINE_BOOL(rexnative_render_thread, true, "ReXNative",
+                    "Record the native frames on their own thread (\"ReXNative render\"): the "
                     "game thread only copies what each D3D call reads from guest memory and "
                     "queues it, at most one frame ahead of the render thread");
-REXCVAR_DEFINE_INT32(pgr4_native_submit_draws, 256, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_submit_draws, 256, "ReXNative",
                      "Submit the frame's commands every this many draws, so the GPU starts on them "
                      "while the rest of the frame is recorded (0: one submission per frame, at the "
                      "Swap)");
@@ -108,57 +111,57 @@ REXCVAR_DEFINE_INT32(pgr4_native_submit_draws, 256, "PGR4 native",
 // frame (the background showed through: the "blue" flashes on the totem and the huts, 9 frames
 // in 735 against none with this off). Off costs nothing measurable (1460 draws a frame against
 // 1464).
-REXCVAR_DEFINE_BOOL(pgr4_native_occlusion, rexnative::game::kDefaultOcclusion, "PGR4 native",
-                    "With --pgr4_native_primary: count the samples of the game's occlusion "
+REXCVAR_DEFINE_BOOL(rexnative_occlusion, rexnative::game::kDefaultOcclusion, "ReXNative",
+                    "With --rexnative: count the samples of the game's occlusion "
                     "queries on the host; off (From Dust's default), every query reports its "
                     "whole draw visible")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(pgr4_native_renderer_switch, true, "PGR4 native",
-                    "With --pgr4_native_primary, the key bind_renderer_switch (F9) switches "
+REXCVAR_DEFINE_BOOL(rexnative_renderer_switch, true, "ReXNative",
+                    "With --rexnative, the key bind_renderer_switch (F9) switches "
                     "between the native renderer and the Xenos plugin at the next Swap");
-REXCVAR_DEFINE_BOOL(pgr4_native_classic, false, "PGR4 native",
-                    "With --pgr4_native_primary: the Xenos plugin draws the game from the start, "
+REXCVAR_DEFINE_BOOL(rexnative_classic, false, "ReXNative",
+                    "With --rexnative: the Xenos plugin draws the game from the start, "
                     "as after the renderer switch, until the switch (F9 or the Display settings' "
                     "Renderer) hands it to the native renderer");
-REXCVAR_DEFINE_BOOL(pgr4_native_debug_keys, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_debug_keys, true, "ReXNative",
                     "The renderer's keys: bind_renderer_switch (F9), bind_upscaler (F7) and "
                     "bind_upscaler_debug (F8, this port: DLSS 5's settings); false: they do "
                     "nothing");
-REXCVAR_DEFINE_INT32(pgr4_native_frame_latency, 3, "PGR4 native",
-                     "With --pgr4_native_primary: pace the game's frames on the display, with at "
+REXCVAR_DEFINE_INT32(rexnative_frame_latency, 3, "ReXNative",
+                     "With --rexnative: pace the game's frames on the display, with at "
                      "most this many frames begun but not yet shown (1-3, frame_pacer.h; the game "
                      "thread, render thread and GPU each hold one at 90 fps); 0 leaves "
-                     "the pacing to the game's vblank wait (with --pgr4_native_csv the shown "
+                     "the pacing to the game's vblank wait (with --rexnative_csv the shown "
                      "presents are still logged)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_INT32(pgr4_native_present_interval, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_present_interval, 1, "ReXNative",
                      "With the frames presented with vsync (the frame pacer's FIFO): each frame "
                      "is shown for this many display refreshes (1-3), so the game runs at the "
                      "refresh rate over it: 90, 45 or 30 fps at 90 Hz, evenly. Steam's frame "
                      "limiter does the same through gamescope; a frame with a generated one "
                      "before it is shown once");
-REXCVAR_DEFINE_BOOL(pgr4_native_low_latency, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_low_latency, true, "ReXNative",
                     "With the frames paced on the display: begin each frame as late as the "
                     "time the frames before it waited for the display allows (frame_pacer.h), "
                     "so a frame limit lowers the latency instead of raising it")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_INT32(pgr4_native_latency_margin_us, 4000, "PGR4 native",
-                     "With --pgr4_native_low_latency: how long before the display shows a frame "
+REXCVAR_DEFINE_INT32(rexnative_latency_margin_us, 4000, "ReXNative",
+                     "With --rexnative_low_latency: how long before the display shows a frame "
                      "the GPU should have finished it, in microseconds")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_INT32(
-    pgr4_native_mark_audit, 0, "PGR4 native",
+    rexnative_mark_audit, 0, "ReXNative",
     "Debug, render thread mode: a mark (F12 or <capture dir>/capture.request) also "
     "logs the draws of the next this many frames to <capture dir>/draws-f<frame>.txt "
     "and audits them: each shader against the guest's ucode, the render thread's "
     "registers against the game thread's, and the shared memory each draw reads "
     "against guest memory as it was when the draw was queued (0: off)");
-REXCVAR_DECLARE(int32_t, pgr4_d3d_stats_frames);
-REXCVAR_DECLARE(bool, pgr4_native_dlss5_paused);
-REXCVAR_DECLARE(int32_t, pgr4_native_dlss5_passes);
-REXCVAR_DECLARE(bool, pgr4_native_luma_probe);
+REXCVAR_DECLARE(int32_t, rexnative_d3d_stats_frames);
+REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
+REXCVAR_DECLARE(int32_t, rexnative_dlss5_passes);
+REXCVAR_DECLARE(bool, rexnative_luma_probe);
 
-namespace pgr4::native {
+namespace rexnative {
 
 struct NativeRenderer::Csv {
   std::unique_ptr<AsyncFile> file;
@@ -170,7 +173,7 @@ struct NativeRenderer::Csv {
   TextureCache::Stats tex_prev;                  // texture counters at the previous CSV row
   uint64_t evicted_prev = 0, evict_ns_prev = 0;  // the same for every row (tex_prev: profile)
   uint64_t occ_unknown_prev = 0;                 // OcclusionQueries::unknown_pairs() likewise
-  bool luma = false;                             // --pgr4_native_luma_probe columns
+  bool luma = false;                             // --rexnative_luma_probe columns
   std::string line;                              // the row being written
 };
 
@@ -300,7 +303,7 @@ struct NativeRenderer::Queue {
     uint64_t guest_begin_ns, guest_swap_ns, pace_wait_ns;
     DrawRenderer::PrepareCounters prep;
     uint64_t ticks[profile::kStageCount];
-    uint32_t log_frames;  // a marked Swap with --pgr4_native_mark_audit: the frames to log
+    uint32_t log_frames;  // a marked Swap with --rexnative_mark_audit: the frames to log
   };
   struct Batch {
     std::vector<Cmd> cmds;
@@ -385,20 +388,20 @@ struct NativeRenderer::Queue {
 
 uint32_t FrameHeight() {
   static const uint32_t height =
-      REXCVAR_GET(pgr4_native_primary) && !REXCVAR_GET(pgr4_native_classic)
-          ? uint32_t(std::clamp<int32_t>(REXCVAR_GET(pgr4_render_height), 360, 2160))
+      REXCVAR_GET(rexnative) && !REXCVAR_GET(rexnative_classic)
+          ? uint32_t(std::clamp<int32_t>(REXCVAR_GET(rexnative_render_height), 360, 2160))
           : kGameFrameHeight;
   return height;
 }
 
 NativeRenderer* NativeRenderer::Get() {
-  if (!(REXCVAR_GET(pgr4_native) || REXCVAR_GET(pgr4_native_primary)) || g_failed) return nullptr;
+  if (!(REXCVAR_GET(rexnative_beside_xenos) || REXCVAR_GET(rexnative)) || g_failed) return nullptr;
   // Never destroyed: the process exits with the game, and the guest thread may still be in a
   // hook during static destruction.
   static NativeRenderer* r = [] {
     auto* n = new NativeRenderer();
     if (!n->Initialize()) {
-      REXLOG_ERROR("PGR4 native: initialization failed; native path off for this run");
+      REXLOG_ERROR("ReXNative: initialization failed; native path off for this run");
       g_failed = true;
       delete n;
       return static_cast<NativeRenderer*>(nullptr);
@@ -422,12 +425,12 @@ NativeRenderer::~NativeRenderer() {
 
 bool NativeRenderer::Initialize() {
   device_ = std::make_unique<D3D12Device>();
-  uint32_t w = uint32_t(std::max(64, REXCVAR_GET(pgr4_native_width)));
-  uint32_t h = uint32_t(std::max(64, REXCVAR_GET(pgr4_native_height)));
-  const bool primary = primary_ = REXCVAR_GET(pgr4_native_primary);
-  const bool paced = primary && REXCVAR_GET(pgr4_native_frame_latency) > 0;
+  uint32_t w = uint32_t(std::max(64, REXCVAR_GET(rexnative_width)));
+  uint32_t h = uint32_t(std::max(64, REXCVAR_GET(rexnative_height)));
+  const bool primary = primary_ = REXCVAR_GET(rexnative);
+  const bool paced = primary && REXCVAR_GET(rexnative_frame_latency) > 0;
   // The pacer, or with the CSV only its log of the presents shown.
-  const bool pacer = paced || (primary && !REXCVAR_GET(pgr4_native_csv).empty());
+  const bool pacer = paced || (primary && !REXCVAR_GET(rexnative_csv).empty());
   HWND game_window = nullptr;
   if (primary) {
     // The first D3D call comes after the SDK opened its window; wait briefly in case not.
@@ -437,7 +440,7 @@ bool NativeRenderer::Initialize() {
       if (!game_window) Sleep(50);
     }
     if (!game_window) {
-      REXLOG_ERROR("PGR4 native: --pgr4_native_primary: no game window found");
+      REXLOG_ERROR("ReXNative: --rexnative: no game window found");
       return false;
     }
     // The pacer needs FIFO: vkd3d-proton releases the frame latency waitable on the display's
@@ -446,21 +449,21 @@ bool NativeRenderer::Initialize() {
     device_->set_vsync(paced || FlagOn("d3d12_present_vsync"));
     device_->set_frame_latency_waitable(pacer);
   }
-  if (!device_->Initialize(w, h, primary ? L"PGR4 native" : L"PGR4 native (debug)", game_window))
+  if (!device_->Initialize(w, h, primary ? L"ReXNative" : L"ReXNative (debug)", game_window))
     return false;
   frame_rate_requested_.store(true, std::memory_order_relaxed);
-  if (REXCVAR_GET(pgr4_native_gpu_timing)) {
+  if (REXCVAR_GET(rexnative_gpu_timing)) {
     if (device_->EnableGpuTimer()) {
       gpu_timer_ = device_->gpu_timer();
-      gpu_timer_->set_per_shader(REXCVAR_GET(pgr4_native_gpu_timing_shaders));
+      gpu_timer_->set_per_shader(REXCVAR_GET(rexnative_gpu_timing_shaders));
     } else
-      REXLOG_ERROR("PGR4 native: GPU timing unavailable");
+      REXLOG_ERROR("ReXNative: GPU timing unavailable");
   }
   rt_ = std::make_unique<RenderTargets>();
   if (!rt_->Initialize(device_->device())) return false;
-  rt_->SetResolutionScale(uint32_t(std::clamp(REXCVAR_GET(pgr4_native_resolution_scale), 1, 3)));
+  rt_->SetResolutionScale(uint32_t(std::clamp(REXCVAR_GET(rexnative_resolution_scale), 1, 3)));
   if (rt_->resolution_scale() > 1)
-    REXLOG_INFO("PGR4 native: the screen-sized surfaces at {}x", rt_->resolution_scale());
+    REXLOG_INFO("ReXNative: the screen-sized surfaces at {}x", rt_->resolution_scale());
   ReadSceneMsaa();
   resolver_ = std::make_unique<Resolver>();
   if (!resolver_->Initialize(device_->device(), rt_.get(), device_->command_queue())) return false;
@@ -468,10 +471,10 @@ bool NativeRenderer::Initialize() {
   if (FrameGeneration::Requested()) {
     // The generated frames are paced by FIFO and the pacer's display clock (frame_generation.h).
     if (!paced) {
-      REXLOG_ERROR("PGR4 native: frame generation needs the frame pacer (--pgr4_native_primary)");
+      REXLOG_ERROR("ReXNative: frame generation needs the frame pacer (--rexnative)");
     } else if (frame_generation_ = std::make_unique<FrameGeneration>(*device_, *resolver_);
                !frame_generation_->Initialize()) {
-      REXLOG_ERROR("PGR4 native: frame generation unavailable");
+      REXLOG_ERROR("ReXNative: frame generation unavailable");
       frame_generation_.reset();
     }
   }
@@ -481,19 +484,19 @@ bool NativeRenderer::Initialize() {
   SwitchUpscaler(Upscaler::Requested());
   textures_ = std::make_unique<TextureCache>(device_->device(), rex::system::kernel_memory());
   textures_->SetResolvedLookup([this](uint32_t a) { return resolver_->Find(a); });
-  textures_->SetCaptureOrder(REXCVAR_GET(pgr4_native_texture_capture_order));
+  textures_->SetCaptureOrder(REXCVAR_GET(rexnative_texture_capture_order));
   resolver_->SetChangedCallback([this](uint32_t a) { textures_->OnResolved(a); });
   draw_ = std::make_unique<DrawRenderer>(*this);
   if (!draw_->Initialize()) return false;
   present_ = std::make_unique<Presenter>(*this);
   if (!present_->Initialize()) return false;
   // Beside the Xenos plugin (debug window) the plugin's fake counts are the game's.
-  if (primary && REXCVAR_GET(pgr4_native_occlusion)) {
+  if (primary && REXCVAR_GET(rexnative_occlusion)) {
     occlusion_ = std::make_unique<OcclusionQueries>();
     if (!occlusion_->Initialize(device_->device()) ||
         !rex::cvar::SetFlagByName("occlusion_query_external", "true")) {
       REXLOG_ERROR(
-          "PGR4 native: occlusion queries unavailable (patches/0049 missing?); every query "
+          "ReXNative: occlusion queries unavailable (patches/0049 missing?); every query "
           "reports its draw visible");
       occlusion_.reset();
     }
@@ -502,70 +505,70 @@ bool NativeRenderer::Initialize() {
   // command processor only runs fences, write-backs and interrupts.
   if (primary && !rex::cvar::SetFlagByName("gpu_skip_draws", "true"))
     REXLOG_ERROR(
-        "PGR4 native: could not set gpu_skip_draws (patches/0031 missing?); "
+        "ReXNative: could not set gpu_skip_draws (patches/0031 missing?); "
         "Xenos keeps drawing");
   // A handheld has no keyboard for the replay name prompt; the title's default name is what
   // confirming the dialog unchanged returns.
   if (primary && !rex::cvar::SetFlagByName("xam_keyboard_accept_default", "true"))
     REXLOG_ERROR(
-        "PGR4 native: could not set xam_keyboard_accept_default "
+        "ReXNative: could not set xam_keyboard_accept_default "
         "(patches/0024 missing?)");
   // The keys are read when pressed: the Developer settings turn them off and on.
   const auto key = [](std::atomic<bool>& request) {
     return [&request] {
-      if (REXCVAR_GET(pgr4_native_debug_keys)) request.store(true, std::memory_order_relaxed);
+      if (REXCVAR_GET(rexnative_debug_keys)) request.store(true, std::memory_order_relaxed);
     };
   };
-  if (primary && REXCVAR_GET(pgr4_native_renderer_switch)) {
+  if (primary && REXCVAR_GET(rexnative_renderer_switch)) {
     rex::ui::RegisterBind("bind_renderer_switch", "F9",
-                          "PGR4 native: switch between the native renderer and the Xenos plugin",
+                          "ReXNative: switch between the native renderer and the Xenos plugin",
                           key(switch_requested_));
     switch_bound_ = true;
   }
   // The first Swap hands the game to the plugin.
-  if (primary && REXCVAR_GET(pgr4_native_classic))
+  if (primary && REXCVAR_GET(rexnative_classic))
     switch_requested_.store(true, std::memory_order_relaxed);
   if (primary) {
     rex::ui::RegisterBind(
         "bind_upscaler", "F7",
-        "PGR4 native: switch the 3D scene between MSAA and FidelityFX Super Resolution",
+        "ReXNative: switch the 3D scene between MSAA and FidelityFX Super Resolution",
         key(upscaler_switch_requested_));
-    // This port: F8 cycles DLSS 5 (with --pgr4_native_dlss5) between the balanced settings
+    // This port: F8 cycles DLSS 5 (with --rexnative_dlss5) between the balanced settings
     // (Default, 1 pass), the strong ones (Natural, 2 passes) and off, live.
     rex::ui::RegisterBind(
         "bind_upscaler_debug", "F8",
-        "PGR4 native: DLSS 5 balanced (Default, 1 pass), strong (Natural, 2 passes) or off", [] {
-          if (!REXCVAR_GET(pgr4_native_debug_keys)) return;
+        "ReXNative: DLSS 5 balanced (Default, 1 pass), strong (Natural, 2 passes) or off", [] {
+          if (!REXCVAR_GET(rexnative_debug_keys)) return;
           const char* next;
-          if (REXCVAR_GET(pgr4_native_dlss5_paused)) {
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_paused", "false");
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_style", "0");
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_passes", "1");
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_scale", "1");
+          if (REXCVAR_GET(rexnative_dlss5_paused)) {
+            rex::cvar::SetFlagByName("rexnative_dlss5_paused", "false");
+            rex::cvar::SetFlagByName("rexnative_dlss5_style", "0");
+            rex::cvar::SetFlagByName("rexnative_dlss5_passes", "1");
+            rex::cvar::SetFlagByName("rexnative_dlss5_scale", "1");
             next = "balanced (Default, 1 pass, the full size)";
-          } else if (REXCVAR_GET(pgr4_native_dlss5_passes) < 2) {
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_style", "1");
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_passes", "2");
+          } else if (REXCVAR_GET(rexnative_dlss5_passes) < 2) {
+            rex::cvar::SetFlagByName("rexnative_dlss5_style", "1");
+            rex::cvar::SetFlagByName("rexnative_dlss5_passes", "2");
             // Two full-size passes would run under 60 fps on an RTX 5060 Ti.
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_scale", "0.8");
+            rex::cvar::SetFlagByName("rexnative_dlss5_scale", "0.8");
             next = "strong (Natural, 2 passes, 0.8 of the size)";
           } else {
-            rex::cvar::SetFlagByName("pgr4_native_dlss5_paused", "true");
+            rex::cvar::SetFlagByName("rexnative_dlss5_paused", "true");
             next = "off";
           }
-          REXLOG_INFO("PGR4 native DLSS 5: {} (F8)", next);
+          REXLOG_INFO("ReXNative DLSS 5: {} (F8)", next);
         });
     upscaler_bound_ = true;
   }
   csv_ = std::make_unique<Csv>();
-  profile::enabled.store(REXCVAR_GET(pgr4_native_profile), std::memory_order_relaxed);
-  const std::string path = REXCVAR_GET(pgr4_native_csv).empty()
+  profile::enabled.store(REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+  const std::string path = REXCVAR_GET(rexnative_csv).empty()
                                ? std::string()
-                               : UnusedPath(REXCVAR_GET(pgr4_native_csv));
+                               : UnusedPath(REXCVAR_GET(rexnative_csv));
   if (!path.empty()) {
     csv_->file = AsyncFile::Create(path);
     if (csv_->file) {
-      csv_->luma = REXCVAR_GET(pgr4_native_luma_probe);
+      csv_->luma = REXCVAR_GET(rexnative_luma_probe);
       std::string header;
       AppendCsvColumns(FrameStats{}, 0, true, &header);
       if (profile::On()) AppendCsvProfileColumns(true, &header);
@@ -573,7 +576,7 @@ bool NativeRenderer::Initialize() {
       header += '\n';
       csv_->file->Append(header);
     } else {
-      REXLOG_ERROR("PGR4 native: cannot open {}", path);
+      REXLOG_ERROR("ReXNative: cannot open {}", path);
     }
   }
   if (pacer) {
@@ -582,23 +585,23 @@ bool NativeRenderer::Initialize() {
       const std::string log_path =
           path.substr(0, path.size() - (path.ends_with(".csv") ? 4 : 0)) + "-presents.csv";
       if (!(log = AsyncFile::Create(log_path)))
-        REXLOG_ERROR("PGR4 native: cannot open {}", log_path);
+        REXLOG_ERROR("ReXNative: cannot open {}", log_path);
     }
     pacer_ = std::make_unique<FramePacer>(FramePacer::Options{
-        .frame_latency = uint32_t(std::max(0, REXCVAR_GET(pgr4_native_frame_latency))),
-        .low_latency = REXCVAR_GET(pgr4_native_low_latency),
+        .frame_latency = uint32_t(std::max(0, REXCVAR_GET(rexnative_frame_latency))),
+        .low_latency = REXCVAR_GET(rexnative_low_latency),
         .latency_margin_ns =
-            uint64_t(std::max(0, REXCVAR_GET(pgr4_native_latency_margin_us))) * 1000,
+            uint64_t(std::max(0, REXCVAR_GET(rexnative_latency_margin_us))) * 1000,
         .log = std::move(log)});
     if (pacer_->frame_latency() > 0)
-      REXLOG_INFO("PGR4 native: frames paced on the display, at most {} begun but not shown",
+      REXLOG_INFO("ReXNative: frames paced on the display, at most {} begun but not shown",
                   pacer_->frame_latency());
   }
   frame_start_ns_ = NowNs();
-  if (REXCVAR_GET(pgr4_native_render_thread)) {
+  if (REXCVAR_GET(rexnative_render_thread)) {
     queue_ = std::make_unique<Queue>();
     queue_->thread = std::thread([this] { RenderThreadMain(); });
-    REXLOG_INFO("PGR4 native: recording on the render thread");
+    REXLOG_INFO("ReXNative: recording on the render thread");
   }
   return true;
 }
@@ -613,7 +616,7 @@ void NativeRenderer::SwitchUpscaler(bool on) {
     upscaler_ = std::make_unique<Upscaler>();
     upscaler_->set_output_scale(rt_->resolution_scale());
     if (!upscaler_->Initialize(device_->device())) {
-      REXLOG_ERROR("PGR4 native: upscaler unavailable; the scene keeps its MSAA");
+      REXLOG_ERROR("ReXNative: upscaler unavailable; the scene keeps its MSAA");
       upscaler_.reset();
       return;
     }
@@ -640,25 +643,25 @@ void NativeRenderer::SwitchUpscaler(bool on) {
   }
   resolver_->set_upscaler(upscaler());
   if (on)
-    REXLOG_INFO("PGR4 native: the scene antialiased by DLSS");
+    REXLOG_INFO("ReXNative: the scene antialiased by DLSS");
   else
-    REXLOG_INFO("PGR4 native: the scene with {}x MSAA", scene_msaa_);
+    REXLOG_INFO("ReXNative: the scene with {}x MSAA", scene_msaa_);
 }
 
 void NativeRenderer::ReadSceneMsaa() {
-  if (const int32_t msaa = REXCVAR_GET(pgr4_native_msaa);
+  if (const int32_t msaa = REXCVAR_GET(rexnative_msaa);
       msaa == 1 || msaa == 2 || msaa == 4 || msaa == 8) {
     scene_msaa_ = rt_->SupportedSamples(uint32_t(msaa));
     if (scene_msaa_ != uint32_t(msaa))
-      REXLOG_WARN("PGR4 native: {}x MSAA unsupported; the scene takes {}x", msaa, scene_msaa_);
+      REXLOG_WARN("ReXNative: {}x MSAA unsupported; the scene takes {}x", msaa, scene_msaa_);
   } else {
-    REXLOG_ERROR("PGR4 native: --pgr4_native_msaa={} is not 1, 2, 4 or 8", msaa);
+    REXLOG_ERROR("ReXNative: --rexnative_msaa={} is not 1, 2, 4 or 8", msaa);
   }
 }
 
 void NativeRenderer::BeginFrameModules() {
   if (frame_rate_requested_.exchange(false, std::memory_order_relaxed))
-    device_->set_present_interval(uint32_t(std::max(1, REXCVAR_GET(pgr4_native_present_interval))));
+    device_->set_present_interval(uint32_t(std::max(1, REXCVAR_GET(rexnative_present_interval))));
   // A scene learned at run time (scene.h): the upscaler and the scene's targets are made again
   // for it, as when the antialiasing changes.
   if (SceneEndFrame(frame_index_) && (upscaler_ || Upscaler::Requested() || scene_msaa_ != 2))
@@ -680,7 +683,7 @@ void NativeRenderer::BeginFrameModules() {
     // The context made again: its old resources may be in the lists still running.
     device_->WaitIdle();
     if (!u->SetDebug(FfxDebug())) {
-      REXLOG_ERROR("PGR4 native: upscaler unavailable; the scene keeps its MSAA");
+      REXLOG_ERROR("ReXNative: upscaler unavailable; the scene keeps its MSAA");
       upscaler_.reset();
       SwitchUpscaler(false);
     }
@@ -701,7 +704,7 @@ void NativeRenderer::BeginFrameModules() {
 }
 
 void NativeRenderer::RenderThreadMain() {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native render");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative render");
   Queue& q = *queue_;
   for (;;) {
     std::unique_ptr<Queue::Batch> b;
@@ -865,7 +868,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
     sync = requested && present_->capture_holds_guest();
   }
   s.prep = draw_->EndFramePrepare(q.gpu_frames_done.load(std::memory_order_acquire));
-  s.log_frames = requested ? uint32_t(std::max(0, REXCVAR_GET(pgr4_native_mark_audit))) : 0;
+  s.log_frames = requested ? uint32_t(std::max(0, REXCVAR_GET(rexnative_mark_audit))) : 0;
   if (s.log_frames) draw_->StartAudit(s.log_frames);
   // At most one frame ahead: frame F is queued once the render thread finished F - 1.
   const uint64_t wait = q.WaitFrames(q.frame);
@@ -933,7 +936,7 @@ void NativeRenderer::OnResolve(const uint8_t* base, const HookArgs& args) {
 }
 
 uint64_t NativeRenderer::FrontEndLimit() {
-  const int32_t fps = REXCVAR_GET(pgr4_native_menu_fps);
+  const int32_t fps = REXCVAR_GET(rexnative_menu_fps);
   const uint64_t now = NowNs();
   if (fps <= 0 || NeuralPass::CarsSimulated()) {
     limit_ns_ = now;
@@ -1004,7 +1007,7 @@ bool NativeRenderer::HandOverRequested() {
   if (!SwitchRequested()) return false;
   if (FrameHeight() == kGameFrameHeight) return true;
   REXLOG_WARN(
-      "PGR4 native: renderer switch: the Xenos plugin draws only the game's {}-row frame, not "
+      "ReXNative: renderer switch: the Xenos plugin draws only the game's {}-row frame, not "
       "this {}-row one (frame_height.h); it draws from the start with the Classic renderer",
       kGameFrameHeight, FrameHeight());
   return false;
@@ -1023,9 +1026,9 @@ void NativeRenderer::HandOver(uint8_t* base, uint32_t device) {
   paces_frames_.store(false, std::memory_order_relaxed);
   live_.store(nullptr, std::memory_order_relaxed);
   if (g_failed)
-    REXLOG_INFO("PGR4 native: the Xenos plugin draws for the rest of the run");
+    REXLOG_INFO("ReXNative: the Xenos plugin draws for the rest of the run");
   else
-    REXLOG_INFO("PGR4 native: renderer switch: the Xenos plugin draws");
+    REXLOG_INFO("ReXNative: renderer switch: the Xenos plugin draws");
 }
 
 void NativeRenderer::TakeBack() {
@@ -1035,7 +1038,7 @@ void NativeRenderer::TakeBack() {
   rex::cvar::SetFlagByName("gpu_skip_draws", "true");
   if (occlusion_) rex::cvar::SetFlagByName("occlusion_query_external", "true");
   live_.store(this, std::memory_order_release);
-  REXLOG_INFO("PGR4 native: renderer switch: native draws");
+  REXLOG_INFO("ReXNative: renderer switch: native draws");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1087,7 +1090,7 @@ void NativeRenderer::FindCamera(const DrawState& state) {
     if (!camera_logged_) {
       camera_logged_ = true;
       REXLOG_INFO(
-          "PGR4 native: the scene's camera, from c{} of its vertex shaders: near {}, "
+          "ReXNative: the scene's camera, from c{} of its vertex shaders: near {}, "
           "far {}, fov {:.1f} deg",
           v, camera_.near_plane, camera_.far_plane, camera_.fov_y * 57.2958f);
     }
@@ -1127,12 +1130,12 @@ void NativeRenderer::ExecuteQuery(const QueryCall& q) {
 }
 
 // With one submission per frame the GPU idles from the end of a frame until the render thread
-// has recorded all of the next one. Every --pgr4_native_submit_draws draws, the frame so far is
+// has recorded all of the next one. Every --rexnative_submit_draws draws, the frame so far is
 // submitted and recording goes on in a fresh list, where nothing bound carries over. The texture
 // copies recorded so far read upload memory the untile workers fill: while untiles are still
 // running, the next draw or resolve tries again.
 void NativeRenderer::SubmitEarly() {
-  const int32_t every = REXCVAR_GET(pgr4_native_submit_draws);
+  const int32_t every = REXCVAR_GET(rexnative_submit_draws);
   if (every <= 0 || stats_.draws - draws_submitted_ < uint64_t(every) || !textures_->UploadsDone())
     return;
   profile::Scope scope(profile::kSubmit);
@@ -1152,7 +1155,7 @@ void NativeRenderer::Fail() {
   g_failed = true;
   paces_frames_.store(false, std::memory_order_relaxed);
   if (pacer_) pacer_->Stop();
-  REXLOG_ERROR("PGR4 native: frame {} failed; native path off for the rest of the run",
+  REXLOG_ERROR("ReXNative: frame {} failed; native path off for the rest of the run",
                frame_index_);
   if (device_) LogDeviceRemoved(device_->device());
   if (!primary_) {
@@ -1175,7 +1178,7 @@ void NativeRenderer::ReleaseGameWindow() {
   if (window_taken_) {
     ConnectSdkPresenter(true);
     window_taken_ = false;
-    REXLOG_INFO("PGR4 native: the game window shows ReXGlue's presenter");
+    REXLOG_INFO("ReXNative: the game window shows ReXGlue's presenter");
   }
 }
 
@@ -1440,11 +1443,11 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
     for (uint32_t i = 0; i < profile::kStageCount; ++i) w.stage_ticks[i] += profile::g.ticks[i];
     w.track_calls += profile::g.track_calls;
   }
-  const int32_t every = REXCVAR_GET(pgr4_d3d_stats_frames);
+  const int32_t every = REXCVAR_GET(rexnative_d3d_stats_frames);
   if (every <= 0 || w.frames < uint64_t(every)) return;
   const double n = double(w.frames);
   REXLOG_INFO(
-      "PGR4 native: frames {} | per frame: draws {:.1f}, draw CPU {:.1f} us "
+      "ReXNative: frames {} | per frame: draws {:.1f}, draw CPU {:.1f} us "
       "({:.4f} us/draw), swap {:.1f} us, frame {:.2f} ms, game thread {:.1f} us "
       "(waiting {:.1f} us)",
       frame_index_, w.draws / n, w.draw_ns / 1000.0 / n,
@@ -1459,7 +1462,7 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
                     double(TicksToNs(w.stage_ticks[i])) / double(w.draws));
       line += item;
     }
-    REXLOG_INFO("PGR4 native profile: ns/draw{} | track calls/frame {:.0f}", line,
+    REXLOG_INFO("ReXNative profile: ns/draw{} | track calls/frame {:.0f}", line,
                 double(w.track_calls) / n);
     for (uint64_t& t : w.stage_ticks) t = 0;
     w.track_calls = 0;
@@ -1467,7 +1470,7 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   if (gpu_timer_) {
     gpu_timer_->Log();
     for (uint64_t hash : gpu_timer_->TakeNewTopShaders())
-      REXLOG_INFO("PGR4 native GPU: shader {:016X} ucode:\n{}", hash,
+      REXLOG_INFO("ReXNative GPU: shader {:016X} ucode:\n{}", hash,
                   draw_->ShaderDisassembly(hash));
   }
   w.frames = w.draws = w.draw_ns = w.swap_ns = w.frame_ns = w.hook_ns = w.hook_wait_ns = 0;
@@ -1481,4 +1484,4 @@ void NativeRenderer::ResetFrameCounters() {
     for (uint64_t& c : profile::g.counters) c = 0;
   }
 }
-}  // namespace pgr4::native
+}  // namespace rexnative

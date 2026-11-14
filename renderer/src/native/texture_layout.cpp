@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest texture layout, host formats and CPU untiling.
+// ReXNative renderer: guest texture layout, host formats and CPU untiling.
 // See texture_layout.h. The host format choices, the fetch constant -> key derivation and the
 // swizzle composition follow ReXGlue's (Xenia's, BSD-3) TextureCache/D3D12TextureCache so the
 // untiled data matches the Xenos plugin's uploads byte for byte.
@@ -12,7 +12,7 @@
 #include <cstring>
 #include <iterator>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
@@ -433,4 +433,4 @@ bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout
   return true;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

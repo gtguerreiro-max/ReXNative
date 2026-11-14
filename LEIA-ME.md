@@ -120,9 +120,12 @@ rexnative_add(meujogo
 ```
 
 e na app do jogo chamar `rexnative::hud::SetConfigPath`, `Initialize` e `Shutdown`
-(`renderer/src/hud/hud.h`). Correr com `--pgr4_native_primary=true`.
+(`renderer/src/hud/hud.h`). O ReXNative passa a desenhar o jogo por defeito (o
+`kDefaultEnabled` da camada); `--rexnative=false` devolve-o ao plugin Xenos do ReXGlue. Todas
+as opções são cvars `rexnative_*`; os nomes do PGR4Native (`pgr4_native_*`, `pgr4_d3d_*`)
+continuam a funcionar e dizem no log o nome novo.
 
-**3. Medir a cena para o DLSS.** Correr com `--pgr4_native_resolve_dump=<pasta>`, criar
+**3. Medir a cena para o DLSS.** Correr com `--rexnative_resolve_dump=<pasta>`, criar
 `<pasta>/dump.request` numa cena 3D, e:
 
 ```bash
@@ -145,7 +148,8 @@ Melhorar aos poucos:
    jogo.~~ Feito (2026-11-14).
 2. Encontrar a superfície da cena em runtime, para o DLSS funcionar sem a medir.
 3. Encontrar o passe HDR antes do tone mapping do jogo, para o DLSS 5.
-4. Mudar o nome das opções `pgr4_native_*` e do namespace `pgr4::native` (mantendo os antigos).
+4. ~~Mudar o nome das opções `pgr4_native_*` e do namespace `pgr4::native` (mantendo os
+   antigos).~~ Feito: `rexnative`, `rexnative_*`; o ReXNative fica ligado por defeito.
 5. ~~Incluir o conjunto de patches do SDK de que o renderer precisa, fixo, com um script de
    build.~~ Feito (`sdk/`, `scripts/build-sdk.ps1`); falta compilar um jogo de ponta a ponta a
    partir dele numa máquina limpa.

@@ -1,11 +1,11 @@
-// pgr4-native: the profile counters of an instrumented build (scripts/build.sh --pgo gen).
+// ReXNative renderer: the profile counters of an instrumented build (scripts/build.sh --pgo gen).
 //
 // The profile runtime writes its counters when the process exits normally, and the run scripts
 // end the game with wineserver -k, which never gets there. So a thread writes them every few
 // seconds, to a temporary file renamed over the profile once complete: a kill during a write
 // leaves the previous profile whole. A normal exit writes and renames once more, after the
 // thread's last write, and the runtime's own write at exit then does nothing. The profile is
-// pgr4_recompiled.profraw beside the exe, or the file LLVM_PROFILE_FILE names (no % patterns:
+// <exe name>.profraw beside the exe, or the file LLVM_PROFILE_FILE names (no % patterns:
 // the rename needs the final name).
 #if defined(__LLVM_INSTR_PROFILE_GENERATE)
 

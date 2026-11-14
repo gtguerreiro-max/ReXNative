@@ -1,7 +1,7 @@
-// pgr4-native PGR4 native renderer: the CPU side of guest textures.
+// ReXNative renderer: the CPU side of guest textures.
 //
 // Pure functions with no D3D12 objects and no ReXGlue runtime state, so an offline build
-// (PGR4_TEXTURES_OFFLINE) can run them on guest-memory dumps:
+// (REXNATIVE_TEXTURES_OFFLINE) can run them on guest-memory dumps:
 //   - TextureKeyFromFetch: the storage-relevant part of a texture fetch constant (what the
 //     cache keys on), derived the same way as ReXGlue's TextureCache::BindingInfoFromFetchConstant.
 //   - GetHostFormat: Xenos format -> DXGI format and the per-block conversion, the same host
@@ -23,7 +23,7 @@
 
 #include <dxgiformat.h>
 
-namespace pgr4::native {
+namespace rexnative {
 
 // Storage-relevant fields of a texture fetch constant. Two fetch constants with the same key
 // read the same guest memory the same way, so they share one host texture; the swizzle,
@@ -142,4 +142,4 @@ bool UntileTexture(const TextureKey& key, const GuestTextureMemory& memory,
                    const std::vector<HostSubresource>& subresources, uint8_t* dst,
                    std::vector<uint8_t>* scratch, UntileStats* stats = nullptr);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

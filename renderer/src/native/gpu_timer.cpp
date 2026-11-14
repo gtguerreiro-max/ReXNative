@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: GPU time per pass of the native frame.
+// ReXNative renderer: GPU time per pass of the native frame.
 #include "gpu_timer.h"
 
 #include "log.h"
@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <string>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -177,7 +177,7 @@ bool GpuTimer::Initialize(ID3D12Device* device, ID3D12CommandQueue* queue, uint3
     return false;
   frames_.resize(slots);
   for (Frame& f : frames_) f.spans.reserve(kMaxSpans);
-  REXLOG_INFO("PGR4 native: GPU timing on ({} timestamp ticks/s, up to {} spans per frame)",
+  REXLOG_INFO("ReXNative: GPU timing on ({} timestamp ticks/s, up to {} spans per frame)",
               frequency_, kMaxSpans);
   return true;
 }
@@ -204,8 +204,8 @@ void GpuTimer::Switch(CommandStream* list, uint64_t key) {
   Frame& f = frames_[slot_];
   current_ = key;
   if (f.spans.size() >= kMaxSpans) {
-    PGR4_WARN_ONCE(
-        "PGR4 native: GPU timing: more than {} passes in a frame; the rest are charged to the "
+    REXNATIVE_WARN_ONCE(
+        "ReXNative: GPU timing: more than {} passes in a frame; the rest are charged to the "
         "last one",
         kMaxSpans);
     return;
@@ -297,7 +297,7 @@ void GpuTimer::LogSpike(const Frame& f, uint64_t ticks) {
                   Describe(WithoutOccurrence(key)).c_str());
     spans += item;
   }
-  REXLOG_INFO("PGR4 native GPU spike: frame {} {:.2f} ms (typical {:.2f}), {} spans: {}", f.number,
+  REXLOG_INFO("ReXNative GPU spike: frame {} {:.2f} ms (typical {:.2f}), {} spans: {}", f.number,
               double(ticks) * ms_per_tick, double(typical_ticks_) * ms_per_tick,
               spike_spans_.size(), spans);
 }
@@ -388,7 +388,7 @@ void GpuTimer::Log() {
     top.emplace_back(key, &g);
   }
   REXLOG_INFO(
-      "PGR4 native GPU: frames {} | GPU {:.2f} ms/frame (max {:.2f}), idle between "
+      "ReXNative GPU: frames {} | GPU {:.2f} ms/frame (max {:.2f}), idle between "
       "frames {:.2f} ms, spans/frame {:.0f} | {} {:.2f}, {} {:.2f}, {} {:.2f}, {} {:.2f}, "
       "{} {:.2f}, {} {:.2f}, {} {:.2f} ms",
       frames_collected_, ms(frame_ticks_), double(frame_ticks_max_) * ms_per_tick, ms(idle_ticks_),
@@ -410,7 +410,7 @@ void GpuTimer::Log() {
   for (const auto& [key, g] : top) {
     const uint32_t occurrence = uint32_t(key >> kOccurrenceShift) & kOccurrenceMax;
     REXLOG_INFO(
-        "PGR4 native GPU: {:6.3f} ms {:5.1f} %  span {:4.0f}  #{:<2} x{:.2f}  {:5.0f} cmds  {}",
+        "ReXNative GPU: {:6.3f} ms {:5.1f} %  span {:4.0f}  #{:<2} x{:.2f}  {:5.0f} cmds  {}",
         ms(g->ticks), frame_ms > 0 ? 100.0 * ms(g->ticks) / frame_ms : 0.0,
         double(g->position) / double(g->spans), occurrence, double(g->spans) / n,
         double(g->commands) / n, Describe(WithoutOccurrence(key)));
@@ -425,4 +425,4 @@ void GpuTimer::Log() {
   spikes_logged_ = 0;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

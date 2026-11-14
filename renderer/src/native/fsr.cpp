@@ -12,7 +12,7 @@
 #include <cmath>
 #include <utility>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace shaders {
 #include "d3d12_5_1/guest_output_ffx_fsr_easu_ps.h"
@@ -147,7 +147,7 @@ bool Fsr1::BeginInput(ID3D12Device* device, CommandStream* list, uint32_t in_wid
     in_height_ = in_height;
     out_width_ = out_width;
     out_height_ = out_height;
-    REXLOG_INFO("PGR4 native present: FSR 1 from {}x{} to {}x{}", in_width, in_height, out_width,
+    REXLOG_INFO("ReXNative present: FSR 1 from {}x{} to {}x{}", in_width, in_height, out_width,
                 out_height);
   }
   D3D12_RESOURCE_BARRIER b = TransitionBarrier(input_.Get(),
@@ -209,4 +209,4 @@ void Fsr1::Upscale(CommandStream* list, D3D12_CPU_DESCRIPTOR_HANDLE rtv, int32_t
   list->DrawInstanced(4, 1, 0, 0);
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

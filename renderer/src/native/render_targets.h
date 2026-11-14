@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: host render targets for the guest's EDRAM
+// ReXNative renderer: host render targets for the guest's EDRAM
 // surfaces, and the guest Clear calls.
 //
 // No EDRAM emulation and no tiles: every guest surface (RB_SURFACE_INFO pitch and MSAA,
@@ -44,7 +44,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pgr4::native {
+namespace rexnative {
 
 struct HookArgs;
 
@@ -224,7 +224,7 @@ class RenderTargets {
   void BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t completed_fence);
 
   // Host targets of the surfaces whose RB_SURFACE_INFO has `value` under `mask` (the 3D scene)
-  // have `samples` samples whatever the guest's MSAA (1 for the upscaler, --pgr4_native_msaa's
+  // have `samples` samples whatever the guest's MSAA (1 for the upscaler, --rexnative_msaa's
   // otherwise) and `scale`'s size; mask 0: none. They are other targets than the surfaces' guest
   // ones. Between frames. SetSceneScale then draws them at a smaller scale.
   // The most samples, up to `want` (a power of 2), that the host formats of every target allow.
@@ -237,7 +237,7 @@ class RenderTargets {
     scene_scale_ = scene_size_scale_ = scale;
   }
   // This port: the screen-sized surfaces (the scene's pitch, scene.h ScenePitch) render at
-  // `scale` host pixels per guest pixel (--pgr4_native_resolution_scale); before the first
+  // `scale` host pixels per guest pixel (--rexnative_resolution_scale); before the first
   // target. A scene learned at run time applies to the targets made after it.
   void SetResolutionScale(uint32_t scale) {
     resolution_scale_ = scale;
@@ -333,4 +333,4 @@ class RenderTargets {
   RenderScale base_scale_;  // of the screen-sized surfaces that are not overridden
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: NVIDIA DLSS through the NGX SDK, in place of FSR.
+// ReXNative renderer: NVIDIA DLSS through the NGX SDK, in place of FSR.
 //
 // DLAA (render size = output size) and DLSS Super Resolution (a smaller render size) for the
 // 3D scene, at the Upscaler's hook: the scene's first resolve (upscaler.h). The NGX code comes
@@ -19,12 +19,12 @@ struct ID3D12Resource;
 struct NVSDK_NGX_Parameter;
 struct NVSDK_NGX_Handle;
 
-namespace pgr4::native {
+namespace rexnative {
 
 class Dlss {
  public:
   enum class Mode : uint32_t { kDlaa, kQuality, kBalanced, kPerformance, kUltraPerformance };
-  // --pgr4_native_dlss_mode: dlaa, quality, balanced, performance or ultra (dlaa otherwise).
+  // --rexnative_dlss_mode: dlaa, quality, balanced, performance or ultra (dlaa otherwise).
   static Mode ModeFromName(std::string_view name);
   static const char* Name(Mode mode);
   // The render size per output size of a mode (NVIDIA's ratios; 1 for DLAA).
@@ -127,4 +127,4 @@ class Dlss {
 // phases (8 to 64), as NVIDIA's DLSS guide recommends.
 void DlssJitter(uint64_t index, double render_scale, float& x, float& y);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

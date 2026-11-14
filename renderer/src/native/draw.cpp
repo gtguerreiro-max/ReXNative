@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest draws -> host D3D12 draws. See draw.h.
+// ReXNative renderer: guest draws -> host D3D12 draws. See draw.h.
 //
 // Ports (BSD-3, Xenia / ReXGlue): d3d12::PipelineCache::GetCurrentStateDescription and
 // CreateD3D12Pipeline (pipeline state), D3D12CommandProcessor::IssueDraw,
@@ -63,58 +63,59 @@
 #include <unordered_set>
 #include <vector>
 
-bool FromDustWorldStepped();  // frame_rate.cpp
+bool RexNativeGameWorldStepped();  // frame_rate.cpp
 
-REXCVAR_DEFINE_BOOL(fromdust_trace_camera, false, "FromDust",
-                    "Log the scene camera's view-projection matrix (the terrain vertex shader's "
-                    "c28-c31, as FromDustRecomp's pointer finds it) once per frame");
-REXCVAR_DEFINE_BOOL(pgr4_native_async_pipelines, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_trace_camera, false, "ReXNative",
+                    "Debug: log, once per frame, the view-projection matrix in vertex shader "
+                    "constants c28-c31 of the first full-width draw that reads c8, c11 and c28-c31 "
+                    "(where From Dust keeps its camera; another game may keep it elsewhere)");
+REXCVAR_DEFINE_BOOL(rexnative_async_pipelines, true, "ReXNative",
                     "Compile new pipeline states on worker threads, the frame's draws that need "
                     "them skipped, instead of compiling each at its draw");
-REXCVAR_DEFINE_INT32(pgr4_native_pipeline_threads, 0, "PGR4 native",
-                     "Pipeline compile threads with --pgr4_native_async_pipelines (0: a quarter "
+REXCVAR_DEFINE_INT32(rexnative_pipeline_threads, 0, "ReXNative",
+                     "Pipeline compile threads with --rexnative_async_pipelines (0: a quarter "
                      "of the hardware threads, 1 to 4)");
-REXCVAR_DEFINE_BOOL(pgr4_native_pipeline_wait, true, "PGR4 native",
-                    "With --pgr4_native_async_pipelines, a frame whose draws need pipelines still "
+REXCVAR_DEFINE_BOOL(rexnative_pipeline_wait, true, "ReXNative",
+                    "With --rexnative_async_pipelines, a frame whose draws need pipelines still "
                     "compiling is not shown and waits for them at its end, up to 0.5 s (false: "
                     "show it without those draws)");
-REXCVAR_DEFINE_BOOL(pgr4_native_generic_pipelines, true, "PGR4 native",
-                    "With --pgr4_native_async_pipelines, a draw whose bool or texture-sign "
+REXCVAR_DEFINE_BOOL(rexnative_generic_pipelines, true, "ReXNative",
+                    "With --rexnative_async_pipelines, a draw whose bool or texture-sign "
                     "specialization is still compiling uses the pipeline of its unspecialized "
                     "shaders when that one is ready (false: it waits for the specialization)");
-REXCVAR_DEFINE_BOOL(pgr4_native_pipeline_cache, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_pipeline_cache, true, "ReXNative",
                     "Keep the shaders and pipelines the native renderer creates under "
-                    "<cache_root>\\pgr4-native and compile them at start-up in later runs "
+                    "<cache_root>\\rexnative and compile them at start-up in later runs "
                     "(prewarm, plus a D3D12 pipeline library)");
-REXCVAR_DEFINE_STRING(pgr4_native_watch_trace, "", "PGR4 native",
+REXCVAR_DEFINE_STRING(rexnative_watch_trace, "", "ReXNative",
                       "Binary log of vertex write-watch events (arms and faults, one 64-bit "
                       "record each, see WatchTrace) for offline analysis of the watch policy");
-REXCVAR_DEFINE_BOOL(pgr4_native_dynamic_depth_bias, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_dynamic_depth_bias, true, "ReXNative",
                     "Set the polygon offset with RSSetDepthBias instead of baking it into the "
                     "pipeline state, where the driver supports it (the game animates it, which "
                     "made hundreds of pipelines per shader pair)");
-REXCVAR_DEFINE_BOOL(pgr4_native_bool_specialize, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_bool_specialize, true, "ReXNative",
                     "Translate shaders whose control flow tests bool constants for each draw's "
                     "values, without the branches (shader_specialize.h)");
-REXCVAR_DEFINE_BOOL(pgr4_native_coherency_check, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_coherency_check, false, "ReXNative",
                     "Debug: keep a CPU copy of what shared memory holds and compare the vertex and "
                     "index ranges draws read with guest memory, per request and again at the Swap "
                     "(stale pages: a write the page watch missed; late pages: data rewritten after "
                     "a draw of the frame read it), and check copy segments against every read. "
                     "Slow (512 MB of host memory, a memcmp of every range read)");
-REXCVAR_DEFINE_INT32(pgr4_native_draw_log_from, -1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_draw_log_from, -1, "ReXNative",
                      "Debug: from this native frame on, log the draws of each frame to "
                      "<capture dir>/draws-f<frame>.txt, as bit 16 of <capture dir>/draw-debug.txt "
                      "does from when it is set (-1: off)");
-REXCVAR_DEFINE_INT32(pgr4_native_draw_log_frames, 1, "PGR4 native",
-                     "Frames one draw log trigger (--pgr4_native_draw_log_from or draw-debug.txt "
+REXCVAR_DEFINE_INT32(rexnative_draw_log_frames, 1, "ReXNative",
+                     "Frames one draw log trigger (--rexnative_draw_log_from or draw-debug.txt "
                      "bit 16) covers");
-REXCVAR_DEFINE_INT32(pgr4_native_anisotropy, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_anisotropy, 1, "ReXNative",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
-REXCVAR_DECLARE(std::string, pgr4_native_capture_dir);
+REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace xenos = rex::graphics::xenos;
 namespace reg = rex::graphics::reg;
@@ -505,7 +506,7 @@ xenos::ClampMode NormalizeClampMode(xenos::ClampMode m) {
   return m;
 }
 
-// `min_aniso`: --pgr4_native_anisotropy (DrawRenderer::Impl::min_aniso); `lod_bias`: the
+// `min_aniso`: --rexnative_anisotropy (DrawRenderer::Impl::min_aniso); `lod_bias`: the
 // draw's SamplerKey::lod_bias.
 SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBinding& binding,
                          xenos::AnisoFilter min_aniso, uint32_t lod_bias) {
@@ -693,7 +694,7 @@ struct DrawRenderer::Impl {
   const uint8_t* membase = nullptr;
   ShaderCache shaders;
   BoolSpecializer vs_bools{shaders}, ps_bools{shaders};
-  bool bool_specialize = REXCVAR_GET(pgr4_native_bool_specialize);
+  bool bool_specialize = REXCVAR_GET(rexnative_bool_specialize);
   ComPtr<ID3D12RootSignature> root_signature;
   uint64_t root_signature_hash = 0;  // names in the pipeline library depend on it
 
@@ -825,7 +826,7 @@ struct DrawRenderer::Impl {
   static constexpr uint32_t kSamplerMemoBits = 10;
   std::unique_ptr<SamplerMemo[]> sampler_memo =
       std::make_unique<SamplerMemo[]>(size_t(1) << kSamplerMemoBits);
-  xenos::AnisoFilter min_aniso = xenos::AnisoFilter::kDisabled;  // --pgr4_native_anisotropy
+  xenos::AnisoFilter min_aniso = xenos::AnisoFilter::kDisabled;  // --rexnative_anisotropy
   // Fetch constants a shader reads (texture and sampler bindings), its descriptor table size and
   // its last BindMemo entry (checked before hashing), direct-mapped by shader.
   struct BindMemo;
@@ -869,7 +870,7 @@ struct DrawRenderer::Impl {
       std::make_unique<BindMemo[]>(size_t(2) << kBindMemoSetBits);
   uint64_t bind_clock = 0;
 
-  // Pipelines by PipelineKey hash. With --pgr4_native_async_pipelines new ones compile on
+  // Pipelines by PipelineKey hash. With --rexnative_async_pipelines new ones compile on
   // pso_threads and the draws that need them are skipped until they are ready
   // (stats.pso_pending). With pipeline_wait such a frame is not shown (FrameIncomplete): the
   // previous frame stays on screen while this one waits at its end for every pipeline its
@@ -878,7 +879,7 @@ struct DrawRenderer::Impl {
   // frame needs many at once (180 at race start); a frame mid-race seldom needs more than one.
   // Waiting at each draw instead compiled one pipeline at a time, as the next draw requested
   // its own only once the previous one's was ready. Entries are never removed.
-  // With --pgr4_native_pipeline_cache every new pipeline is recorded in `store`; the next run
+  // With --rexnative_pipeline_cache every new pipeline is recorded in `store`; the next run
   // translates and creates the recently used ones at start-up (Prewarm, a slice per frame) and
   // the workers load them from `library` instead of compiling them again. A record no recent
   // session used leaves the store: it stays the size of what the player plays.
@@ -912,7 +913,7 @@ struct DrawRenderer::Impl {
   bool pso_stopping = false;
   static constexpr std::chrono::milliseconds kPipelineWaitBudget{500};
   bool pipeline_wait = false;
-  bool generic_pipelines = false;        // --pgr4_native_generic_pipelines (with worker threads)
+  bool generic_pipelines = false;        // --rexnative_generic_pipelines (with worker threads)
   std::vector<Pipeline*> frame_pending;  // pipelines of the frame's skipped draws, once each
   PipelineStore store;
   // What made the pipelines created while running new (logged, kNewPipelineLog lines): a
@@ -985,7 +986,7 @@ struct DrawRenderer::Impl {
   };
   PsoMemo pso_memo[1024];
 
-  // Draw path counters, logged every 300 frames with --pgr4_native_profile.
+  // Draw path counters, logged every 300 frames with --rexnative_profile.
   struct Diag {
     uint64_t frames = 0, draws = 0, mods_hits = 0, translation_hits = 0, pso_hits = 0, flushes = 0;
     PrepareDiag prep;  // with the render thread, added at each Swap (AddPrepareCounters)
@@ -1024,7 +1025,7 @@ struct DrawRenderer::Impl {
             &cb_fetch,  &cb_desc_vs,  &cb_desc_ps};
   }
 
-  // Oracle toggles from <capture dir>\draw-debug.txt (with --pgr4_native_capture_dir)
+  // Oracle toggles from <capture dir>\draw-debug.txt (with --rexnative_capture_dir)
   // ("<mask> [max_draws] [skip_from] [skip_to] [shader hash]..."), read every 15 frames.
   // max_draws > 0 issues only the first N draws of a frame; draws whose vertex or pixel shader
   // ucode hash is listed are skipped (selected with kDebugOnlyListed). Hashes stay stable across
@@ -1043,7 +1044,7 @@ struct DrawRenderer::Impl {
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
   uint32_t debug_skip_from = 0, debug_skip_to = 0;
-  std::string debug_path;  // empty without --pgr4_native_capture_dir: not polled
+  std::string debug_path;  // empty without --rexnative_capture_dir: not polled
   std::array<uint64_t, 8> debug_hashes{};
   uint32_t debug_hash_count = 0;
   uint32_t draw_log_left = 0;  // frames still to log
@@ -1352,7 +1353,7 @@ struct DrawRenderer::Impl {
   // copy, and its time, since EndFrame.
   std::atomic<uint64_t> watch_arms{0}, watch_arm_pages{0}, watch_arm_changed{0}, watch_arm_ns{0};
 
-  // --pgr4_native_watch_trace. Record: type (2 bits) << 62 | frame (22) << 40 | page (17) << 23
+  // --rexnative_watch_trace. Record: type (2 bits) << 62 | frame (22) << 40 | page (17) << 23
   // | pages (9, saturated) << 14 | request (14): arms of one RequestRange call share the request
   // number. Faults come from any guest thread, hence the mutex.
   struct WatchTrace {
@@ -1375,7 +1376,7 @@ struct DrawRenderer::Impl {
     }
   } trace;
 
-  // --pgr4_native_coherency_check; RequestRange's thread only.
+  // --rexnative_coherency_check; RequestRange's thread only.
   struct Coherency {
     // What shared memory holds once the copies recorded so far are done, in Prepare order.
     std::unique_ptr<uint8_t[]> shadow =
@@ -1414,7 +1415,7 @@ struct DrawRenderer::Impl {
   std::vector<ComPtr<ID3D12Resource>> coherency_readbacks;  // free, kCoherencyReadback each
   void CheckCoherencyJobs(uint64_t completed_fence);
 
-  // --pgr4_native_mark_audit. Guest thread: the frames still to audit, the ranges taken this
+  // --rexnative_mark_audit. Guest thread: the frames still to audit, the ranges taken this
   // frame (once each: key AuditKey), and the frame's counts.
   static constexpr uint32_t kAuditReadback = 64u << 20;  // bytes read back per audited frame
   uint32_t audit_left = 0;
@@ -1442,7 +1443,7 @@ struct DrawRenderer::Impl {
   void CheckAuditJobs(uint64_t completed_fence);
 };
 
-// --pgr4_native_coherency_check: one frame's copied shared memory ranges, the bytes they should
+// --rexnative_coherency_check: one frame's copied shared memory ranges, the bytes they should
 // hold once the frame's copies are done (the shadow's at the frame's Swap), and their read back.
 struct CoherencyJob {
   uint32_t frame = 0;
@@ -1456,16 +1457,16 @@ bool DrawRenderer::Impl::Initialize() {
   device = r.d3d12();
   memory = rex::system::kernel_memory();
   if (!memory) {
-    REXLOG_ERROR("PGR4 native draw: no guest memory");
+    REXLOG_ERROR("ReXNative draw: no guest memory");
     return false;
   }
   membase = memory->physical_membase();
   vertex_upload.SetDevice(device);
-  threaded = REXCVAR_GET(pgr4_native_render_thread);
+  threaded = REXCVAR_GET(rexnative_render_thread);
   // kMax_N_1 is log2(N) + 1.
-  if (const int32_t samples = std::clamp(REXCVAR_GET(pgr4_native_anisotropy), 1, 16); samples > 1)
+  if (const int32_t samples = std::clamp(REXCVAR_GET(rexnative_anisotropy), 1, 16); samples > 1)
     min_aniso = xenos::AnisoFilter(std::bit_width(uint32_t(samples)));
-  if (const std::string dir = REXCVAR_GET(pgr4_native_capture_dir); !dir.empty())
+  if (const std::string dir = REXCVAR_GET(rexnative_capture_dir); !dir.empty())
     debug_path = (std::filesystem::path(dir) / "draw-debug.txt").string();
   constant_upload.SetDevice(device);
   // Race start keeps 3 vertex and 10 constant blocks in flight; creating one there takes up to
@@ -1505,11 +1506,11 @@ bool DrawRenderer::Impl::Initialize() {
   pending = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
   segment_word_epoch = std::make_unique<uint32_t[]>(kPageCount / 64);
   segment_pages = std::make_unique<uint64_t[]>(kPageCount / 64);
-  if (const std::string& path = REXCVAR_GET(pgr4_native_watch_trace); !path.empty())
+  if (const std::string& path = REXCVAR_GET(rexnative_watch_trace); !path.empty())
     trace.file = std::fopen(path.c_str(), "wb");
-  if (REXCVAR_GET(pgr4_native_coherency_check)) {
+  if (REXCVAR_GET(rexnative_coherency_check)) {
     coherency = std::make_unique<Coherency>();
-    REXLOG_INFO("PGR4 native draw: coherency check on");
+    REXLOG_INFO("ReXNative draw: coherency check on");
   }
   invalidation_handle = memory->RegisterPhysicalMemoryInvalidationCallback(InvalidationThunk, this);
   arm_thread = std::thread([this] { WatchThread(); });
@@ -1570,31 +1571,31 @@ bool DrawRenderer::Impl::Initialize() {
   r.textures().SetEvictCallback(
       [this](const std::vector<ID3D12Resource*>& resources) { ReleaseViews(resources); });
   REXLOG_INFO(
-      "PGR4 native draw: up (shared memory 512 MB {}, bindless heaps {} views / {} samplers)",
+      "ReXNative draw: up (shared memory 512 MB {}, bindless heaps {} views / {} samplers)",
       shared_tiled ? "reserved" : "committed", kViewHeapSize, kSamplerHeapSize);
   D3D12_FEATURE_DATA_D3D12_OPTIONS16 options16 = {};
-  dynamic_depth_bias = REXCVAR_GET(pgr4_native_dynamic_depth_bias) &&
+  dynamic_depth_bias = REXCVAR_GET(rexnative_dynamic_depth_bias) &&
                        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16,
                                                              &options16, sizeof(options16))) &&
                        options16.DynamicDepthBiasSupported;
-  REXLOG_INFO("PGR4 native draw: dynamic depth bias {}", dynamic_depth_bias ? "on" : "off");
-  if (REXCVAR_GET(pgr4_native_pipeline_cache)) {
+  REXLOG_INFO("ReXNative draw: dynamic depth bias {}", dynamic_depth_bias ? "on" : "off");
+  if (REXCVAR_GET(rexnative_pipeline_cache)) {
     // The runtime's cache root (userdata\cache unless --cache_root): co_run keeps it.
     rex::Runtime* runtime =
         rex::system::kernel_state() ? rex::system::kernel_state()->emulator() : nullptr;
     std::filesystem::path dir = runtime ? runtime->cache_root() : std::filesystem::path();
     if (dir.empty()) {
-      REXLOG_WARN("PGR4 native pipelines: no cache root, no pipeline cache");
+      REXLOG_WARN("ReXNative pipelines: no cache root, no pipeline cache");
     } else {
-      dir /= "pgr4-native";
+      dir /= "rexnative";
       store.Open(dir, sizeof(PipelineKey), kPipelineKeyVersion);
       library_path = dir / "pipelines.d3d12lib";
     }
   }
-  if (REXCVAR_GET(pgr4_native_async_pipelines)) {
-    pipeline_wait = REXCVAR_GET(pgr4_native_pipeline_wait);
-    generic_pipelines = REXCVAR_GET(pgr4_native_generic_pipelines);
-    int threads = REXCVAR_GET(pgr4_native_pipeline_threads);
+  if (REXCVAR_GET(rexnative_async_pipelines)) {
+    pipeline_wait = REXCVAR_GET(rexnative_pipeline_wait);
+    generic_pipelines = REXCVAR_GET(rexnative_generic_pipelines);
+    int threads = REXCVAR_GET(rexnative_pipeline_threads);
     if (threads <= 0) threads = int(std::thread::hardware_concurrency() / 4);
     threads = std::clamp(threads, 1, 4);
     // While a frame waits for its pipelines, the game threads wait as well.
@@ -1604,7 +1605,7 @@ bool DrawRenderer::Impl::Initialize() {
         // Each thread names itself: Wine gives the Linux thread a name only once that thread has
         // started (set_native_thread_name), so a name its creator sets at once can be lost.
         wchar_t name[32];
-        std::swprintf(name, 32, L"PGR4 native pipelines %d", i);
+        std::swprintf(name, 32, L"ReXNative pipelines %d", i);
         SetThreadDescription(GetCurrentThread(), name);
         PipelineWorker(i == 0, i >= threads);
       });
@@ -1642,15 +1643,15 @@ void DrawRenderer::Impl::PipelineWorker(bool saves, bool on_wait) {
     const auto t0 = std::chrono::steady_clock::now();
     const HRESULT hr = library.Create(job.desc, &pso, &loaded);
     if (job.logged)
-      PGR4_LOG_FIRST(
-          kNewPipelineLog, INFO, "PGR4 native pipelines: compiled in {:.1f} ms{}",
+      REXNATIVE_LOG_FIRST(
+          kNewPipelineLog, INFO, "ReXNative pipelines: compiled in {:.1f} ms{}",
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
           loaded ? " (from the library)" : "");
     if (SUCCEEDED(hr)) {
       job.target->pso = std::move(pso);
       job.target->state.store(kReady, std::memory_order_release);
     } else {
-      PGR4_WARN_ONCE("PGR4 native draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
+      REXNATIVE_WARN_ONCE("ReXNative draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
       job.target->state.store(kFailed, std::memory_order_release);
     }
     lock.lock();
@@ -1684,7 +1685,7 @@ void DrawRenderer::Impl::TransitionShared(CommandStream* list, D3D12_RESOURCE_ST
 
 bool DrawRenderer::Impl::InSharedMemory(uint32_t start, uint32_t length) {
   if (start < kSharedMemorySize && kSharedMemorySize - start >= length) return true;
-  PGR4_WARN_ONCE("PGR4 native draw: range {:08X}+{:X} outside physical memory", start, length);
+  REXNATIVE_WARN_ONCE("ReXNative draw: range {:08X}+{:X} outside physical memory", start, length);
   return false;
 }
 
@@ -1831,7 +1832,7 @@ void DrawRenderer::Impl::QueueArm(uint32_t first, uint32_t end, uint32_t request
 }
 
 void DrawRenderer::Impl::WatchThread() {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native watches");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative watches");
   std::vector<ArmRun> runs;
   for (;;) {
     {
@@ -1906,8 +1907,8 @@ void DrawRenderer::Impl::CheckRequest(uint32_t start, uint32_t length) {
         ++differ;
         first = std::min(first, i);
       }
-    PGR4_LOG_FIRST(200, WARN,
-                   "PGR4 native coherency: frame {} stale page {:05X} (request {:08X}+{:X}, slot "
+    REXNATIVE_LOG_FIRST(200, WARN,
+                   "ReXNative coherency: frame {} stale page {:05X} (request {:08X}+{:X}, slot "
                    "{}): {} of {} bytes differ from {:08X}, {} armed at frame {}, last write fault "
                    "frame {}",
                    stamp - 1, p, start, length, c.slot, differ, hi - lo, first,
@@ -1922,9 +1923,9 @@ void DrawRenderer::Impl::CheckSegmentCopy(uint32_t from, uint32_t size) {
   for (const auto& [b, e] : c.segment_reads) {
     if (!(b < end && from < e)) continue;
     if (segment_conflict) return;
-    PGR4_LOG_FIRST(
+    REXNATIVE_LOG_FIRST(
         200, WARN,
-        "PGR4 native coherency: frame {} copy {:08X}+{:X} overwrites {:08X}-{:08X}, read "
+        "ReXNative coherency: frame {} copy {:08X}+{:X} overwrites {:08X}-{:08X}, read "
         "earlier in its copy segment, without a new segment",
         watch_frame.load(std::memory_order_relaxed), from, size, b, e);
     return;
@@ -1989,8 +1990,8 @@ void DrawRenderer::Impl::CheckCoherencyJobs(uint64_t completed_fence) {
                 ++differ;
                 first = std::min(first, addr + i);
               }
-            PGR4_LOG_FIRST(200, WARN,
-                           "PGR4 native coherency: frame {} shared memory page {:05X} (copied run "
+            REXNATIVE_LOG_FIRST(200, WARN,
+                           "ReXNative coherency: frame {} shared memory page {:05X} (copied run "
                            "{:08X}+{:X}) differs from its copies after the frame: {} of {} bytes "
                            "from {:08X}",
                            job->frame, addr >> kPageShift, start, size, differ, n, first);
@@ -2015,8 +2016,8 @@ void DrawRenderer::Impl::AuditShader(const ShaderRef& ref, const DxbcShader* sha
   const uint64_t hash = XXH3_64bits(ucode, size_t(ref.dwords) * sizeof(uint32_t));
   if (hash == shader->ucode_data_hash()) return;
   ++audit_shaders;
-  PGR4_LOG_FIRST(100, WARN,
-                 "PGR4 native audit: frame {} {} shader {:08X} ({} dwords{}) hashes {:016X} in "
+  REXNATIVE_LOG_FIRST(100, WARN,
+                 "ReXNative audit: frame {} {} shader {:08X} ({} dwords{}) hashes {:016X} in "
                  "guest memory, the shader memo gave {:016X}",
                  watch_frame.load(std::memory_order_relaxed), type, ref.ucode, ref.dwords,
                  ref.immediate ? ", immediate" : "", hash, shader->ucode_data_hash());
@@ -2056,7 +2057,7 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
     void* data = nullptr;
     const D3D12_RANGE range = {0, job->used};
     if (!job->readback || FAILED(job->readback->Map(0, &range, &data))) {
-      REXLOG_WARN("PGR4 native audit: frame {}: no read back", job->frame);
+      REXLOG_WARN("ReXNative audit: frame {}: no read back", job->frame);
       continue;
     }
     const uint8_t* got = static_cast<const uint8_t*>(data);
@@ -2082,9 +2083,9 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
       }
       const uint32_t p = first == UINT32_MAX ? e.range.start >> kPageShift : first;
       const uint64_t bit = 1ull << (p & 63);
-      PGR4_LOG_FIRST(
+      REXNATIVE_LOG_FIRST(
           200, WARN,
-          "PGR4 native audit: frame {} draw {}: shared memory {:08X}+{:X} differs from guest "
+          "ReXNative audit: frame {} draw {}: shared memory {:08X}+{:X} differs from guest "
           "memory when the draw was queued; {}: {} pages differ from it, first {:05X} (valid {}, "
           "hot {}, pending {}, armed at frame {}, written at frame {})",
           job->frame, e.draw, e.range.start, e.range.size,
@@ -2098,7 +2099,7 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
     const D3D12_RANGE none = {0, 0};
     job->readback->Unmap(0, &none);
     REXLOG_INFO(
-        "PGR4 native audit: frame {}: {} ranges ({:.1f} MB) read back{}, {} differ from guest "
+        "ReXNative audit: frame {}: {} ranges ({:.1f} MB) read back{}, {} differ from guest "
         "memory when their draw was queued ({} hold it as it is now)",
         job->frame, job->entries.size(), double(job->used) / (1 << 20),
         job->over ? fmt::format(", {} not (read back full)", job->over) : std::string(), differ,
@@ -2129,8 +2130,8 @@ void DrawRenderer::Impl::CheckLateWrites() {
             bit)) {
         // Valid and watched, yet guest memory differs: a write the watch missed.
         ++stale;
-        PGR4_LOG_FIRST(200, WARN,
-                       "PGR4 native coherency: frame {} stale page {:05X} at the Swap (range "
+        REXNATIVE_LOG_FIRST(200, WARN,
+                       "ReXNative coherency: frame {} stale page {:05X} at the Swap (range "
                        "{:08X}+{:X}, slot {}), armed at frame {}",
                        stamp - 1, p, r.start, r.length, r.slot,
                        armed_frame[p].load(std::memory_order_relaxed));
@@ -2154,8 +2155,8 @@ void DrawRenderer::Impl::CheckLateWrites() {
         if (slot_pages[s]) list += fmt::format(" {}:{}", s == 0xFF ? -1 : int(s), slot_pages[s]);
       return list;
     };
-    PGR4_LOG_FIRST(400, INFO,
-                   "PGR4 native coherency: frame {} {} pages of {} ranges rewritten after a draw "
+    REXNATIVE_LOG_FIRST(400, INFO,
+                   "ReXNative coherency: frame {} {} pages of {} ranges rewritten after a draw "
                    "read them (first {:08X}+{:X}); pages per slot{}",
                    stamp - 1, late, late_ranges, first_late->start, first_late->length, slots());
   }
@@ -2200,7 +2201,7 @@ bool DrawRenderer::Impl::MapShared(uint32_t start, uint32_t length) {
       shared_mapped[m >> 6].fetch_or(1ull << (m & 63), std::memory_order_release);
     shared_mapped_chunks += chunks;
     // At most 128 lines (4 MB chunks of 512 MB); the frame places a mapping next to a glitch.
-    REXLOG_INFO("PGR4 native draw: shared memory {:08X}+{} MB mapped at frame {}, {} MB in all",
+    REXLOG_INFO("ReXNative draw: shared memory {:08X}+{} MB mapped at frame {}, {} MB in all",
                 c << kSharedChunkShift, chunks << (kSharedChunkShift - 20),
                 watch_frame.load(std::memory_order_relaxed),
                 shared_mapped_chunks << (kSharedChunkShift - 20));
@@ -2320,7 +2321,7 @@ uint32_t DrawRenderer::Impl::TextureDescriptor(const TextureBinding& b,
   } else if (views_allocated < kViewHeapSize) {
     heap_index = views_allocated++;
   } else {
-    PGR4_WARN_ONCE("PGR4 native draw: view heap full ({} descriptors)", kViewHeapSize);
+    REXNATIVE_WARN_ONCE("ReXNative draw: view heap full ({} descriptors)", kViewHeapSize);
     return NullView(dim);
   }
   D3D12_CPU_DESCRIPTOR_HANDLE h = view_cpu;
@@ -2353,7 +2354,7 @@ uint32_t DrawRenderer::Impl::SamplerDescriptor(const SamplerKey& k) {
   auto it = sampler_indices.find(key);
   if (it != sampler_indices.end()) return it->second;
   if (samplers_allocated >= kSamplerHeapSize) {
-    PGR4_WARN_ONCE("PGR4 native draw: sampler heap full");
+    REXNATIVE_WARN_ONCE("ReXNative draw: sampler heap full");
     return 0;
   }
   const uint32_t index = samplers_allocated++;
@@ -2384,7 +2385,7 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::GetPipeline(uint64_t hash, con
       const auto st = pipeline_states.find(StateDigest(key));
       const auto pr = pipeline_pairs.find(PairDigest(key));
       REXLOG_INFO(
-          "PGR4 native pipelines: new at frame {}: vs {:016X}{} ps {:016X}{}{}, state {} "
+          "ReXNative pipelines: new at frame {}: vs {:016X}{} ps {:016X}{}{}, state {} "
           "({} pipelines), shader pair {} ({} pipelines)",
           r.frame_index(), vs.shader().ucode_data_hash(), variant & 1 ? " (bools)" : "",
           ps ? ps->shader().ucode_data_hash() : 0, variant & 2 ? " (bools)" : "",
@@ -2550,7 +2551,7 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
   }
   HRESULT hr = device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&p->pso));
   if (FAILED(hr)) {
-    PGR4_WARN_ONCE("PGR4 native draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
+    REXNATIVE_WARN_ONCE("ReXNative draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
     p->state.store(kFailed, std::memory_order_relaxed);
     return p;
   }
@@ -2598,7 +2599,7 @@ void DrawRenderer::Impl::Prewarm() {
   ++prewarm_frames;
   if (prewarm_next == hot)
     REXLOG_INFO(
-        "PGR4 native pipelines: prewarm queued {} of {} recorded pipelines ({} failed) in "
+        "ReXNative pipelines: prewarm queued {} of {} recorded pipelines ({} failed) in "
         "{:.1f} ms over {} frames",
         hot - prewarm_failed, list.size(), prewarm_failed, prewarm_ms, prewarm_frames);
 }
@@ -2664,8 +2665,8 @@ DxbcShader* DrawRenderer::Impl::LoadShader(ShaderMemo* table, ShaderMemo*& last,
       memo.immediate_seq == ref.immediate_seq &&
       std::memcmp(memo.sample, sample, sizeof(sample)) == 0) {
     if (memo.binding == ref.binding) return memo.shader;
-    PGR4_LOG_FIRST(
-        8, INFO, "PGR4 native draw: vertex shader {:08X} ({} dwords) rebound in place at frame {}",
+    REXNATIVE_LOG_FIRST(
+        8, INFO, "ReXNative draw: vertex shader {:08X} ({} dwords) rebound in place at frame {}",
         ref.ucode, ref.dwords, r.frame_index());
   }
   memo.ucode = ref.ucode;
@@ -2694,7 +2695,7 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
       const uint32_t index = w * 32 + b;
       xenos::xe_gpu_vertex_fetch_t f = regs.GetVertexFetch(index);
       if (f.type != xenos::FetchConstantType::kVertex) {
-        PGR4_WARN_ONCE("PGR4 native draw: vertex fetch {} has type {} ({:08X} {:08X})", index,
+        REXNATIVE_WARN_ONCE("ReXNative draw: vertex fetch {} has type {} ({:08X} {:08X})", index,
                        uint32_t(f.type), f.dword_0, f.dword_1);
         if (f.type != xenos::FetchConstantType::kInvalidVertex) return false;
       }
@@ -3393,7 +3394,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
       if ((f[4] >> 12) & 0x3FF) ++diag.fetch_classes[6];
     }
   }
-  // The host targets' (the scene's own with the upscaler or --pgr4_native_msaa). 8x takes 4x's:
+  // The host targets' (the scene's own with the upscaler or --rexnative_msaa). 8x takes 4x's:
   // the translator's alpha to coverage gives samples 4:7 the coverage of 0:3 (patches/0051).
   sys.sample_count_log2[0] = targets.samples >= 4 ? 1 : 0;
   sys.sample_count_log2[1] = targets.samples >= 2 ? 1 : 0;
@@ -3425,8 +3426,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     HashRegisterBlocks(s.regs, now);
     if (std::memcmp(now, prep->regs_hash, sizeof(now))) {
       ++stats.reg_mismatches;
-      PGR4_LOG_FIRST(100, WARN,
-                     "PGR4 native coherency: frame {} draw {} registers differ from Prepare's in "
+      REXNATIVE_LOG_FIRST(100, WARN,
+                     "ReXNative coherency: frame {} draw {} registers differ from Prepare's in "
                      "blocks{}{}{}{}{}",
                      r.frame_index(), frame_draws, now[0] != prep->regs_hash[0] ? " state" : "",
                      now[1] != prep->regs_hash[1] ? " vs-float" : "",
@@ -3528,7 +3529,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
   if (!mods.pixel_shader_used) ps = nullptr;
   if (vs->memexport_eM_written() || (ps && ps->memexport_eM_written())) {
-    PGR4_WARN_ONCE("PGR4 native draw: memexport unsupported (draw skipped)");
+    REXNATIVE_WARN_ONCE("ReXNative draw: memexport unsupported (draw skipped)");
     ++stats.unsupported;
     return;
   }
@@ -3536,7 +3537,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                     regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
                         xenos::VGTOutputPath::kTessellationEnable;
   if (tess) {
-    PGR4_WARN_ONCE("PGR4 native draw: tessellation unsupported");
+    REXNATIVE_WARN_ONCE("ReXNative draw: tessellation unsupported");
     ++stats.unsupported;
     return;
   }
@@ -3573,7 +3574,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
       break;
     default:
-      PGR4_WARN_ONCE("PGR4 native draw: primitive type {} unsupported", s.primitive);
+      REXNATIVE_WARN_ONCE("ReXNative draw: primitive type {} unsupported", s.primitive);
       ++stats.unsupported;
       return;
   }
@@ -3600,7 +3601,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       if (!s.index_32bit) {
         if (reset <= 0xFFFF) {
           if (reset != 0xFFFF) {
-            PGR4_WARN_ONCE("PGR4 native draw: primitive reset index {:X} unsupported", reset);
+            REXNATIVE_WARN_ONCE("ReXNative draw: primitive reset index {:X} unsupported", reset);
             ++stats.unsupported;
             return;
           }
@@ -3637,7 +3638,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   BoundTargets targets;
   if (!r.render_targets().Bind(list, SurfaceRegsFromRegisters(s.regs), rt_mask, depth_used, height,
                                &targets)) {
-    PGR4_WARN_ONCE("PGR4 native draw: RenderTargets::Bind failed (surface {:08X})",
+    REXNATIVE_WARN_ONCE("ReXNative draw: RenderTargets::Bind failed (surface {:08X})",
                    regs[XE_GPU_REG_RB_SURFACE_INFO]);
     ++stats.failed;
     return;
@@ -3648,7 +3649,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   DxbcShader::Translation* vst = Translated(*vs, mods.vertex);
   DxbcShader::Translation* pst = ps ? Translated(*ps, mods.pixel) : nullptr;
   if (!vst || (ps && !pst)) {
-    PGR4_WARN_ONCE("PGR4 native draw: shader translation failed");
+    REXNATIVE_WARN_ONCE("ReXNative draw: shader translation failed");
     ++stats.failed;
     return;
   }
@@ -3724,7 +3725,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   PackFloats(cb_float_vs, vs, s.regs, XE_GPU_REG_SHADER_CONSTANT_000_X);
   // The game's per-draw pixel constant hook (rex/graphics/draw_hook.h; From Dust's water flow
   // at 60 FPS, water_flow.cpp), as the Xenos backends call it: on a copy of the 256 constants.
-  if (REXCVAR_GET(fromdust_trace_camera)) {
+  if (REXCVAR_GET(rexnative_trace_camera)) {
     // The first full-width draw per frame whose vertex shader reads c8, c11 and c28-c31.
     static uint64_t traced_frame = UINT64_MAX;
     const uint64_t* vb = vs->constant_register_map().float_bitmap;
@@ -3746,7 +3747,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       for (int i = 0; i < 16; ++i) m[i] = std::bit_cast<float>(vr[28 * 4 + i]);
       REXLOG_INFO("camera {} {} {} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f} "
                   "{:.6f} {:.6f} {:.6f} {:.6f} {:.6f} {:.6f}",
-                  r.frame_index(), FromDustWorldStepped() ? 1 : 0, seen_count, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9],
+                  r.frame_index(), RexNativeGameWorldStepped() ? 1 : 0, seen_count, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9],
                   m[10], m[11], m[12], m[13], m[14], m[15]);
     }
   }
@@ -3983,13 +3984,13 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
 void DrawRenderer::Impl::SnapshotTargets(CommandStream* list, const BoundTargets& targets,
                                          uint32_t draw_index) {
   const std::string stem =
-      (std::filesystem::path(REXCVAR_GET(pgr4_native_capture_dir)) / "snap-f").string() +
+      (std::filesystem::path(REXCVAR_GET(rexnative_capture_dir)) / "snap-f").string() +
       std::to_string(r.frame_index()) + "-d" + std::to_string(draw_index);
   for (uint32_t i = 0; i < targets.color_count; ++i)
     Snapshot(list, targets.color[i], stem + "-c" + std::to_string(i));
   Snapshot(list, targets.depth, stem + "-depth");
   snap_fence = r.frame_fence();
-  REXLOG_INFO("PGR4 native draw: snapshot of draw {} ({} targets) to {}-*", draw_index,
+  REXLOG_INFO("ReXNative draw: snapshot of draw {} ({} targets) to {}-*", draw_index,
               snaps.size(), stem);
   ResetListState();  // the barriers moved the targets out of their bound states
 }
@@ -4039,7 +4040,7 @@ void DrawRenderer::Impl::WriteSnapshots(uint64_t completed_fence) {
       std::fclose(f);
     }
   }
-  REXLOG_INFO("PGR4 native draw: wrote {} snapshot targets", snaps.size());
+  REXLOG_INFO("ReXNative draw: wrote {} snapshot targets", snaps.size());
   snaps.clear();
 }
 
@@ -4078,7 +4079,7 @@ DrawRenderer::PrepareCounters DrawRenderer::EndFramePrepare(uint64_t done) {
   if (m.audit_left) {
     --m.audit_left;
     REXLOG_INFO(
-        "PGR4 native audit: frame {} queued: {} draws, {} ranges ({:.1f} MB) to read back{}, {} "
+        "ReXNative audit: frame {} queued: {} draws, {} ranges ({:.1f} MB) to read back{}, {} "
         "shaders differ from the guest's ucode",
         m.watch_frame.load(std::memory_order_relaxed), m.audit_draws, m.audit_ranges,
         double(m.audit_bytes) / (1 << 20),
@@ -4225,7 +4226,7 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
     const double n = double(std::max<uint64_t>(d.draws, 1));
     auto per = [&](uint64_t v) { return double(v) / n; };
     REXLOG_INFO(
-        "PGR4 native draw diag: {} draws/frame; per draw: shader loads {:.3f} ({:.3f} immediate), "
+        "ReXNative draw diag: {} draws/frame; per draw: shader loads {:.3f} ({:.3f} immediate), "
         "mods hits {:.3f}, translation hits {:.3f}, pso hits {:.3f}, ranges {:.3f} (pages "
         "{:.1f}, copied runs {:.3f}), unwatched copies {:.3f}, copy flushes {:.3f}",
         d.draws / d.frames, per(d.prep.shader_loads), per(d.prep.shader_loads_immediate),
@@ -4239,15 +4240,15 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
                     double(d.cbv_bytes[i]) / double(d.cbv_uploads[i]));
       cbv += part;
     }
-    REXLOG_INFO("PGR4 native draw diag: cbv uploads per draw / bytes per upload:{}", cbv);
+    REXLOG_INFO("ReXNative draw diag: cbv uploads per draw / bytes per upload:{}", cbv);
     const uint64_t* fc = d.fetch_classes;
     REXLOG_INFO(
-        "PGR4 native draw diag: textures per draw by signs: unsigned {:.3f}, gamma rgb "
+        "ReXNative draw diag: textures per draw by signs: unsigned {:.3f}, gamma rgb "
         "{:.3f}, gamma {:.3f}, signed {:.3f}, other {:.3f}; exp bias {:.3f}, lod bias {:.3f}",
         per(fc[0]), per(fc[1]), per(fc[2]), per(fc[3]), per(fc[4]), per(fc[5]), per(fc[6]));
     if (d.motion_draws)
       REXLOG_INFO(
-          "PGR4 native draw diag: motion vector draws {:.1f}/frame, {:.2f} % with previous "
+          "ReXNative draw diag: motion vector draws {:.1f}/frame, {:.2f} % with previous "
           "constants: {:.1f}/frame told apart from copies of their mesh, {:.1f}/frame moved with "
           "the camera",
           double(d.motion_draws) / double(d.frames),
@@ -4269,7 +4270,7 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
     if (mask != impl_->debug_mask || max_draws != impl_->debug_max_draws ||
         skip_from != impl_->debug_skip_from || skip_to != impl_->debug_skip_to ||
         hash_count != impl_->debug_hash_count || hashes != impl_->debug_hashes)
-      REXLOG_INFO("PGR4 native draw: debug mask {} max draws {} skip [{}, {}), {} shader hashes",
+      REXLOG_INFO("ReXNative draw: debug mask {} max draws {} skip [{}, {}), {} shader hashes",
                   mask, max_draws, skip_from, skip_to, hash_count);
     impl_->debug_hashes = hashes;
     impl_->debug_hash_count = hash_count;
@@ -4277,7 +4278,7 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
     // and the snapshots taken once.
     const auto set = [&](uint32_t bit) { return (mask & bit) && !(impl_->debug_mask & bit); };
     if (set(Impl::kDebugLogDraws))
-      impl_->draw_log_left = uint32_t(std::max(REXCVAR_GET(pgr4_native_draw_log_frames), 1));
+      impl_->draw_log_left = uint32_t(std::max(REXCVAR_GET(rexnative_draw_log_frames), 1));
     if (set(Impl::kDebugSnapshots))
       impl_->snap_pending = hash_count ? (1u << hash_count) - 1 : 1u << 31;
     impl_->debug_mask = mask;
@@ -4291,12 +4292,12 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
     impl_->draw_log = nullptr;
     renderer_.render_targets().SetLog(nullptr);
   }
-  if (const int32_t from = REXCVAR_GET(pgr4_native_draw_log_from);
+  if (const int32_t from = REXCVAR_GET(rexnative_draw_log_from);
       from >= 0 && renderer_.frame_index() == uint64_t(from))
-    impl_->draw_log_left = uint32_t(std::max(REXCVAR_GET(pgr4_native_draw_log_frames), 1));
+    impl_->draw_log_left = uint32_t(std::max(REXCVAR_GET(rexnative_draw_log_frames), 1));
   if (impl_->draw_log_left) {
     --impl_->draw_log_left;
-    const std::filesystem::path dir(REXCVAR_GET(pgr4_native_capture_dir));
+    const std::filesystem::path dir(REXCVAR_GET(rexnative_capture_dir));
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     const std::filesystem::path path =
@@ -4308,4 +4309,4 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
   // when ExecuteCommandLists completes: SyncListFrame resets shared_state at its first use.
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

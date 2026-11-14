@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 
-from . import profile as prof
+from . import names as namesmod, profile as prof
 from .i18n import tr
 
 G = 'rexnative::game::'
@@ -288,6 +288,15 @@ def build(port, name, p, out, ports=None, log=print):
         if k.endswith(('.h', '.cpp', '.inc')):
             files[k] = rename_comments(files[k], names)
     trace = rename_comments(trace, names)
+    # The port's sources still have PGR4Native's names (pgr4_native_*, pgr4::native, ...):
+    # ReXNative's, and the old options kept working through legacy_names.cpp.
+    legacy = namesmod.legacy_table(list(files.values()) + [trace])
+    for k in list(files):
+        if k.endswith(('.h', '.cpp', '.cmake', '.inc')):
+            files[k] = namesmod.rename(files[k])
+    trace = namesmod.rename(trace)
+    files['legacy_names.cpp'] = namesmod.legacy_cpp(legacy)
+    files['legacy_names.h'] = namesmod.LEGACY_H
 
     dst = os.path.join(out, 'src', 'native')
     if os.path.isdir(dst):

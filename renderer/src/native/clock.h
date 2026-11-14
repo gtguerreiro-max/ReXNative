@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the CPU clock.
+// ReXNative renderer: the CPU clock.
 //
 // Ticks() reads the time-stamp counter, which runs at a constant rate on every CPU the build
 // targets and costs a few ns, where QueryPerformanceCounter under Wine is a syscall (about
@@ -12,7 +12,7 @@
 #include <intrin.h>
 #endif
 
-namespace pgr4::native {
+namespace rexnative {
 
 inline uint64_t Ticks() {
 #if defined(_M_X64) || defined(__x86_64__)
@@ -31,4 +31,4 @@ uint64_t NowNs();
 // A tick count (a difference of Ticks()) in nanoseconds.
 uint64_t TicksToNs(uint64_t ticks);
 
-}  // namespace pgr4::native
+}  // namespace rexnative

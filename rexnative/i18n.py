@@ -123,8 +123,8 @@ MESSAGES = {
         'r_scene': '## Scene (DLSS / DLAA / DLSS 5)',
         'r_scene_copied': "- Copied from the reference, **to be measured in this game**: surface `0x%X` "
                           '(mask `0x%X`), width %s, pitch %s, height %s.',
-        'r_scene_how': '- To measure it: run the game with `--pgr4_native=true '
-                       '--pgr4_native_resolve_dump=<dir>`, create `<dir>\\dump.request` in a 3D scene, '
+        'r_scene_how': '- To measure it: run the game with `--rexnative_beside_xenos=true '
+                       '--rexnative_resolve_dump=<dir>`, create `<dir>\\dump.request` in a 3D scene, '
                        'and `python -m rexnative scene <dir>\\f<N>-resolves.jsonl`.',
         'r_scene_auto': '- **Learned at run time** (`REXNATIVE_SCENE_AUTO 1`, scene.h): the renderer '
                         'picks the surface with MSAA or HDR resolved at nearly the frame\'s size; look '
@@ -166,10 +166,10 @@ MESSAGES = {
         # scene
         's_scene': 'Scene: resolve #%d, %dx%d, pitch %d, MSAA %s, format %s%s.',
         's_hdr': 'DLSS 5: the scene resolve is HDR, before tone mapping: '
-                 'pgr4_native_dlss5_stage = "scene".',
+                 'rexnative_dlss5_stage = "scene".',
         's_ldr': 'DLSS 5: the scene is not in an HDR format in this resolve (tone mapping already '
                  'done, or an LDR scene): find the HDR pass with RenderDoc, or use '
-                 'pgr4_native_dlss5_stage = "front".',
+                 'rexnative_dlss5_stage = "front".',
         's_later': 'Full-frame resolves after the scene (post-processing / UI): %s.',
         's_none': 'no colour resolve in %s',
         # neutral (renderer/CHANGES.md)
@@ -237,8 +237,8 @@ MESSAGES = {
         'r_scene': '## Cena (DLSS / DLAA / DLSS 5)',
         'r_scene_copied': '- Copiado da referência, **por medir neste jogo**: superfície `0x%X` '
                           '(máscara `0x%X`), largura %s, pitch %s, altura %s.',
-        'r_scene_how': '- Para medir: correr o jogo com `--pgr4_native=true '
-                       '--pgr4_native_resolve_dump=<pasta>`, criar `<pasta>\\dump.request` numa cena '
+        'r_scene_how': '- Para medir: correr o jogo com `--rexnative_beside_xenos=true '
+                       '--rexnative_resolve_dump=<pasta>`, criar `<pasta>\\dump.request` numa cena '
                        '3D, e `python -m rexnative scene <pasta>\\f<N>-resolves.jsonl`.',
         'r_scene_auto': '- **Aprendida em runtime** (`REXNATIVE_SCENE_AUTO 1`, scene.h): o renderer '
                         'escolhe a superfície com MSAA ou HDR resolvida quase ao tamanho do frame; '
@@ -278,10 +278,10 @@ MESSAGES = {
                   '`hand_made/`.',
         's_scene': 'Cena: resolve #%d, %dx%d, pitch %d, MSAA %s, formato %s%s.',
         's_hdr': 'DLSS 5: o resolve da cena é HDR, antes do tone mapping: '
-                 'pgr4_native_dlss5_stage = "scene".',
+                 'rexnative_dlss5_stage = "scene".',
         's_ldr': 'DLSS 5: a cena não está num formato HDR neste resolve (tone mapping já feito ou '
                  'cena LDR): confirmar com o RenderDoc qual o passe HDR, ou usar '
-                 'pgr4_native_dlss5_stage = "front".',
+                 'rexnative_dlss5_stage = "front".',
         's_later': 'Resolves de ecrã inteiro depois da cena (pós-processamento / UI): %s.',
         's_none': 'nenhum resolve de cor em %s',
         'n_title': '# renderer/: o src/native neutro',

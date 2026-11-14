@@ -8,7 +8,7 @@
 
 #include "clock.h"
 
-namespace pgr4::native {
+namespace rexnative {
 
 void CommandStream::Start(List* list, const wchar_t* name) {
   list_ = list;
@@ -96,4 +96,4 @@ void CommandStream::Main() {
   }
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

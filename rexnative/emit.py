@@ -167,10 +167,14 @@ def game_layer_h(layer, comments=True):
     w('')
     d = layer['defaults']
     if comments:
-        w('// Defaults of the game\'s cvars.')
-    w('inline constexpr int32_t kDefaultRenderHeight = %d;' % d.get('pgr4_render_height', sc.get('height', 720)))
-    w('inline constexpr bool kDefaultOcclusion = %s;' % str(bool(d.get('pgr4_native_occlusion', False))).lower())
-    w('inline constexpr double kDefaultDisplayAspect = %s;' % d.get('pgr4_native_display_aspect', '16.0 / 9.0'))
+        w('// Defaults of the game\'s options (rexnative, rexnative_render_height,')
+        w('// rexnative_occlusion, rexnative_display_aspect).')
+    if comments:
+        w('// kDefaultEnabled: ReXNative draws and presents the game unless --rexnative=false.')
+    w('inline constexpr bool kDefaultEnabled = %s;' % str(bool(d.get('enabled', True))).lower())
+    w('inline constexpr int32_t kDefaultRenderHeight = %d;' % d.get('render_height', sc.get('height', 720)))
+    w('inline constexpr bool kDefaultOcclusion = %s;' % str(bool(d.get('occlusion', False))).lower())
+    w('inline constexpr double kDefaultDisplayAspect = %s;' % d.get('display_aspect', '16.0 / 9.0'))
     w('')
     w('}  // namespace rexnative::game')
     return '\n'.join(out) + '\n'

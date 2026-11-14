@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: the resolve oracle dumps and the resolve self test
+// ReXNative renderer: the resolve oracle dumps and the resolve self test
 // (resolve.h).
 #include "resolve.h"
 
@@ -17,13 +17,13 @@
 #include <string>
 
 REXCVAR_DEFINE_STRING(
-    pgr4_native_resolve_dump, "", "PGR4 native",
+    rexnative_resolve_dump, "", "ReXNative",
     "Directory for resolve oracle dumps; create <dir>\\dump.request to dump the next frame");
-REXCVAR_DEFINE_BOOL(pgr4_native_resolve_selftest, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_resolve_selftest, false, "ReXNative",
                     "Check the resolve shader's format packing against known encodings at start");
-REXCVAR_DECLARE(int32_t, pgr4_native_capture_hold_ms);
+REXCVAR_DECLARE(int32_t, rexnative_capture_hold_ms);
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 constexpr uint32_t kPitchAlign = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
@@ -51,7 +51,7 @@ void HoldFullReadback(bool hold) {
       g_readback_before = rex::cvar::GetFlagByName("readback_resolve");
       if (!rex::cvar::SetFlagByName("readback_resolve", "full"))
         REXLOG_WARN(
-            "PGR4 native: could not set readback_resolve=full; guest copies may be a frame old");
+            "ReXNative: could not set readback_resolve=full; guest copies may be a frame old");
     }
   } else if (g_full_readback_holds && --g_full_readback_holds == 0) {
     rex::cvar::SetFlagByName("readback_resolve",
@@ -76,16 +76,16 @@ struct Resolver::Dump {
 void Resolver::DumpDeleter::operator()(Dump* dump) const { delete dump; }
 
 void Resolver::InitializeOracles(ID3D12CommandQueue* queue) {
-  const std::string dir = REXCVAR_GET(pgr4_native_resolve_dump);
+  const std::string dir = REXCVAR_GET(rexnative_resolve_dump);
   if (!dir.empty()) {
     dump_.reset(new Dump());
     dump_->dir = dir;
     std::error_code ec;
     std::filesystem::create_directories(dump_->dir, ec);
-    REXLOG_INFO("PGR4 native resolve: dumps to {} (create dump.request there)", dir);
+    REXLOG_INFO("ReXNative resolve: dumps to {} (create dump.request there)", dir);
   }
-  if (REXCVAR_GET(pgr4_native_resolve_selftest) && queue)
-    REXLOG_INFO("PGR4 native resolve selftest: {}", SelfTest(queue) ? "all passed" : "FAILED");
+  if (REXCVAR_GET(rexnative_resolve_selftest) && queue)
+    REXLOG_INFO("ReXNative resolve selftest: {}", SelfTest(queue) ? "all passed" : "FAILED");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -124,7 +124,7 @@ void Resolver::AfterSwap() {
   // synchronously, HoldFullReadback) before reading memory. This holds the guest in that
   // frame's Swap only when the frame is recorded on the guest thread; on the render thread (the
   // default) the guest runs on, and the copies may hold a later frame's writes.
-  Sleep(DWORD(std::max(0, REXCVAR_GET(pgr4_native_capture_hold_ms))));
+  Sleep(DWORD(std::max(0, REXCVAR_GET(rexnative_capture_hold_ms))));
   const uint8_t* physical = rex::system::kernel_memory()->physical_membase();
   for (Dump::Entry& e : d.entries) {
     const uint8_t* g = physical + e.p.dest_base;
@@ -132,7 +132,7 @@ void Resolver::AfterSwap() {
   }
   d.guest_read = true;
   HoldFullReadback(false);
-  REXLOG_INFO("PGR4 native resolve: read guest memory of {} resolves of frame {}", d.entries.size(),
+  REXLOG_INFO("ReXNative resolve: read guest memory of {} resolves of frame {}", d.entries.size(),
               d.frame);
 }
 
@@ -180,7 +180,7 @@ void Resolver::DumpBeginFrame(uint64_t completed_fence) {
                      p.clear_flags, CopyControlOf(p), DestInfoOf(p));
     }
     if (meta) std::fclose(meta);
-    REXLOG_INFO("PGR4 native resolve: dumped {} resolves (native + guest) of frame {} to {}",
+    REXLOG_INFO("ReXNative resolve: dumped {} resolves (native + guest) of frame {} to {}",
                 d.entries.size(), d.frame, d.dir.string());
     d.entries.clear();
     d.guest_read = false;
@@ -192,7 +192,7 @@ void Resolver::DumpBeginFrame(uint64_t completed_fence) {
       d.recording = true;
       d.frame = frame_;
       d.fence = frame_fence_;  // signalled when the dumped frame is done on the GPU
-      REXLOG_INFO("PGR4 native resolve: dumping the resolves of frame {}", frame_);
+      REXLOG_INFO("ReXNative resolve: dumping the resolves of frame {}", frame_);
     }
   }
 }
@@ -221,7 +221,7 @@ bool Resolver::SelfTest(ID3D12CommandQueue* queue) {
   list->Close();
   // The resolver records into a stream, made on the list while this thread waits (Sync).
   CommandStream stream;
-  stream.Start(list.Get(), L"PGR4 native resolve self test");
+  stream.Start(list.Get(), L"ReXNative resolve self test");
   struct Case {
     const char* name;
     bool depth;
@@ -498,7 +498,7 @@ bool Resolver::SelfTest(ID3D12CommandQueue* queue) {
       const UniqueHandle done = CreateAutoResetEvent();
       if (!done || FAILED(fence->SetEventOnCompletion(fence_value, done.get())) ||
           WaitForSingleObject(done.get(), 5000) != WAIT_OBJECT_0) {
-        REXLOG_ERROR("PGR4 native resolve selftest: {} {}: the GPU did not finish", mode_name,
+        REXLOG_ERROR("ReXNative resolve selftest: {} {}: the GPU did not finish", mode_name,
                      c.name);
         return false;
       }
@@ -538,11 +538,11 @@ bool Resolver::SelfTest(ID3D12CommandQueue* queue) {
       const bool pass = img && bad == 0;
       all_ok = all_ok && pass;
       if (pass)
-        REXLOG_INFO("PGR4 native resolve selftest: ok   {} {} ({:08X} {:08X})", mode_name, c.name,
+        REXLOG_INFO("ReXNative resolve selftest: ok   {} {} ({:08X} {:08X})", mode_name, c.name,
                     c.expect[0], c.expect[1]);
       else
         REXLOG_ERROR(
-            "PGR4 native resolve selftest: FAIL {} {}: {} of {} texels wrong, first at ({}, {}) = "
+            "ReXNative resolve selftest: FAIL {} {}: {} of {} texels wrong, first at ({}, {}) = "
             "{:08X} {:08X}, expected {:08X} {:08X}, r32f {} (expected {}){}",
             mode_name, c.name, bad, w * h, first_x, first_y, first_bad[0], first_bad[1],
             c.expect[0], c.expect[1], r32f_seen, c.expect_r32f, img ? "" : ", resolve failed");
@@ -551,4 +551,4 @@ bool Resolver::SelfTest(ID3D12CommandQueue* queue) {
   return all_ok;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

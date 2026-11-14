@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: frame pacing on the display's clock (frame_pacer.h).
+// ReXNative renderer: frame pacing on the display's clock (frame_pacer.h).
 #include "frame_pacer.h"
 
 #include "clock.h"
@@ -12,7 +12,7 @@
 #include <limits>
 #include <utility>
 
-namespace pgr4::native {
+namespace rexnative {
 
 FramePacer::FramePacer(Options options)
     : latency_(std::min(options.frame_latency, kMaxFrameLatency)),
@@ -83,7 +83,7 @@ void FramePacer::RetireUnshown() {
 }
 
 void FramePacer::Run() {
-  SetThreadDescription(GetCurrentThread(), L"PGR4 native pacer");
+  SetThreadDescription(GetCurrentThread(), L"ReXNative pacer");
   // The fence first: when both are set, a frame is seen finished before it is seen shown.
   const HANDLE handles[] = {fence_event_.get(), waitable_.get(), thread_stop_.get()};
   for (;;) {
@@ -242,7 +242,7 @@ uint64_t FramePacer::WaitToBegin() {
                                             [&] { return retired_ >= needed || stopped_; });
     if (!shown && !timed_out_) {
       timed_out_ = true;
-      REXLOG_WARN("PGR4 native: frame {} not shown after {} ms; frames go on without the display",
+      REXLOG_WARN("ReXNative: frame {} not shown after {} ms; frames go on without the display",
                   needed, kWaitTimeoutMs);
     }
     if (!shown || stopped_) return NowNs() - t0;
@@ -257,4 +257,4 @@ uint64_t FramePacer::WaitToBegin() {
   return begin - t0;
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: Swap -> debug window, front buffer captures.
+// ReXNative renderer: Swap -> debug window, front buffer captures.
 // See present.h.
 #include "present.h"
 
@@ -30,40 +30,40 @@
 #include <vector>
 
 REXCVAR_DEFINE_STRING(
-    pgr4_native_capture_dir, "", "PGR4 native",
+    rexnative_capture_dir, "", "ReXNative",
     "Folder for front buffer captures (native + Xenos PNGs, PSNR), marks and draw "
     "logs; when set, <dir>\\capture.request and the mark key (F12) take a "
     "capture and <dir>\\draw-debug.txt is read. Empty: nothing is polled");
-REXCVAR_DEFINE_INT32(pgr4_native_capture_frame, -1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_capture_frame, -1, "ReXNative",
                      "Capture the front buffer of this native frame index (-1 = off)");
-REXCVAR_DEFINE_INT32(pgr4_native_capture_burst, 1, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_capture_burst, 1, "ReXNative",
                      "Frames each capture request takes, one after the other (1-8)");
-REXCVAR_DEFINE_INT32(pgr4_native_capture_hold_ms, 500, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_capture_hold_ms, 500, "ReXNative",
                      "How long a capture holds the guest thread in Swap so the Xenos plugin "
                      "finishes the frame before its front buffer is read from guest memory");
-REXCVAR_DEFINE_BOOL(pgr4_native_capture_xenos, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_capture_xenos, true, "ReXNative",
                     "Captures also write the Xenos plugin's copy of the frame and the PSNR "
-                    "between them, holding the guest thread (--pgr4_native_capture_hold_ms); "
+                    "between them, holding the guest thread (--rexnative_capture_hold_ms); "
                     "false: the native image alone, written off the guest thread");
-REXCVAR_DEFINE_BOOL(pgr4_native_luma_probe, false, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_luma_probe, false, "ReXNative",
                     "Read back three rows of every front buffer (at 10, 40 and 80 % of its "
                     "height) and log their mean brightness in the frame CSV, to find frames "
                     "drawn partly black");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_display_aspect, rexnative::game::kDefaultDisplayAspect, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_display_aspect, rexnative::game::kDefaultDisplayAspect, "ReXNative",
                       "The shape the front buffer is shown at, width over height, as the console's "
                       "scaler shows it (From Dust's 1024x600 at 16:9); 0: its pixels square");
-REXCVAR_DEFINE_BOOL(pgr4_native_fsr, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_fsr, true, "ReXNative",
                     "Scale the front buffer up to the window with AMD FSR 1 (EASU + RCAS) instead "
                     "of bilinear filtering (SDR output only)");
-REXCVAR_DEFINE_DOUBLE(pgr4_native_fsr_sharpness, 0.2, "PGR4 native",
+REXCVAR_DEFINE_DOUBLE(rexnative_fsr_sharpness, 0.2, "ReXNative",
                       "FSR 1's sharpening (RCAS) reduction in stops: 0 the sharpest, 2 soft")
     .range(0.0, 2.0);
-REXCVAR_DEFINE_INT32(pgr4_native_hdr_paper_white, 400, "PGR4 native",
+REXCVAR_DEFINE_INT32(rexnative_hdr_paper_white, 400, "ReXNative",
                      "HDR output: the luminance of SDR white (the HUD, the game's 1.0) in nits. "
                      "400 is what gamescope shows SDR content at (--hdr-sdr-content-nits), so the "
                      "game is as bright as in SDR up to white; ITU-R BT.2408's reference is 203");
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace xenos = rex::graphics::xenos;
 using present_debug::BlitConstants;
@@ -200,7 +200,7 @@ bool ReadbackRgb(ID3D12Resource* readback, uint32_t row_pitch, uint32_t width, u
   void* p = nullptr;
   const D3D12_RANGE range = {0, SIZE_T(row_pitch) * height};
   if (FAILED(readback->Map(0, &range, &p))) {
-    REXLOG_ERROR("PGR4 native capture: readback map failed");
+    REXLOG_ERROR("ReXNative capture: readback map failed");
     return false;
   }
   ToRgb(static_cast<const uint8_t*>(p), row_pitch, width, height, mapping, rgb10a2, rgb);
@@ -229,7 +229,7 @@ struct Presenter::Impl {
 
   struct Capture {
     bool armed = false;  // requested: capture the next shown frame
-    bool xenos = true;   // with the Xenos copy (--pgr4_native_capture_xenos): full readback held
+    bool xenos = true;   // with the Xenos copy (--rexnative_capture_xenos): full readback held
     bool pending = false;
     uint64_t frame = 0, fence = 0;
     uint32_t fetch[6] = {};
@@ -254,7 +254,7 @@ struct Presenter::Impl {
   Overlay overlay;
   OverlayFrame overlay_frame;
   bool overlay_ok = false;
-  Fsr1 fsr;  // --pgr4_native_fsr
+  Fsr1 fsr;  // --rexnative_fsr
   bool fsr_ok = false;
 
   explicit Impl(NativeRenderer& renderer) : r(renderer) {}
@@ -281,10 +281,10 @@ struct Presenter::Impl {
   // The mark key, F12 (a Steam Input binding can send it from a back grip). True on the press.
   bool MarkPressed();
   bool mark_down = false;
-  // --pgr4_native_capture_dir; empty: no request file and no mark key are polled.
+  // --rexnative_capture_dir; empty: no request file and no mark key are polled.
   std::filesystem::path capture_dir, capture_request;
   uint32_t request_poll = 0;
-  uint32_t burst_left = 0;  // --pgr4_native_capture_burst: frames still to capture
+  uint32_t burst_left = 0;  // --rexnative_capture_burst: frames still to capture
 };
 
 bool Presenter::Impl::Initialize() {
@@ -296,7 +296,7 @@ bool Presenter::Impl::Initialize() {
                      0, &vs, &err)) ||
       FAILED(compile(kBlitHlsl, sizeof(kBlitHlsl) - 1, "blit", nullptr, nullptr, "ps", "ps_5_1", 0,
                      0, &ps, &err))) {
-    REXLOG_ERROR("PGR4 native present: blit shader: {}",
+    REXLOG_ERROR("ReXNative present: blit shader: {}",
                  err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
     return false;
   }
@@ -351,7 +351,7 @@ bool Presenter::Impl::Initialize() {
       return false;
     ramp_mapped = static_cast<uint8_t*>(p);
   }
-  capture_dir = std::filesystem::path(REXCVAR_GET(pgr4_native_capture_dir));
+  capture_dir = std::filesystem::path(REXCVAR_GET(rexnative_capture_dir));
   if (!capture_dir.empty()) {
     std::error_code ec;
     std::filesystem::create_directories(capture_dir, ec);
@@ -385,14 +385,14 @@ bool Presenter::Impl::WriteRamp(RampMode mode, uint32_t slot) {
       ++ramp_changes_logged;
       if (mode == kRampPwl)
         REXLOG_INFO(
-            "PGR4 native present: PWL gamma ramp at frame {}: 0.25/0.5/0.75 -> R {:.3f} "
+            "ReXNative present: PWL gamma ramp at frame {}: 0.25/0.5/0.75 -> R {:.3f} "
             "{:.3f} {:.3f}, G {:.3f} {:.3f} {:.3f}, B {:.3f} {:.3f} {:.3f}",
             r.frame_index(), PwlOut(ramp, 0, 256), PwlOut(ramp, 0, 512), PwlOut(ramp, 0, 767),
             PwlOut(ramp, 1, 256), PwlOut(ramp, 1, 512), PwlOut(ramp, 1, 767), PwlOut(ramp, 2, 256),
             PwlOut(ramp, 2, 512), PwlOut(ramp, 2, 767));
       else
         REXLOG_INFO(
-            "PGR4 native present: gamma table at frame {}: 64/128/192 -> R {} {} {} (of 1023)",
+            "ReXNative present: gamma table at frame {}: 64/128/192 -> R {} {} {} (of 1023)",
             r.frame_index(), (ramp[64] >> 20) & 1023, (ramp[128] >> 20) & 1023,
             (ramp[192] >> 20) & 1023);
     }
@@ -401,11 +401,11 @@ bool Presenter::Impl::WriteRamp(RampMode mode, uint32_t slot) {
 }
 
 bool Presenter::Impl::CaptureRequested(uint64_t frame) {
-  const int32_t at = REXCVAR_GET(pgr4_native_capture_frame);
+  const int32_t at = REXCVAR_GET(rexnative_capture_frame);
   bool want = at >= 0 && frame == uint64_t(at);
   if (capture_dir.empty()) return want;
   if (MarkPressed()) {
-    REXLOG_INFO("PGR4 native mark at frame {}", frame);
+    REXLOG_INFO("ReXNative mark at frame {}", frame);
     want = true;
   }
   // Every 16th frame: a file query goes through Wine's path translation, and the scripts that
@@ -419,7 +419,7 @@ bool Presenter::Impl::CaptureRequested(uint64_t frame) {
     std::error_code ec;
     if (std::filesystem::remove(capture_request, ec)) {
       want = true;
-      burst_left = uint32_t(std::clamp(REXCVAR_GET(pgr4_native_capture_burst), 1, 8) - 1);
+      burst_left = uint32_t(std::clamp(REXCVAR_GET(rexnative_capture_burst), 1, 8) - 1);
     }
   }
   return want;
@@ -446,7 +446,7 @@ void Presenter::Impl::WriteCapture() {
     if (!ReadbackRgb(readback.Get(), pitch, w, h, mapping, rgb10a2, &rgb)) return;
     const std::string name = "f" + std::to_string(frame) + "-native.png";
     const bool ok = WritePng((dir / name).c_str(), rgb, w, h);
-    REXLOG_INFO("PGR4 native capture: frame {} {}x{} ({}\\{}{})", frame, w, h, dir.string(), name,
+    REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", frame, w, h, dir.string(), name,
                 ok ? "" : ", write failed");
   });
 }
@@ -457,7 +457,7 @@ void Presenter::Impl::FinishCapture() {
   r.device().WaitFence(c.fence);
   // Let the Xenos plugin's GPU thread execute this frame (its Swap was forwarded already) and
   // copy the resolve back into guest memory.
-  Sleep(DWORD(std::max(0, REXCVAR_GET(pgr4_native_capture_hold_ms))));
+  Sleep(DWORD(std::max(0, REXCVAR_GET(rexnative_capture_hold_ms))));
   ReleaseCapture();
 
   std::vector<uint8_t> native_rgb, xenos_rgb;
@@ -480,7 +480,7 @@ void Presenter::Impl::FinishCapture() {
     mem.mips_size = mips_bytes;
     std::vector<uint8_t> host(bytes), scratch;
     if (!bytes || subs.empty() || !UntileTexture(key, mem, subs, host.data(), &scratch)) {
-      REXLOG_ERROR("PGR4 native capture: untiling the Xenos front buffer failed");
+      REXLOG_ERROR("ReXNative capture: untiling the Xenos front buffer failed");
       return;
     }
     const HostSubresource& s0 = subs[0];
@@ -502,7 +502,7 @@ void Presenter::Impl::FinishCapture() {
             WritePng((dir / (stem + "-xenos.png")).c_str(), xenos_rgb, c.width, c.height);
   const double psnr = Psnr(native_rgb, xenos_rgb);
   REXLOG_INFO(
-      "PGR4 native capture: frame {} {}x{} front buffer {:08X}: PSNR {:.2f} dB ({}\\{}-*.png{})",
+      "ReXNative capture: frame {} {}x{} front buffer {:08X}: PSNR {:.2f} dB ({}\\{}-*.png{})",
       c.frame, c.width, c.height, c.base, psnr, dir.string(), stem, ok ? "" : ", write failed");
   if (std::FILE* f = _wfopen((dir / "captures.csv").c_str(), L"a")) {
     std::fprintf(f, "%llu,%u,%u,%08X,%.3f\n", (unsigned long long)c.frame, c.width, c.height,
@@ -536,14 +536,14 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                           format != xenos::TextureFormat::k_2_10_10_10))) {
     if (!log_fmt) {
       log_fmt = true;
-      REXLOG_WARN("PGR4 native present: front buffer format {} not handled", uint32_t(format));
+      REXLOG_WARN("ReXNative present: front buffer format {} not handled", uint32_t(format));
     }
     found = false;
   }
   if (!image && !log_missing) {
     log_missing = true;
     REXLOG_WARN(
-        "PGR4 native present: no resolved image for the front buffer {:08X} (texture {:08X})",
+        "ReXNative present: no resolved image for the front buffer {:08X} (texture {:08X})",
         fetch[1] & 0xFFFFF000u, tex);
   }
   front_buffer_found = found;
@@ -591,10 +591,10 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       list->SetGraphicsRootSignature(root_signature.Get());
       list->SetPipelineState(hdr ? hdr_pso.Get() : pso.Get());
       // The image scaled to fit the window, centred, at the console's display aspect
-      // (--pgr4_native_display_aspect: From Dust's 1024x600 is shown at 16:9).
+      // (--rexnative_display_aspect: From Dust's 1024x600 is shown at 16:9).
       const float iw = float(extent.width), ih = float(extent.height);
       const float ww = float(d.width()), wh = float(d.height());
-      const double aspect_cvar = REXCVAR_GET(pgr4_native_display_aspect);
+      const double aspect_cvar = REXCVAR_GET(rexnative_display_aspect);
       const float aspect = aspect_cvar > 0.0 ? float(aspect_cvar) : iw / ih;
       float vw = ww, vh = std::round(ww / aspect);
       if (vh > wh) {
@@ -613,7 +613,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
         if (bar.right > bar.left && bar.bottom > bar.top) clear[clears++] = bar;
       const RampMode wanted = rgb10a2 ? kRampPwl : kRampTable;
       const uint32_t ramp_slot = d.frame_slot();
-      const float paper_white = float(std::max(1, REXCVAR_GET(pgr4_native_hdr_paper_white)));
+      const float paper_white = float(std::max(1, REXCVAR_GET(rexnative_hdr_paper_white)));
       const float peak = d.hdr_peak_nits() / paper_white;
       BlitConstants constants = {{iw, ih},
                                  WriteRamp(wanted, ramp_slot) ? wanted : kRampNone,
@@ -654,7 +654,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       // FSR 1 when the image is scaled up: the image through the ramp at its size, then
       // EASU and RCAS into the back buffer (after the glitch catcher, which reuses the blit's
       // bindings).
-      const bool use_fsr = fsr_ok && !hdr && REXCVAR_GET(pgr4_native_fsr) && vw >= iw && vh >= ih &&
+      const bool use_fsr = fsr_ok && !hdr && REXCVAR_GET(rexnative_fsr) && vw >= iw && vh >= ih &&
                            (vw > iw || vh > ih);
       if (!use_fsr) blit(*image, rtv);
       if (glitch.on()) {
@@ -686,7 +686,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
         list->OMSetRenderTargets(1, &fsr_input, FALSE, nullptr);
         list->DrawInstanced(3, 1, 0, 0);
         if (clears) list->ClearRenderTargetView(rtv, black, clears, clear);
-        fsr.Upscale(list, rtv, vx, vy, float(REXCVAR_GET(pgr4_native_fsr_sharpness)));
+        fsr.Upscale(list, rtv, vx, vy, float(REXCVAR_GET(rexnative_fsr_sharpness)));
       } else if (use_fsr) {
         blit(*image, rtv);
       }
@@ -696,7 +696,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                      overlay_frame);
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     list->ResourceBarrier(1, &b);
-    if (found && REXCVAR_GET(pgr4_native_luma_probe))
+    if (found && REXCVAR_GET(rexnative_luma_probe))
       probe.Record(device, list, d.frame_slot(), image->texture, extent.width, extent.height,
                    mapping, rgb10a2, r.frame_index());
   }
@@ -709,7 +709,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       (swap.capture_request < 0 ? CaptureRequested(r.frame_index()) : swap.capture_request > 0)) {
     if (glitch.on()) glitch.Mark(r.frame_index());
     c.armed = true;
-    c.xenos = REXCVAR_GET(pgr4_native_capture_xenos);
+    c.xenos = REXCVAR_GET(rexnative_capture_xenos);
     if (c.xenos) {
       capture_holding.store(true, std::memory_order_release);
       HoldFullReadback(true);
@@ -720,7 +720,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     c.armed = false;
     if (!found) {
       ReleaseCapture();
-      REXLOG_WARN("PGR4 native capture: frame {}: no native front buffer to capture",
+      REXLOG_WARN("ReXNative capture: frame {}: no native front buffer to capture",
                   r.frame_index());
       return;
     }
@@ -775,7 +775,7 @@ const ImageRect& Presenter::image_rect() const { return impl_->image_rect; }
 
 const LumaProbe& Presenter::luma_probe() const { return impl_->probe.result(); }
 
-bool Presenter::capture_holds_guest() const { return REXCVAR_GET(pgr4_native_capture_xenos); }
+bool Presenter::capture_holds_guest() const { return REXCVAR_GET(rexnative_capture_xenos); }
 
 bool Presenter::capture_holding_guest() const {
   return impl_->capture_holding.load(std::memory_order_acquire);
@@ -790,4 +790,4 @@ void Presenter::AfterEndFrame() {
     m.WriteCapture();
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

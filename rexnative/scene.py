@@ -1,5 +1,5 @@
 """The scene surface of a game, from one frame's resolves (the native renderer's resolve dump:
---pgr4_native_resolve_dump=<dir>, then create <dir>/dump.request; it writes
+--rexnative_resolve_dump=<dir>, then create <dir>/dump.request; it writes
 f<frame>-resolves.jsonl).
 
 The upscaler (DLSS / DLAA) and DLSS 5 recognise the scene by RB_SURFACE_INFO (pitch and MSAA,

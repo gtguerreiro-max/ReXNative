@@ -1,12 +1,12 @@
-// pgr4-native PGR4 native renderer: temporal upscaling of the 3D scene with AMD FidelityFX Super
+// ReXNative renderer: temporal upscaling of the 3D scene with AMD FidelityFX Super
 // Resolution, through the FidelityFX API (fidelityfx.h), which OptiScaler hooks to put other
 // upscalers such as FSR 4 in its place.
 //
 // The scene is PGR4's 1280x720 2x MSAA surface: RB_SURFACE_INFO pitch 1280 with 2x MSAA, the
 // only surface of that pitch and MSAA in the race and the menus (draw logs of td-265). With
-// --pgr4_native_upscaler its host targets are single-sampled and of the render size
-// (--pgr4_native_upscaler_width/height, RenderTargets::OverrideScene: the draws' viewports,
-// scissors and clears scale with them; with --pgr4_native_upscaler_target_fps a size up to that
+// --rexnative_upscaler its host targets are single-sampled and of the render size
+// (--rexnative_upscaler_width/height, RenderTargets::OverrideScene: the draws' viewports,
+// scissors and clears scale with them; with --rexnative_upscaler_target_fps a size up to that
 // chosen each frame, DynamicResolution and RenderTargets::SetSceneScale), every draw into it is
 // offset by the frame's sub-pixel jitter and samples its mipmapped textures with AMD's LOD bias for
 // the render size (DrawRenderer, the jitter through the system constants' NDC offset), the draws
@@ -35,7 +35,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace pgr4::native {
+namespace rexnative {
 
 class NeuralPass;
 
@@ -43,15 +43,15 @@ class FrameGeneration;
 
 class Upscaler {
  public:
-  // Whether --pgr4_native_upscaler asks for the upscaler.
+  // Whether --rexnative_upscaler asks for the upscaler.
   static bool Requested();
 
   // The scene surface, from its RB_SURFACE_INFO (pitch and MSAA; the guest's value whatever the
   // host targets' sample count), and its size: game_layer.h's constants, or learned at run time
   // (scene.h).
   static bool IsScene(uint32_t surface_info) { return IsSceneSurface(surface_info); }
-  static uint32_t SceneWidth() { return ::pgr4::native::SceneWidth(); }
-  static uint32_t SceneHeight() { return ::pgr4::native::SceneHeight(); }
+  static uint32_t SceneWidth() { return ::rexnative::SceneWidth(); }
+  static uint32_t SceneHeight() { return ::rexnative::SceneHeight(); }
   // Whether a span of the scene surface (a resolve's, a viewport's) is the scene's width: the
   // scene resolves in tiles of its whole width, while the rear-view mirror renders into a corner
   // of the scene surface and resolves that corner on its own (neither upscaled nor jittered).
@@ -73,7 +73,7 @@ class Upscaler {
   bool Initialize(ID3D12Device* device);
 
   // Once per frame before recording it: the frame's jitter, and with
-  // --pgr4_native_upscaler_target_fps its render size from the GPU's time (D3D12Device::
+  // --rexnative_upscaler_target_fps its render size from the GPU's time (D3D12Device::
   // gpu_busy_ns) and the time in ns of a frame at the pace the display shows them
   // (DynamicResolution::Update). True when the render size changed: the scene's targets take the
   // new scale() (RenderTargets::SetSceneScale) before the frame's draws.
@@ -106,7 +106,7 @@ class Upscaler {
     return ((offsets >> shift) | (offsets << (8 - shift))) & 0xFF;
   }
   // The scene's render size this frame on its guest size, and its largest
-  // (--pgr4_native_upscaler_width/height: the size of the scene's targets).
+  // (--rexnative_upscaler_width/height: the size of the scene's targets).
   RenderScale scale() const {
     return {{render_width_, render_height_}, {SceneWidth(), SceneHeight()}};
   }
@@ -188,7 +188,7 @@ class Upscaler {
   uint32_t input_stride_ = 0;
   uint32_t max_width_ = 0, max_height_ = 0;  // Initialize's, from the scene's size
   uint32_t render_width_ = 0, render_height_ = 0;
-  std::optional<DynamicResolution> dynamic_;  // with --pgr4_native_upscaler_target_fps
+  std::optional<DynamicResolution> dynamic_;  // with --rexnative_upscaler_target_fps
   uint32_t mip_bias_quarters_ = 0;
   uint64_t frame_ = 0;
   uint64_t upscaled_frame_ = UINT64_MAX;
@@ -205,4 +205,4 @@ class Upscaler {
   bool debug_ = false;  // context_ has debug visualization and the watermark
 };
 
-}  // namespace pgr4::native
+}  // namespace rexnative

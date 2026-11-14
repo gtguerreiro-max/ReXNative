@@ -121,9 +121,10 @@ def extract_layer(port, name=None):
     m = re.search(r'#define REXNATIVE_SCENE_AUTO (\d)', h)
     scene['auto'] = bool(m and m.group(1) == '1')
     defaults = {
-        'pgr4_render_height': num(const('kDefaultRenderHeight')),
-        'pgr4_native_occlusion': const('kDefaultOcclusion') == 'true',
-        'pgr4_native_display_aspect': const('kDefaultDisplayAspect'),
+        'enabled': const('kDefaultEnabled', 'true') == 'true',
+        'render_height': num(const('kDefaultRenderHeight')),
+        'occlusion': const('kDefaultOcclusion') == 'true',
+        'display_aspect': const('kDefaultDisplayAspect'),
     }
     clear = None
     if num(const('kResolveDefaultClearColor')):
@@ -245,14 +246,14 @@ def extract(port, name=None):
     defaults = {}
     m = re.search(r'REXCVAR_DEFINE_INT32\(pgr4_render_height, (\d+)', ren)
     if m:
-        defaults['pgr4_render_height'] = int(m.group(1))
+        defaults['render_height'] = int(m.group(1))
     m = re.search(r'REXCVAR_DEFINE_BOOL\(pgr4_native_occlusion, (true|false)', ren)
     if m:
-        defaults['pgr4_native_occlusion'] = m.group(1) == 'true'
+        defaults['occlusion'] = m.group(1) == 'true'
     pres = _read(os.path.join(native, 'present.cpp'))
     m = re.search(r'pgr4_native_display_aspect, ([^,]+),', pres)
     if m:
-        defaults['pgr4_native_display_aspect'] = m.group(1).strip()
+        defaults['display_aspect'] = m.group(1).strip()
 
     devices = {
         'follow_swap_device_only': 'g_main_device' in trace_code,

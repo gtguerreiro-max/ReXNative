@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: pipelines that survive runs (see pipeline_store.h).
+// ReXNative renderer: pipelines that survive runs (see pipeline_store.h).
 #include "pipeline_store.h"
 
 #include <rex/logging.h>
@@ -11,7 +11,7 @@
 #include <cwchar>
 #include <system_error>
 
-namespace pgr4::native {
+namespace rexnative {
 
 namespace {
 
@@ -59,7 +59,7 @@ uint64_t PipelineStore::RecordHash(uint64_t vs_hash, uint64_t vs_mod, uint64_t p
 void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
                          uint32_t key_version) {
   if (key_size > kMaxKeySize) {
-    REXLOG_WARN("PGR4 native pipelines: key of {} bytes is over {}, no pipeline store", key_size,
+    REXLOG_WARN("ReXNative pipelines: key of {} bytes is over {}, no pipeline store", key_size,
                 kMaxKeySize);
     return;
   }
@@ -211,7 +211,7 @@ void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
     // The records read stay for this run's prewarm and are written again when next created.
     std::error_code rec;
     std::filesystem::remove(tmp, rec);
-    REXLOG_WARN("PGR4 native pipelines: cannot rewrite {} ({}), appending to it as it is",
+    REXLOG_WARN("ReXNative pipelines: cannot rewrite {} ({}), appending to it as it is",
                 path.string(), ec.message());
     if (good && good != data.size()) std::filesystem::resize_file(path, good, ec);
     if (good) {
@@ -236,11 +236,11 @@ void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
     file_ = _wfopen(path.c_str(), L"ab");
   }
   if (!file_) {
-    REXLOG_WARN("PGR4 native pipelines: cannot open {} for writing", path.string());
+    REXLOG_WARN("ReXNative pipelines: cannot open {} for writing", path.string());
     return;
   }
   REXLOG_INFO(
-      "PGR4 native pipelines: {} pipelines, {} shaders from earlier runs ({} to prewarm, {} "
+      "ReXNative pipelines: {} pipelines, {} shaders from earlier runs ({} to prewarm, {} "
       "dropped) ({})",
       loaded_pipelines_.size(), loaded_shaders_.size(), hot_count_, evicted, path.string());
 }
@@ -312,7 +312,7 @@ void PipelineLibrary::Open(ID3D12Device* device, const std::filesystem::path& pa
   if (path.empty()) return;  // cache off: Create compiles every pipeline
   Microsoft::WRL::ComPtr<ID3D12Device1> device1;
   if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device1)))) {
-    REXLOG_WARN("PGR4 native pipelines: no ID3D12Device1, no pipeline library");
+    REXLOG_WARN("ReXNative pipelines: no ID3D12Device1, no pipeline library");
     return;
   }
   blob_ = ReadFile(path);
@@ -320,7 +320,7 @@ void PipelineLibrary::Open(ID3D12Device* device, const std::filesystem::path& pa
   if (!blob_.empty()) {
     hr = device1->CreatePipelineLibrary(blob_.data(), blob_.size(), IID_PPV_ARGS(&library_));
     if (FAILED(hr))
-      REXLOG_INFO("PGR4 native pipelines: library {} not usable ({:08X}), starting over",
+      REXLOG_INFO("ReXNative pipelines: library {} not usable ({:08X}), starting over",
                   path.string(), uint32_t(hr));
   }
   if (FAILED(hr)) {
@@ -328,12 +328,12 @@ void PipelineLibrary::Open(ID3D12Device* device, const std::filesystem::path& pa
     library_.Reset();
     hr = device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&library_));
     if (FAILED(hr)) {
-      REXLOG_WARN("PGR4 native pipelines: CreatePipelineLibrary failed {:08X}", uint32_t(hr));
+      REXLOG_WARN("ReXNative pipelines: CreatePipelineLibrary failed {:08X}", uint32_t(hr));
       library_.Reset();
       return;
     }
   }
-  REXLOG_INFO("PGR4 native pipelines: library {} ({} KB)", path.string(), blob_.size() / 1024);
+  REXLOG_INFO("ReXNative pipelines: library {} ({} KB)", path.string(), blob_.size() / 1024);
 }
 
 HRESULT PipelineLibrary::Create(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
@@ -382,7 +382,7 @@ void PipelineLibrary::Save() {
   if (FAILED(hr)) {
     // A pipeline stored since GetSerializedSize (another worker) makes the buffer too small.
     dirty_.store(true, std::memory_order_relaxed);
-    REXLOG_WARN("PGR4 native pipelines: library Serialize failed {:08X}", uint32_t(hr));
+    REXLOG_WARN("ReXNative pipelines: library Serialize failed {:08X}", uint32_t(hr));
     return;
   }
   std::filesystem::path tmp = path_;
@@ -393,8 +393,8 @@ void PipelineLibrary::Save() {
   std::fclose(f);
   std::error_code ec;
   if (ok) std::filesystem::rename(tmp, path_, ec);
-  REXLOG_INFO("PGR4 native pipelines: library saved, {} KB ({} loaded, {} stored this run){}",
+  REXLOG_INFO("ReXNative pipelines: library saved, {} KB ({} loaded, {} stored this run){}",
               data.size() / 1024, loaded_.load(), stored_.load(), ok && !ec ? "" : " FAILED");
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative

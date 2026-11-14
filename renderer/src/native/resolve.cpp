@@ -1,4 +1,4 @@
-// pgr4-native PGR4 native renderer: guest Resolve -> host texture. See resolve.h.
+// ReXNative renderer: guest Resolve -> host texture. See resolve.h.
 //
 // Format packing follows ReXGlue/Xenia's resolve shaders and xenos.h conversions (BSD-3,
 // Copyright Xenia/ReXGlue developers): 7e3 and 20e4 float encodings, unorm rounding, the
@@ -30,11 +30,11 @@
 #include <string>
 #include <thread>
 
-REXCVAR_DEFINE_BOOL(pgr4_native_resolve_specialize, true, "PGR4 native",
+REXCVAR_DEFINE_BOOL(rexnative_resolve_specialize, true, "ReXNative",
                     "Compile a copy shader per kind of resolve (formats, samples, swap, bias) on a "
                     "worker thread; resolves use the generic shader until it is ready");
 
-namespace pgr4::native {
+namespace rexnative {
 namespace {
 
 namespace xenos = rex::graphics::xenos;
@@ -239,7 +239,7 @@ RWTexture2D<float4> dst_float : register(u1);
 
 uint SampleSelect() { return (flags >> 4) & 7; }
 uint SampleCount() { return 1u << ((flags >> 8) & 3u); }
-// The target's samples are the host's own (--pgr4_native_msaa), not the guest's: a one-sample
+// The target's samples are the host's own (--rexnative_msaa), not the guest's: a one-sample
 // copy takes sample 0, and an averaging one all of them.
 bool OwnSamples() { return (flags & 0x400u) != 0u; }
 // Host sample of a guest sample s (0..3). SanitizeCopySampleSelect: 2x k2/k3 -> k0/k1, 1x -> 0.
@@ -485,8 +485,8 @@ void CheckAgainstShadow(const uint8_t* base, uint32_t device, const ResolveParam
   if ((!origin || dest == p.dest_base) &&
       ((pitch >> 16) & 0x3FFF) == p.dest_height - uint32_t(p.dest_y))
     return;
-  PGR4_LOG_FIRST(16, WARN,
-                 "PGR4 native resolve: decode vs D3D shadow: dest {:08X}/{:08X} pitch {:08X} "
+  REXNATIVE_LOG_FIRST(16, WARN,
+                 "ReXNative resolve: decode vs D3D shadow: dest {:08X}/{:08X} pitch {:08X} "
                  "(decoded {}x{}, rect {},{}-{},{} point {},{})",
                  dest, p.dest_base, pitch, p.dest_width, p.dest_height, p.x0, p.y0, p.x1, p.y1,
                  p.dest_x, p.dest_y);
@@ -504,13 +504,13 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
   const uint32_t rect_ptr = args.r[2], tex = args.r[3], point_ptr = args.r[4];
   const uint32_t level = args.r[5], slice = args.r[6], color_ptr = args.r[7];
   if (level >= xenos::kTextureMaxMips) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: destination level {} out of range", level);
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: destination level {} out of range", level);
     return false;
   }
   p.regs = SurfaceRegsFromDevice(base, device);
   p.source = flags & 7;
   if (p.source > 4) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: source select {} unsupported", p.source);
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: source select {} unsupported", p.source);
     return false;
   }
   // Sample select: Flags bits 4-6 hold it plus one; 0 means "by the source's MSAA".
@@ -521,7 +521,7 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
   }
   p.sample_select = field - 1;
   if (flags & 0x2000) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: null copy (Flags {:08X}) unsupported", flags);
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: null copy (Flags {:08X}) unsupported", flags);
     return false;
   }
   p.copy_command = p.source == 4 ? 0 : 1;
@@ -529,19 +529,19 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
 
   // The destination texture's fetch constant: D3DBaseTexture + 28, 6 big-endian dwords.
   if (!tex) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: no destination texture");
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: no destination texture");
     return false;
   }
   uint32_t fetch[6];
   for (int i = 0; i < 6; ++i) fetch[i] = Load32(base, tex + 28 + 4 * i);
   TextureKey key;
   if (!TextureKeyFromFetch(fetch, &key)) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: invalid destination fetch constant {:08X} {:08X}",
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: invalid destination fetch constant {:08X} {:08X}",
                    fetch[0], fetch[1]);
     return false;
   }
   if (key.dimension == xenos::DataDimension::k3D) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: 3D destination unsupported");
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: 3D destination unsupported");
     return false;
   }
   const uint32_t fetch_format = fetch[1] & 0x3F;
@@ -556,9 +556,9 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
                                                  : (sign_x == 1 ? 1 : 0);
   }
   if (DestBppLog2(p.dest_format) < 0) {
-    PGR4_LOG_FIRST(
+    REXNATIVE_LOG_FIRST(
         4, WARN,
-        "PGR4 native resolve: destination format {} (fetch format {}) unsupported, source {}, "
+        "ReXNative resolve: destination format {} (fetch format {}) unsupported, source {}, "
         "surface {:08X} {:08X} {:08X}",
         p.dest_format, fetch_format, p.source, p.regs.surface_info, p.regs.color_info[0],
         p.regs.depth_info);
@@ -579,8 +579,8 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
     lv = &layout.base;
   } else {
     if (layout.packed_level != UINT32_MAX && level >= layout.packed_level) {
-      PGR4_LOG_FIRST(4, WARN,
-                     "PGR4 native resolve: packed mip tail destination (level {}) unsupported",
+      REXNATIVE_LOG_FIRST(4, WARN,
+                     "ReXNative resolve: packed mip tail destination (level {}) unsupported",
                      level);
       return false;
     }
@@ -704,9 +704,9 @@ struct Resolver::Pipelines {
     }
     defines.push_back({nullptr, nullptr});
     ComPtr<ID3DBlob> code, errors;
-    if (FAILED(compile(kShader, sizeof(kShader) - 1, "pgr4_resolve.hlsl", defines.data(), nullptr,
+    if (FAILED(compile(kShader, sizeof(kShader) - 1, "rexnative_resolve.hlsl", defines.data(), nullptr,
                        "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors))) {
-      REXLOG_ERROR("PGR4 native resolve: shader {:09X}{}: {}", s.Key(),
+      REXLOG_ERROR("ReXNative resolve: shader {:09X}{}: {}", s.Key(),
                    s.specialized ? "" : " (generic)",
                    errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?");
       return nullptr;
@@ -748,7 +748,7 @@ struct Resolver::Pipelines {
   }
 
   void Work() {
-    SetThreadDescription(GetCurrentThread(), L"PGR4 native resolve shaders");
+    SetThreadDescription(GetCurrentThread(), L"ReXNative resolve shaders");
     for (;;) {
       std::pair<PipelineSpec, Variant*> job;
       {
@@ -761,7 +761,7 @@ struct Resolver::Pipelines {
       const uint64_t t0 = NowNs();
       job.second->pso = Compile(job.first);
       job.second->done.store(true, std::memory_order_release);
-      REXLOG_INFO("PGR4 native resolve: copy shader {:09X} {} in {:.1f} ms", job.first.Key(),
+      REXLOG_INFO("ReXNative resolve: copy shader {:09X} {} in {:.1f} ms", job.first.Key(),
                   job.second->pso ? "specialized" : "failed", double(NowNs() - t0) / 1e6);
     }
   }
@@ -785,11 +785,11 @@ bool Resolver::Initialize(ID3D12Device* device, RenderTargets* targets, ID3D12Co
       SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof(fs))) &&
       (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
   if (!b5g6r5_store_)
-    REXLOG_INFO("PGR4 native resolve: no typed UAV store for B5G6R5; k_5_6_5 resolves go through "
+    REXLOG_INFO("ReXNative resolve: no typed UAV store for B5G6R5; k_5_6_5 resolves go through "
                 "R16_UINT texel bits and a buffer");
   if (!CreatePipelines()) return false;
   InitializeOracles(queue);
-  pipelines_->specialize = REXCVAR_GET(pgr4_native_resolve_specialize)
+  pipelines_->specialize = REXCVAR_GET(rexnative_resolve_specialize)
                                ? Pipelines::Specialize::kAsync
                                : Pipelines::Specialize::kOff;
   return true;
@@ -817,7 +817,7 @@ bool Resolver::CreatePipelines() {
   rd.pParameters = params;
   ComPtr<ID3DBlob> blob, error;
   if (FAILED(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error))) {
-    REXLOG_ERROR("PGR4 native resolve: root signature: {}",
+    REXLOG_ERROR("ReXNative resolve: root signature: {}",
                  error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
     return false;
   }
@@ -910,7 +910,7 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
   img->view.depth_r32f = img->depth_r32f.Get();
   // Creation stalls the frame-recording thread (the render thread by default); every one is
   // logged so frame-time spikes can be matched against it.
-  REXLOG_INFO("PGR4 native resolve: image {} {} {:08X}: format {} {}x{}{}{} ({} there)",
+  REXLOG_INFO("ReXNative resolve: image {} {} {:08X}: format {} {}x{}{}{} ({} there)",
               ++image_count_, &dest == &own_ ? "for copies of" : "at", p.dest_base, p.dest_format,
               p.dest_width, p.dest_height, scale > 1 ? fmt::format(" at {}x", scale) : "",
               depth ? " + depth float" : "", dest.images.size() + 1);
@@ -945,7 +945,7 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
   RenderTarget* rt = depth ? targets_->GetDepth(p.regs, uint32_t(std::max(p.y1, 0)))
                            : targets_->GetColor(p.regs, p.source, uint32_t(std::max(p.y1, 0)));
   if (!rt) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: no host target for source {} (surface {:08X})",
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: no host target for source {} (surface {:08X})",
                    p.source, p.regs.surface_info);
     return false;
   }
@@ -999,13 +999,13 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   const DestStorage* storage = GetDestStorage(p.dest_format);
   const uint32_t w = uint32_t(src.right - src.left), h = uint32_t(src.bottom - src.top);
   // The image at the source's integer scale: the screen-sized surfaces' and the upscaler's
-  // output at --pgr4_native_resolution_scale, every other target's (and a scene rendered smaller
+  // output at --rexnative_resolution_scale, every other target's (and a scene rendered smaller
   // by DLSS Super Resolution) at the guest's size.
   const uint32_t scale = std::max(
       1u, uint32_t(std::lround(std::max(rt->scale.factor(0), rt->size_scale.factor(0)) - 0.25f)));
   Image* img = GetImage(p, dest, scale);
   if (!img) {
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: no host image for format {} {}x{}", p.dest_format,
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: no host image for format {} {}x{}", p.dest_format,
                    p.dest_width, p.dest_height);
     return false;
   }
@@ -1024,7 +1024,7 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
                                                 IID_PPV_ARGS(&img->linear)),
                "resolve linear texture"))
       return false;
-    REXLOG_INFO("PGR4 native resolve: linear image at {:08X} {}x{}", p.dest_base, img->width,
+    REXLOG_INFO("ReXNative resolve: linear image at {:08X} {}x{}", p.dest_base, img->width,
                 img->height);
   }
   // The image's second resource, in the same state as its texture.
@@ -1035,7 +1035,7 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   // unused.
   if (heap_next_ + kViewsPerResolve > kHeapPerFrame) {
     // The frame's earlier dispatches read their descriptors when the GPU runs them.
-    PGR4_LOG_FIRST(4, WARN, "PGR4 native resolve: more than {} resolves in a frame; skipped",
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: more than {} resolves in a frame; skipped",
                    kHeapPerFrame / kViewsPerResolve);
     return false;
   }
@@ -1204,4 +1204,4 @@ void Resolver::EraseDestination(uint32_t dest_base) {
   if (changed_) changed_(dest_base);
 }
 
-}  // namespace pgr4::native
+}  // namespace rexnative
