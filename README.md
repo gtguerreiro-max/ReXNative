@@ -94,8 +94,14 @@ Iron Brigade is its CreateDevice.
 ## Using it
 
 Requirements: Python 3.10+ (the tool has no dependencies); for the renderer, Windows with Visual
-Studio 2022's clang-cl, a ReXGlue SDK built with the patch set the ports use (FromDustDeck's
-`patches/`), the AMD FidelityFX SDK v2.3.0, the NVIDIA DLSS SDK and DLSS 5 headers.
+Studio 2022 (or its Build Tools) with the C++ workload and its Clang tools, git, CMake and
+Ninja, and the NVIDIA DLSS SDK and DLSS 5 headers (from NVIDIA). The ReXGlue SDK the renderer
+needs (pinned, with its patches: [sdk/README.md](sdk/README.md)) and the AMD FidelityFX SDK
+v2.3.0 come from one script:
+
+```powershell
+scripts\build-sdk.ps1
+```
 
 **1. Generate the game's layer.** The game's ReXGlue `generated/default` directory and its
 `default.xex`, against the known ports listed in `ports.json` (copy `ports.example.json` and set
@@ -144,6 +150,8 @@ renderer/src/rexnative_d3d_hooks.cpp   the guest D3D hooks and frame trace
 renderer/src/hud/              the settings HUD
 renderer/src/glue_defaults.cpp game-side functions, for a game with nothing special
 renderer/rexnative.cmake       rexnative_add()
+sdk/                           the ReXGlue SDK the renderer needs: lock and patches
+scripts/build-sdk.ps1          fetch, patch, build and install that SDK
 rexnative/                     the adapter (python -m rexnative)
 docs/GAME_LAYER.md             what game_layer.h holds
 ```
@@ -158,7 +166,9 @@ Improving it a little at a time:
 3. Find the HDR pass before the game's tone mapping, for DLSS 5.
 4. Rename the `pgr4_native_*` options and the `pgr4::native` namespace (keeping the old names
    working).
-5. Ship the SDK patch set the renderer needs, pinned, with a build script.
+5. ~~Ship the SDK patch set the renderer needs, pinned, with a build script.~~ Done
+   (`sdk/`, `scripts/build-sdk.ps1`); still to do: build a game end to end from it on a clean
+   machine.
 6. Every new port becomes a reference and makes the next one easier: games on the same XDK
    build match best.
 7. The tool's reports and messages are in Portuguese for now; English output.
