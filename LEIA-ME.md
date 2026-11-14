@@ -86,9 +86,14 @@ foi inlined pelo jogo; o que acrescentou a Iron Brigade é a CreateDevice.
 ## Como usar
 
 Requisitos: Python 3.10+ (a ferramenta não tem dependências); para o renderer, Windows com o
-clang-cl do Visual Studio 2022, um ReXGlue SDK com o conjunto de patches dos ports (os
-`patches/` do FromDustDeck), o AMD FidelityFX SDK v2.3.0, o NVIDIA DLSS SDK e os headers do
-DLSS 5.
+Visual Studio 2022 (ou as Build Tools) com o C++ e as suas ferramentas Clang, git, CMake e
+Ninja, e o NVIDIA DLSS SDK e os headers do DLSS 5 (da NVIDIA). O ReXGlue SDK de que o renderer
+precisa (fixo, com os seus patches: [sdk/README.md](sdk/README.md)) e o AMD FidelityFX SDK
+v2.3.0 vêm de um só script:
+
+```powershell
+scripts\build-sdk.ps1
+```
 
 **1. Gerar a camada do jogo.** A pasta `generated/default` do ReXGlue e o `default.xex` do
 jogo, contra os ports conhecidos do `ports.json` (copia o `ports.example.json` e põe os teus
@@ -141,7 +146,9 @@ Melhorar aos poucos:
 2. Encontrar a superfície da cena em runtime, para o DLSS funcionar sem a medir.
 3. Encontrar o passe HDR antes do tone mapping do jogo, para o DLSS 5.
 4. Mudar o nome das opções `pgr4_native_*` e do namespace `pgr4::native` (mantendo os antigos).
-5. Incluir o conjunto de patches do SDK de que o renderer precisa, fixo, com um script de build.
+5. ~~Incluir o conjunto de patches do SDK de que o renderer precisa, fixo, com um script de
+   build.~~ Feito (`sdk/`, `scripts/build-sdk.ps1`); falta compilar um jogo de ponta a ponta a
+   partir dele numa máquina limpa.
 6. Cada port novo passa a referência e facilita o seguinte: jogos com a mesma build do XDK
    emparelham melhor.
 7. ~~Os relatórios e mensagens da ferramenta estão em português; acrescentar inglês.~~ Feito:

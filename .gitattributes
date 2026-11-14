@@ -1,3 +1,8 @@
 * text=auto eol=lf
 *.png binary
 *.jpg binary
+
+# SDK patches: kept byte for byte (they carry CRLF lines of the files they change).
+*.patch -text
+# Windows batch files keep CRLF.
+*.cmd text eol=crlf

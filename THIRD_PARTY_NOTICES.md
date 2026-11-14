@@ -15,6 +15,10 @@ What this repository contains from other projects, with their licenses.
   headers, under NVIDIA's license; they are not in this repository.
 - `renderer/src/hud/` draws with Dear ImGui (MIT, Omar Cornut), which the ReXGlue SDK provides.
 - `rexnative/listing.py` is based on pgr4-native's `scripts/analysis/tu_address_map.py` (MIT).
+- `sdk/patches/` modify the ReXGlue SDK (BSD-3-Clause, below). `pgr4native/` are pgr4-native's
+  (MIT); several port code from Xenia Canary (BSD-3-Clause, below), each naming the Canary
+  commit and files. `rexnative/` are From Dust's port's (MIT), and `0002` carries resolve
+  shaders built from Xenia's sources (BSD-3-Clause). `scripts/vcenv.cmd` follows pgr4-native's.
 
 ## ReXGlue SDK (https://github.com/rexglue/rexglue-sdk)
 

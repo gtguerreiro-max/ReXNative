@@ -1,0 +1,4 @@
+# The AMD FidelityFX SDK whose API, upscaler and frame generation headers the renderer builds
+# with (rexnative_add FIDELITYFX_SDK): the v2.3.0 release, as pgr4-native's scripts/fidelityfx.lock.
+FFX_URL=https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git
+FFX_COMMIT=60f4ea81909200d8542eca14dccb2628b763a9a3

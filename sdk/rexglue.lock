@@ -1,0 +1,5 @@
+# The ReXGlue SDK ReXNative's renderer is built and tested against: upstream's development branch
+# at this commit, with sdk/patches/pgr4native/ then sdk/patches/rexnative/ applied in order
+# (scripts/build-sdk.ps1). The same as FromDustDeck's and Iron Brigade's patches/rexglue.lock.
+REXGLUE_URL=https://github.com/rexglue/rexglue-sdk.git
+REXGLUE_COMMIT=bd833a2ab69d305f99ddf57418fc38ffec8af93d
