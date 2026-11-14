@@ -147,6 +147,11 @@ def adapt(target, refs, overrides=None, log=print):
             surface.append([a, canon, cats.get(canon, 'kDraw'), funcs[canon]['how'],
                             funcs[canon]['confidence'], 'hook'])
             seen.add(a)
+    # The inner Resolve of a hooked public wrapper runs inside it: hooked too (a reference may name
+    # it Resolve, as Iron Brigade's does), every resolve would reach the renderer twice.
+    inner = funcs['ResolveInner']['address']
+    if inner and inner != funcs['Resolve']['address']:
+        surface = [e for e in surface if e[0] != inner]
     surface.sort()
 
     # -- device offsets ---------------------------------------------------------------------
@@ -212,8 +217,12 @@ def apply_overrides(result, ov):
     "resolve_args": [8 registers]}"""
     for name, val in ov.get('functions', {}).items():
         row = result['functions'].setdefault(name, {})
-        row.update(address=int(val, 16) if val else None, how='override', confidence='override',
-                   detail='overrides.json')
+        old = row.get('address')
+        new = int(val, 16) if val else None
+        if old and old != new:
+            # Not hooked any more under any name: out of d3d_surface.inc too.
+            result['surface'] = [e for e in result['surface'] if e[0] != old]
+        row.update(address=new, how='override', confidence='override', detail='overrides.json')
     for key in ('scene', 'defaults', 'devices'):
         result[key].update(ov.get(key, {}))
     if 'clear_color' in ov:

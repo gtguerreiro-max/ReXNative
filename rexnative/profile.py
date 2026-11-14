@@ -73,7 +73,7 @@ def load_ports(path):
 def port_paths(port):
     root = port['root']
     return {k: os.path.join(root, port[k]) for k in ('native', 'trace', 'surface', 'generated',
-                                                       'xex') if k in port}
+                                                       'xex', 'layer') if k in port}
 
 
 def read_surface(path):
@@ -83,9 +83,71 @@ def read_surface(path):
     return out
 
 
-def extract(port, name=None):
-    """Profile of a hand-made port (ports.json entry)."""
+def extract_layer(port, name=None):
+    """Profile of a port that runs ReXNative's renderer: its game_layer.h and d3d_surface.inc
+    ("layer" in ports.json), the same facts the hand-made sources held."""
     p = port_paths(port)
+    layer = p['layer']
+    h = _code(_read(os.path.join(layer, 'game_layer.h')))
+
+    def const(name, default=None):
+        m = re.search(r'\b%s = ([^;]+);' % re.escape(name), h)
+        return m.group(1).strip() if m else default
+
+    def num(v):
+        return int(v, 0) if v is not None else None
+
+    funcs = {}
+    for n in FUNCTIONS:
+        a = num(const('kFn' + n))
+        funcs[n] = a or None
+    if funcs.get('ResolveInner') == funcs.get('Resolve'):
+        funcs['ResolveInner'] = None
+    offsets = {}
+    for ns in ('dev', 'shadow', 'rt', 'occ'):
+        m = re.search(r'namespace %s \{(.*?)\}' % ns, h, re.S)
+        for k, v in re.findall(r'constexpr uint32_t (k\w+) = (\d+);', m.group(1) if m else ''):
+            offsets['%s.%s' % (ns, k[1:] if ns == 'shadow' else k)] = int(v)
+    regs = re.search(r'kResolveArgRegs\[8\] = \{([^}]*)\}', h)
+    args = [int(x) for x in regs.group(1).split(',')] if regs else list(range(3, 11))
+    remap = const('kResolveRemapArgs') == 'true'
+    scene = {
+        'kSceneSurfaceMask': num(const('kSceneSurfaceMask')),
+        'kSceneSurface': num(const('kSceneSurface')),
+        'width': num(const('kSceneWidth')),
+        'scaled_pitch': num(const('kScenePitch')),
+        'height': num(const('kGameFrameHeight')),
+    }
+    defaults = {
+        'pgr4_render_height': num(const('kDefaultRenderHeight')),
+        'pgr4_native_occlusion': const('kDefaultOcclusion') == 'true',
+        'pgr4_native_display_aspect': const('kDefaultDisplayAspect'),
+    }
+    clear = None
+    if num(const('kResolveDefaultClearColor')):
+        clear = {'address': num(const('kResolveDefaultClearColor')),
+                 'vector': const('kResolveDefaultClearIsVector') == 'true'}
+    info = xexmod.read(p['xex']) if os.path.exists(p.get('xex', '')) else None
+    return {
+        'name': name, 'title': port.get('title', name), 'generated': p['generated'], 'xex': info,
+        'functions': funcs,
+        'surface': read_surface(os.path.join(layer, 'd3d_surface.inc')),
+        'offsets': offsets,
+        'clear_color': clear,
+        'resolve_abi': {'hooked': 'inner' if remap else 'public', 'args': args},
+        'scene': scene, 'defaults': defaults,
+        'devices': {'follow_swap_device_only': const('kFollowSwapDeviceOnly') == 'true',
+                    'configure_at_first_device': const('kConfigureAtFirstDevice') == 'true'},
+        'notes': ['from its ReXNative layer (%s)' % layer],
+    }
+
+
+def extract(port, name=None):
+    """Profile of a port (ports.json entry): from its ReXNative layer when it has one ("layer"),
+    else from its hand-made sources."""
+    p = port_paths(port)
+    if 'layer' in p:
+        return extract_layer(port, name)
     native = p['native']
     funcs = {n: None for n in FUNCTIONS}
     notes = []

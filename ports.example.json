@@ -1,5 +1,5 @@
 {
-  "_comment": "The known ports (references for adapt, and what validate compares against). Copy to ports.json and set the paths: each needs the port's sources (native/trace/surface), its ReXGlue generated code and the game's default.xex. Paths are only read.",
+  "_comment": "The known ports (references for adapt, and what validate compares against). Copy to ports.json and set the paths. A port that runs ReXNative is read from its layer (\"layer\": its game_layer.h and d3d_surface.inc); one with its own copy of the renderer from its sources (\"native\", \"trace\", \"surface\"). Each also needs its ReXGlue generated code and the game's default.xex. Paths are only read.",
   "pgr4": {
     "title": "Project Gotham Racing 4",
     "root": "C:/ports/pgr4-native",
@@ -12,9 +12,7 @@
   "fromdust": {
     "title": "From Dust",
     "root": "C:/ports/FromDustDeck",
-    "native": "src/native",
-    "trace": "src/fromdust_d3d_trace.cpp",
-    "surface": "src/d3d_surface.inc",
+    "layer": "src/rexnative",
     "generated": "generated/default",
     "xex": "game-data/Default.xex"
   }

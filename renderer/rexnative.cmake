@@ -36,8 +36,9 @@ function(rexnative_add target)
     if(NOT RN_NO_DEFAULT_GLUE)
         target_sources(${target} PRIVATE "${src}/glue_defaults.cpp")
     endif()
-    # The layer first: game_layer.h and d3d_surface.inc are found there.
-    target_include_directories(${target} PRIVATE "${RN_LAYER_DIR}" "${src}"
+    # Before the game's own include directories: game_layer.h and d3d_surface.inc come from the
+    # layer and native/... from here, even where a port still has older copies of either.
+    target_include_directories(${target} BEFORE PRIVATE "${RN_LAYER_DIR}" "${src}"
         "${RN_REXGLUE_SDK_SRC}/src/ui/shaders/bytecode")
     target_include_directories(${target} SYSTEM PRIVATE
         "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/api/include"

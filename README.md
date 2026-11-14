@@ -66,12 +66,12 @@ gaps and cross-check.
 | Game | XDK D3D | With this renderer |
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | the renderer's origin: the whole game ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
-| From Dust | D3D9 2.0.20353 | plays, 60 FPS on the Steam Deck, HUD ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | first screens drawn; hangs at the first loading screen (being investigated) |
+| From Dust | D3D9 2.0.20353 | **built from ReXNative**: plays (menus, levels, HUD), as with its hand-made copy ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens and HUD; the first 3D frames hang the GPU (a TDR its hand-made copy has too: being investigated) |
 
-Those ports still carry their own copy of the renderer. This repository's `renderer/` is that
-code made game-neutral: it **compiles** (`clang-cl /Zs`) with the layers of all three games, but
-no game runs from it yet. That is the next step.
+From Dust and Iron Brigade now build their renderer from this repository (`rexnative_add()`
+and a generated `game_layer.h`), with no copy of their own: tested on a PC, each draws what its
+hand-made copy drew. PGR4 still has its own copy in pgr4-native.
 
 ### Validation
 
@@ -152,8 +152,8 @@ docs/GAME_LAYER.md             what game_layer.h holds
 
 Improving it a little at a time:
 
-1. Build From Dust and Iron Brigade from `renderer/` + their generated layers, and check them
-   in game.
+1. ~~Build From Dust and Iron Brigade from `renderer/` + their generated layers, and check them
+   in game.~~ Done (2026-11-14).
 2. Find the scene surface at run time, so DLSS works without measuring it.
 3. Find the HDR pass before the game's tone mapping, for DLSS 5.
 4. Rename the `pgr4_native_*` options and the `pgr4::native` namespace (keeping the old names
