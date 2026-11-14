@@ -105,7 +105,8 @@ your paths: each reference needs its port's sources and generated code):
 python -m rexnative adapt --generated path/to/game/generated/default --xex path/to/game/default.xex --name mygame --title "My Game" --out results/mygame
 ```
 
-`results/mygame/report.md` lists what was found, how, how sure, and what to check.
+`results/mygame/report.md` lists what was found, how, how sure, and what to check. Reports
+and messages are in English; `--lang pt` (or `REXNATIVE_LANG=pt`) writes them in Portuguese.
 
 **2. Add the renderer to the game's build:**
 
@@ -161,7 +162,8 @@ Improving it a little at a time:
 5. Ship the SDK patch set the renderer needs, pinned, with a build script.
 6. Every new port becomes a reference and makes the next one easier: games on the same XDK
    build match best.
-7. The tool's reports and messages are in Portuguese for now; English output.
+7. ~~The tool's reports and messages are in Portuguese for now; English output.~~ Done:
+   English by default, `--lang pt` for Portuguese.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

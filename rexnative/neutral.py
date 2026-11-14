@@ -16,6 +16,7 @@ import re
 import shutil
 
 from . import profile as prof
+from .i18n import tr
 
 G = 'rexnative::game::'
 INCLUDE = '#include "game_layer.h"  // this game\'s layer (rexnative adapt): addresses, offsets'
@@ -308,15 +309,13 @@ def build(port, name, p, out, ports=None, log=print):
             lo = leftovers(v, names)
             if lo:
                 left[k] = lo
-    lines = ['# renderer/: o src/native neutro', '',
-             'Gerado por `python -m rexnative neutral --port %s` a partir do `src/native` e do '
-             '`%s` desse port.' % (name, os.path.basename(paths['trace'])), '',
-             '## Edições aplicadas (%d)' % len(e.done), '']
+    lines = [tr('n_title'), '', tr('n_made', name, os.path.basename(paths['trace'])), '',
+             tr('n_done', len(e.done)), '']
     lines += ['- ' + d for d in e.done]
-    lines += ['', '## Edições que falharam (%d)' % len(e.problems), '']
-    lines += ['- ' + d for d in e.problems] or ['- nenhuma']
-    lines += ['', '## Endereços de guest que ficaram no código', '']
-    lines += ['- %s: %s' % (k, ', '.join(v)) for k, v in left.items()] or ['- nenhum']
+    lines += ['', tr('n_failed', len(e.problems)), '']
+    lines += ['- ' + d for d in e.problems] or [tr('n_none_f')]
+    lines += ['', tr('n_left'), '']
+    lines += ['- %s: %s' % (k, ', '.join(v)) for k, v in left.items()] or [tr('n_none')]
     lines.append('')
     with open(os.path.join(out, 'CHANGES.md'), 'w', encoding='utf-8', newline='\n') as fh:
         fh.write('\n'.join(lines))

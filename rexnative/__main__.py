@@ -7,13 +7,17 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative validate NAME [--refs a,b] [--out DIR]
   python -m rexnative scene RESOLVES.jsonl
   python -m rexnative neutral [--port NAME] [--out DIR]   game-neutral src/native (renderer/)
+
+Reports and messages are in English; --lang pt (before or after the command) or
+REXNATIVE_LANG=pt writes them in Portuguese.
 """
 import argparse
 import json
 import os
 import sys
 
-from . import adapt as adaptmod, emit, profile as prof, report, scene as scenemod, xex
+from . import adapt as adaptmod, emit, i18n, profile as prof, report, scene as scenemod, xex
+from .i18n import tr
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ports.json: this machine's ports (paths), not in the repository; ports.example.json shows the
@@ -85,8 +89,7 @@ def cmd_validate(a):
     _write(os.path.join(out, 'hand_made', 'game_layer.h'), emit.game_layer_h(hand_layer))
     _write(os.path.join(out, 'hand_made', 'd3d_surface.inc'), emit.surface_inc(hand_layer))
     text, stats = report.validation_report(
-        res, hand, 'O port feito à mão está em `%s`; a camada dele, escrita no mesmo formato, em '
-                   '`hand_made/`.' % port['root'])
+        res, hand, tr('v_note', port['root']))
     _write(os.path.join(out, 'validation.md'), text)
     with open(os.path.join(out, 'validation.json'), 'w', encoding='utf-8', newline='\n') as f:
         json.dump(dict(stats), f, indent=1)
@@ -97,7 +100,7 @@ def cmd_validate(a):
 def cmd_scene(a):
     s = scenemod.find(scenemod.read(a.jsonl))
     if not s:
-        sys.exit('no colour resolve in %s' % a.jsonl)
+        sys.exit(tr('s_none', a.jsonl))
     print(scenemod.describe(s))
 
 
@@ -120,15 +123,21 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog='rexnative', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--ports', default=PORTS, help='known ports (default: ports.json)')
+    ap.add_argument('--lang', choices=i18n.LANGS, default=None,
+                    help='language of reports and messages (default: $REXNATIVE_LANG or en)')
+    # The same option after the command (python -m rexnative validate x --lang pt).
+    lang_opt = argparse.ArgumentParser(add_help=False)
+    lang_opt.add_argument('--lang', choices=i18n.LANGS, default=argparse.SUPPRESS,
+                          help='language of reports and messages (en, pt)')
     sub = ap.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('info', help='XEX title, version and XDK libraries')
+    s = sub.add_parser('info', help='XEX title, version and XDK libraries', parents=[lang_opt])
     s.add_argument('xex', nargs='+')
     s.set_defaults(fn=cmd_info)
-    s = sub.add_parser('extract', help='write the hand-made ports\' profiles')
+    s = sub.add_parser('extract', help='write the hand-made ports\' profiles', parents=[lang_opt])
     s.add_argument('names', nargs='*')
     s.add_argument('--out', default=os.path.join(HERE, 'references'))
     s.set_defaults(fn=cmd_extract)
-    s = sub.add_parser('adapt', help='generate a game layer for a new game')
+    s = sub.add_parser('adapt', help='generate a game layer for a new game', parents=[lang_opt])
     s.add_argument('--generated', required=True, help='the game\'s ReXGlue generated/default')
     s.add_argument('--xex', required=True, help='its default.xex')
     s.add_argument('--name', required=True)
@@ -136,20 +145,21 @@ def main(argv=None):
     s.add_argument('--refs', help='references to use (default: every port in ports.json)')
     s.add_argument('--out', required=True)
     s.set_defaults(fn=cmd_adapt)
-    s = sub.add_parser('validate', help='regenerate a known port and compare with its hand-made layer')
+    s = sub.add_parser('validate', help='regenerate a known port and compare with its hand-made layer', parents=[lang_opt])
     s.add_argument('name')
     s.add_argument('--refs')
     s.add_argument('--out')
     s.set_defaults(fn=cmd_validate)
-    s = sub.add_parser('scene', help='propose the scene surface from a resolve dump')
+    s = sub.add_parser('scene', help='propose the scene surface from a resolve dump', parents=[lang_opt])
     s.add_argument('jsonl')
     s.set_defaults(fn=cmd_scene)
-    s = sub.add_parser('neutral', help='write the game-neutral renderer sources')
+    s = sub.add_parser('neutral', help='write the game-neutral renderer sources', parents=[lang_opt])
     s.add_argument('--port', default='ironbrigade', help='port whose src/native is the newest')
     s.add_argument('--out', default=os.path.join(HERE, 'renderer'))
     s.add_argument('--force', action='store_true', help='replace an existing src/native')
     s.set_defaults(fn=cmd_neutral)
     a = ap.parse_args(argv)
+    i18n.set_lang(a.lang)
     a.fn(a)
 
 

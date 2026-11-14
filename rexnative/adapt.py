@@ -14,6 +14,7 @@ import json
 import os
 
 from . import abi, constants, listing, matcher, offsets, profile as prof, xex
+from .i18n import tr
 
 EMIT = ('high', 'medium')  # confidences written to the layer; 'low' ones are only reported
 
@@ -24,17 +25,17 @@ def score_reference(target_info, ref_profile):
     s, why = 0.0, []
     if ver and rver == ver:
         s += 100
-        why.append('mesma versão do XDK (%s)' % ver)
+        why.append(tr('why_same_xdk', ver))
     else:
         b, rb = xex.xdk_build(ver), xex.xdk_build(rver)
         if b and rb:
             s -= abs(b - rb) / 100.0
-        why.append('XDK %s vs %s' % (rver, ver))
+        why.append(tr('why_xdk', rver, ver))
     if (rlib == 'D3D9LTCG') == (lib == 'D3D9LTCG'):
         s += 10
-        why.append('ambos %s' % ('LTCG' if lib == 'D3D9LTCG' else 'sem LTCG'))
+        why.append(tr('why_both', tr('why_ltcg') if lib == 'D3D9LTCG' else tr('why_no_ltcg')))
     else:
-        why.append('%s vs %s' % (rlib, lib))
+        why.append(tr('why_libs', rlib, lib))
     known = sum(1 for v in ref_profile['functions'].values() if v)
     s += known / 100.0
     return s, why
@@ -58,7 +59,7 @@ def adapt(target, refs, overrides=None, log=print):
     T = listing.load(target['generated'])
     order = []
     for name, p in refs.items():
-        s, why = score_reference(info, p) if info else (0.0, ['sem xex'])
+        s, why = score_reference(info, p) if info else (0.0, [tr('why_no_xex')])
         order.append((s, name, why))
     order.sort(reverse=True)
     if not order:

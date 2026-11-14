@@ -9,6 +9,8 @@ earliest of those in the frame (post-processing and the UI come after it).
 """
 import json
 
+from .i18n import tr
+
 COLOR_FORMATS = {0: 'k_8_8_8_8', 1: 'k_8_8_8_8_GAMMA', 2: 'k_2_10_10_10',
                  3: 'k_2_10_10_10_FLOAT (7e3)', 4: 'k_16_16', 5: 'k_16_16_16_16',
                  6: 'k_16_16_FLOAT', 7: 'k_16_16_16_16_FLOAT', 10: 'k_2_10_10_10_AS_10_10_10_10',
@@ -59,21 +61,16 @@ def find(resolves):
 
 def describe(s):
     lines = [
-        'Cena: resolve #%d, %dx%d, pitch %d, MSAA %s, formato %s%s.' % (
-            s['index'], s['width'], s['height'], s['pitch'], s['msaa'], s['format'],
-            ' (HDR)' if s['hdr'] else ''),
+        tr('s_scene', s['index'], s['width'], s['height'], s['pitch'], s['msaa'], s['format'],
+           ' (HDR)' if s['hdr'] else ''),
         'overrides.json: {"scene": {"kSceneSurfaceMask": %d, "kSceneSurface": %d, "width": %d, '
         '"scaled_pitch": %d, "height": %d}}' % (s['kSceneSurfaceMask'], s['kSceneSurface'],
                                                 s['width'], s['pitch'], s['height']),
     ]
     if s['hdr']:
-        lines.append('DLSS 5: o resolve da cena é HDR, antes do tone mapping: '
-                     'pgr4_native_dlss5_stage = "scene".')
+        lines.append(tr('s_hdr'))
     else:
-        lines.append('DLSS 5: a cena não está num formato HDR neste resolve (tone mapping já '
-                     'feito ou cena LDR): confirmar com o RenderDoc qual o passe HDR, ou usar '
-                     'pgr4_native_dlss5_stage = "front".')
+        lines.append(tr('s_ldr'))
     if s['later_full_frame']:
-        lines.append('Resolves de ecrã inteiro depois da cena (pós-processamento / UI): %s.'
-                     % ', '.join('#%d' % i for i in s['later_full_frame']))
+        lines.append(tr('s_later', ', '.join('#%d' % i for i in s['later_full_frame'])))
     return '\n'.join(lines)

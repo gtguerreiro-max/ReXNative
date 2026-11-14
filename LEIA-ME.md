@@ -99,6 +99,8 @@ python -m rexnative adapt --generated caminho/do/jogo/generated/default --xex ca
 ```
 
 O `results/meujogo/report.md` diz o que encontrou, como, com que confiança e o que verificar.
+Os relatórios e mensagens saem em inglês; com `--lang pt` (ou `REXNATIVE_LANG=pt`) saem em
+português.
 
 **2. Juntar o renderer ao build do jogo:**
 
@@ -142,7 +144,8 @@ Melhorar aos poucos:
 5. Incluir o conjunto de patches do SDK de que o renderer precisa, fixo, com um script de build.
 6. Cada port novo passa a referência e facilita o seguinte: jogos com a mesma build do XDK
    emparelham melhor.
-7. Os relatórios e mensagens da ferramenta estão em português; acrescentar inglês.
+7. ~~Os relatórios e mensagens da ferramenta estão em português; acrescentar inglês.~~ Feito:
+   inglês por defeito, `--lang pt` para português.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.
