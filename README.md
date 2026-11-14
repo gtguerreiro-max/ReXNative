@@ -67,7 +67,7 @@ gaps and cross-check.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | the renderer's origin: the whole game ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **built from ReXNative**: plays (menus, levels, HUD), as with its hand-made copy ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens and HUD; the first 3D frames hang the GPU (a TDR its hand-made copy has too: being investigated) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, and the intro runs (its GPU hang came from draw arguments its LTCG build moves, now remapped); the intro video is still black (memexport draws are not drawn yet) |
 
 From Dust and Iron Brigade now build their renderer from this repository (`rexnative_add()`
 and a generated `game_layer.h`), with no copy of their own: tested on a PC, each draws what its
@@ -177,6 +177,9 @@ Improving it a little at a time:
    build match best.
 7. ~~The tool's reports and messages are in Portuguese for now; English output.~~ Done:
    English by default, `--lang pt` for Portuguese.
+8. Memexport draws (shaders that write to memory): Iron Brigade's intro video is drawn by one;
+   the shader translator already writes them, the renderer has to run them and hand the
+   result to the textures that read it.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

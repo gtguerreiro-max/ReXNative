@@ -1,6 +1,8 @@
 // ReXNative renderer: NativeRenderer host.
 #include "renderer.h"
 
+#include "legacy_names.h"
+
 #include "async_file.h"
 #include "clock.h"
 #include "d3d12_device.h"
@@ -424,6 +426,7 @@ NativeRenderer::~NativeRenderer() {
 }
 
 bool NativeRenderer::Initialize() {
+  LogOldNames();
   device_ = std::make_unique<D3D12Device>();
   uint32_t w = uint32_t(std::max(64, REXCVAR_GET(rexnative_width)));
   uint32_t h = uint32_t(std::max(64, REXCVAR_GET(rexnative_height)));

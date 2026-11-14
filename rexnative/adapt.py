@@ -143,6 +143,28 @@ def adapt(target, refs, overrides=None, log=print):
             confidence=r['confidence'] if inner else None,
             detail='the function the public Resolve wraps' if inner else '')
 
+    # -- argument order of the hooked draw functions (LTCG builds drop / move arguments) ----------
+    call = {}
+    for canon in abi.CALL_ARG_FUNCTIONS:
+        tgt_fn = funcs[canon]['address']
+        if not tgt_fn or tgt_fn not in T:
+            continue
+        best_run = None
+        for run in runs:
+            ref_fn = run['profile']['functions'].get(canon)
+            if not ref_fn or ref_fn not in run['R']:
+                continue
+            sim = matcher.ratio(run['R'][ref_fn], T[tgt_fn])
+            if best_run is None or sim > best_run[0]:
+                best_run = (sim, run, ref_fn)
+        if best_run is None:
+            continue
+        sim, run, ref_fn = best_run
+        ref_args = (run['profile'].get('call_args') or {}).get(canon)
+        regs, evidence = abi.call_args(run['R'], T, ref_fn, tgt_fn, ref_args)
+        call[canon] = {'args': regs, 'ref': run['name'], 'listing': round(sim, 2),
+                       'evidence': evidence}
+
     # -- d3d_surface.inc: the reference's entries found with a usable confidence ----------------
     surface, seen, dropped = [], set(), []
     for run in runs:
@@ -220,6 +242,7 @@ def adapt(target, refs, overrides=None, log=print):
         'clear_color': clear,
         'reference_clear_check': ref_clear_check,
         'resolve_abi': ra,
+        'call_args': call,
         # Not in the code: the renderer learns it at run time (scene.h, REXNATIVE_SCENE_AUTO);
         # the reference's values stay as the fallback. overrides.json "scene" (measured with
         # rexnative scene) fixes it instead.
@@ -268,6 +291,9 @@ def apply_overrides(result, ov):
         result['clear_color'] = {'address': int(c['address'], 16), 'vector': bool(c['vector'])}
     if 'resolve_args' in ov and result['resolve_abi']:
         result['resolve_abi']['args'] = ov['resolve_args']
+    for name, regs in ov.get('call_args', {}).items():
+        result.setdefault('call_args', {})[name] = {'args': regs, 'ref': 'overrides.json',
+                                                    'listing': None, 'evidence': []}
     result['overrides'] = ov
 
 

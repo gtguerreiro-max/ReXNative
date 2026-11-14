@@ -1241,24 +1241,48 @@ inline std::array<uint32_t, 8> EntryRegs(const PPCContext& ctx) {
           ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32};
 }
 
+// r3..r10 of a hooked call in the public signature's order (hook_args.h), which the renderer and
+// the state tracker read. LTCG builds drop and move arguments: the hooked Resolve may be an inner
+// function, and Iron Brigade's DrawIndexedVertices has no BaseVertexIndex (start and count in
+// r5, r6), its DrawVertices only the count (r5). game_layer.h gives, per function, the entry
+// register of each public argument (0 = constant 0); the stack arguments stay where the public
+// call has them.
+inline std::array<uint32_t, 8> PublicRegs(uint32_t fn, const PPCContext& ctx) {
+  namespace game = rexnative::game;
+  const std::array<uint32_t, 8> raw = EntryRegs(ctx);
+  const uint8_t* map = nullptr;
+  switch (rexnative::HookFn(fn)) {
+    case rexnative::HookFn::kResolve:
+      if constexpr (game::kResolveRemapArgs) map = game::kResolveArgRegs;
+      break;
+    case rexnative::HookFn::kDrawIndexedVertices:
+      if constexpr (game::kRemapDrawIndexedVertices) map = game::kArgsDrawIndexedVertices;
+      break;
+    case rexnative::HookFn::kDrawVertices:
+      if constexpr (game::kRemapDrawVertices) map = game::kArgsDrawVertices;
+      break;
+    case rexnative::HookFn::kDrawVerticesUP:
+      if constexpr (game::kRemapDrawVerticesUP) map = game::kArgsDrawVerticesUP;
+      break;
+    case rexnative::HookFn::kBeginVertices:
+      if constexpr (game::kRemapBeginVertices) map = game::kArgsBeginVertices;
+      break;
+    default:
+      break;
+  }
+  if (!map) return raw;
+  std::array<uint32_t, 8> r;
+  for (int i = 0; i < 8; ++i) r[i] = map[i] ? raw[map[i] - 3] : 0;
+  return r;
+}
+
 // A hooked call's arguments at its entry, before the guest function clobbers them.
 inline rexnative::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
   rexnative::HookArgs a;
   a.fn = rexnative::HookFn(fn);
   a.device = ctx.r3.u32;
-  const std::array<uint32_t, 8> r = EntryRegs(ctx);
+  const std::array<uint32_t, 8> r = PublicRegs(fn, ctx);
   std::copy(r.begin(), r.end(), a.r);
-  if constexpr (rexnative::game::kResolveRemapArgs) {
-    if (a.fn == rexnative::HookFn::kResolve) {
-      // The hooked Resolve is not the public one (an LTCG build's inner function): where each
-      // public argument is at its entry (game_layer.h kResolveArgRegs; 0 = constant 0). The
-      // stack arguments are where the public call has them.
-      for (int i = 0; i < 8; ++i) {
-        const uint32_t reg = rexnative::game::kResolveArgRegs[i];
-        a.r[i] = reg ? r[reg - 3] : 0;
-      }
-    }
-  }
   a.sp = ctx.r1.u32;
   a.f[0] = ctx.f1.f64;
   a.f[1] = ctx.f2.f64;
@@ -1319,7 +1343,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
   auto run = [&](PPCContext& c, uint8_t* b) {
     if constexpr (nat::IsStateFlushingFn(kAddr)) {
       if (track && c.r3.u32) {
-        const std::array<uint32_t, 8> rr = EntryRegs(c);
+        const std::array<uint32_t, 8> rr = PublicRegs(kAddr, c);
         nat::CallEntry e;
         {
           nat::profile::Scope scope(nat::profile::kTrack);

@@ -48,6 +48,24 @@ function(rexnative_add target)
     target_link_libraries(${target} PRIVATE d3d12 dxgi dxguid delayimp
         "${RN_DLSS_SDK}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
     target_link_options(${target} PRIVATE /DELAYLOAD:d3d12.dll)
+    # The runtime DLLs the renderer loads, beside the game's executable: NVIDIA's signed DLSS and
+    # DLSS 5 (neural rendering), AMD's signed FidelityFX loader / upscaler / frame generation.
+    # Without them DLSS / FSR report "not available" and the scene keeps its MSAA. A port's
+    # install step copies every nvngx_*.dll and amd_fidelityfx_*_dx12.dll from here.
+    foreach(dll
+            "${RN_DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlss.dll"
+            "${RN_DLSS_NR}/lib/Windows_x86_64/rel/nvngx_dlssnr.dll"
+            "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll"
+            "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll"
+            "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll")
+        if(EXISTS "${dll}")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "$<TARGET_FILE_DIR:${target}>"
+                VERBATIM)
+        else()
+            message(WARNING "rexnative_add(${target}): ${dll} not found; that feature stays off")
+        endif()
+    endforeach()
     if(NOT TARGET rexnative_shader_xlate)
         set(REXNATIVE_REXGLUE_SDK_SRC "${RN_REXGLUE_SDK_SRC}")
         include("${src}/native/shader_xlate.cmake")

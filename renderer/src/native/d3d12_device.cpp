@@ -81,11 +81,16 @@ void LogDeviceRemoved(ID3D12Device* device) {
   ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
   if (!REXCVAR_GET(rexnative_dred) || FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
   D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs = {};
-  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&crumbs))) {
+  const HRESULT got = dred->GetAutoBreadcrumbsOutput1(&crumbs);
+  if (FAILED(got)) REXLOG_ERROR("ReXNative DRED: no breadcrumbs ({:08X})", uint32_t(got));
+  if (SUCCEEDED(got)) {
+    uint32_t lists = 0, unfinished = 0;
     for (const D3D12_AUTO_BREADCRUMB_NODE1* n = crumbs.pHeadAutoBreadcrumbNode; n; n = n->pNext) {
       const uint32_t count = n->BreadcrumbCount;
       const uint32_t last = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+      ++lists;
       if (last >= count) continue;  // this list finished
+      ++unfinished;
       REXLOG_ERROR("ReXNative DRED: list '{}' on queue '{}': {} of {} operations completed",
                    Narrow(n->pCommandListDebugNameW), Narrow(n->pCommandQueueDebugNameW), last,
                    count);
@@ -100,6 +105,11 @@ void LogDeviceRemoved(ID3D12Device* device) {
                        Narrow(ctx.pContextString));
       }
     }
+    // Every list of this device finished: the GPU hung on work of another device in the process
+    // (the Xenos plugin's), not on the native renderer's.
+    REXLOG_ERROR("ReXNative DRED: {} command list(s) recorded on this device, {} not finished{}",
+                 lists, unfinished,
+                 unfinished || !lists ? "" : ": the hang is in another device's work (Xenos plugin?)");
   }
   D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
   if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&fault)) && fault.PageFaultVA) {

@@ -275,6 +275,46 @@ def fmt(a):
     return '%s%d' % a
 
 
+# The hooked functions besides Resolve whose arguments the renderer reads in the public order
+# (hook_args.h, d3d_state.cpp ReadDrawState / AfterCall). LTCG builds drop and move them: Iron
+# Brigade's DrawIndexedVertices has no BaseVertexIndex (constant 0) and takes start, count in
+# r5, r6; its DrawVertices takes only the count, in r5.
+CALL_ARG_FUNCTIONS = ['DrawIndexedVertices', 'DrawVertices', 'DrawVerticesUP', 'BeginVertices']
+
+
+def call_args(R, T, ref_fn, tgt_fn, ref_args=None):
+    """[entry register for public r3..r10, 0 = constant 0] of the target's `tgt_fn`, from the
+    aligned uses of its arguments against the reference's `ref_fn` (whose own map is ref_args,
+    identity when None). A public argument nothing corresponds to is where the public signature
+    has it if that register is not taken by another argument, else a constant 0."""
+    ref_args = ref_args or list(range(3, 11))
+    ref_entry_of_public = {('r', 3 + i): (('r', s) if s else ('0',)) for i, s in enumerate(ref_args)}
+    to_ref = best(correspond(R[ref_fn], T[tgt_fn]))  # target arg -> (ref arg, n, total)
+    ref_to_target = {a: b for b, (a, n, tot) in to_ref.items()}
+    claimed = set(to_ref)
+    # Argument registers the target copies before using (`mr r17,r5`): real arguments.
+    saved = {a for s, reg, a, e in homes(T[tgt_fn]) if a[0] == 'r' and reg != 'r%d' % a[1]}
+    out, evidence = [], []
+    for i in range(8):
+        p = ('r', 3 + i)
+        ref_entry = ref_entry_of_public[p]
+        if ref_entry[0] == '0':
+            # A constant in the reference (Iron Brigade's BaseVertexIndex); this game may still
+            # pass it, where the public signature has it (From Dust).
+            out.append(3 + i if p in saved and p not in claimed else 0)
+            continue
+        hit = ref_to_target.get(ref_entry)
+        if hit and hit[0] == 'r':
+            out.append(hit[1])
+            evidence.append('%s<-%s' % (fmt(p), fmt(hit)))
+        elif p not in claimed:
+            out.append(3 + i)
+        else:
+            out.append(0)
+            evidence.append('%s<-0' % fmt(p))
+    return out, evidence
+
+
 def resolve_abi(R, T, ref_profile, matches, log=print):
     """The target's Resolve hook and the source of each public argument.
 

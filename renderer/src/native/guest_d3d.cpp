@@ -34,8 +34,10 @@ namespace rexnative::guest_d3d {
 // replay; without a packet there is nothing to record, so the replacement covers both forms.
 bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
   // Start-up flags: the renderer switch changes NativeRenderer::Live, not these.
-  static const bool kReplace =
-      REXCVAR_GET(rexnative_replace_draws) && REXCVAR_GET(rexnative);
+  // The replacement reads the public signature's registers: not for a game whose
+  // DrawIndexedVertices takes them elsewhere (game_layer.h kRemapDrawIndexedVertices).
+  static const bool kReplace = !rexnative::game::kRemapDrawIndexedVertices &&
+                               REXCVAR_GET(rexnative_replace_draws) && REXCVAR_GET(rexnative);
   const uint32_t device = ctx.r3.u32;
   if (!kReplace || !device || !NativeRenderer::Live()) return false;
   uint8_t* masks = HostPtr(base, device + dev::kDirtyMasks);

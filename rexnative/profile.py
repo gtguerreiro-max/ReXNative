@@ -111,6 +111,11 @@ def extract_layer(port, name=None):
     regs = re.search(r'kResolveArgRegs\[8\] = \{([^}]*)\}', h)
     args = [int(x) for x in regs.group(1).split(',')] if regs else list(range(3, 11))
     remap = const('kResolveRemapArgs') == 'true'
+    call = {}
+    for name in ('DrawIndexedVertices', 'DrawVertices', 'DrawVerticesUP', 'BeginVertices'):
+        m = re.search(r'kArgs%s\[8\] = \{([^}]*)\}' % name, h)
+        if m:
+            call[name] = [int(x) for x in m.group(1).split(',')]
     scene = {
         'kSceneSurfaceMask': num(const('kSceneSurfaceMask')),
         'kSceneSurface': num(const('kSceneSurface')),
@@ -138,6 +143,7 @@ def extract_layer(port, name=None):
         'offsets': offsets,
         'clear_color': clear,
         'resolve_abi': {'hooked': 'inner' if remap else 'public', 'args': args},
+        'call_args': call,
         'scene': scene, 'defaults': defaults,
         'devices': {'follow_swap_device_only': const('kFollowSwapDeviceOnly') == 'true',
                     'configure_at_first_device': const('kConfigureAtFirstDevice') == 'true'},

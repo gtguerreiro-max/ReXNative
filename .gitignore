@@ -6,3 +6,5 @@ ports.json
 # games, local only.
 results/
 references/
+# Research notes (links to third-party projects, some leak-adjacent): local only.
+docs/research/

@@ -131,12 +131,14 @@ constexpr Legacy kLegacy[] = {
     {"pgr4_render_height", "rexnative_render_height", rex::cvar::FlagType::Int32},
 };
 
+// Old names are set while the command line and the configuration file are read, before the log
+// is up: noted here and logged by LogOldNames (NativeRenderer::Initialize).
+std::mutex g_mutex;
+std::set<std::string_view> g_used;
+
 void Announce(const Legacy& l) {
-  static std::mutex m;
-  static std::set<std::string_view> said;
-  std::lock_guard lock(m);
-  if (said.insert(l.old_name).second)
-    REXLOG_WARN("ReXNative: {} is now {} (the old name still works)", l.old_name, l.new_name);
+  std::lock_guard lock(g_mutex);
+  g_used.insert(l.old_name);
 }
 
 struct Registrar {
@@ -164,6 +166,15 @@ struct Registrar {
 const Registrar g_registrar;
 
 }  // namespace
+
+void LogOldNames() {
+  std::lock_guard lock(g_mutex);
+  for (const Legacy& l : kLegacy)
+    if (g_used.count(l.old_name))
+      REXLOG_WARN("ReXNative: {} is now {} (the old name still works; {} = {})", l.old_name,
+                  l.new_name, l.new_name, rex::cvar::GetFlagByName(l.new_name));
+  g_used.clear();
+}
 
 const char* OldNameOf(std::string_view new_name) {
   for (const Legacy& l : kLegacy)

@@ -43,6 +43,7 @@ def from_result(res):
         'offsets': offs,
         'clear_color': res.get('clear_color'),
         'resolve_args': ra.get('args', list(range(3, 11))),
+        'call_args': {k: v['args'] for k, v in (res.get('call_args') or {}).items()},
         'scene': res['scene'], 'defaults': res['defaults'], 'devices': res['devices'],
     }
 
@@ -63,6 +64,7 @@ def from_profile(p):
         'offsets': {k: (v, 'hand-made') for k, v in p['offsets'].items()},
         'clear_color': p.get('clear_color'),
         'resolve_args': p['resolve_abi']['args'],
+        'call_args': p.get('call_args') or {},
         'scene': p['scene'], 'defaults': p['defaults'], 'devices': p['devices'],
     }
 
@@ -141,6 +143,14 @@ def game_layer_h(layer, comments=True):
     w('inline constexpr bool kResolveDefaultClearIsVector = %s;' % ('true' if cc['vector'] else 'false'))
     args = layer['resolve_args']
     w('inline constexpr uint8_t kResolveArgRegs[8] = {%s};' % ', '.join(str(x or 0) for x in args))
+    if comments:
+        w('// The same for the hooked draw functions (LTCG builds drop and move their arguments).')
+    from .abi import CALL_ARG_FUNCTIONS
+    for canon in CALL_ARG_FUNCTIONS:
+        regs = (layer.get('call_args') or {}).get(canon) or list(range(3, 11))
+        w('inline constexpr uint8_t kArgs%s[8] = {%s};' % (canon, ', '.join(str(x or 0) for x in regs)))
+        w('inline constexpr bool kRemap%s = %s;' % (
+            canon, 'false' if list(regs) == list(range(3, 11)) else 'true'))
     w('inline constexpr bool kResolveRemapArgs = %s;' % (
         'false' if list(args) == list(range(3, 11)) else 'true'))
     w('')
