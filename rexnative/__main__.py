@@ -114,6 +114,40 @@ def cmd_neutral(a):
     neutral.build(ports[a.port], a.port, prof.extract(ports[a.port], a.port), a.out, ports)
 
 
+def cmd_prepare(a):
+    from . import prepare
+    if os.name == 'nt':  # the matching and the codegen it starts stay behind the user's work
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), prepare.BELOW_NORMAL)
+    rexglue = a.rexglue or os.environ.get('REXNATIVE_REXGLUE')
+    if not rexglue or not os.path.exists(rexglue):
+        sys.exit('rexglue.exe not found: pass --rexglue or set REXNATIVE_REXGLUE '
+                 '(scripts/build-sdk.ps1 installs it in <sdk-install>/bin)')
+    ports = prof.load_ports(a.ports)
+    sources = []
+    for s in a.sources:
+        if os.path.isdir(s) and not prepare.find_xex(s) and not prepare.find_packages(s):
+            # A folder of games: each archive, package or sub-folder in it.
+            sources += [os.path.join(s, n) for n in sorted(os.listdir(s))
+                        if n.lower().endswith(prepare.ARCHIVES) or
+                        (os.path.isdir(os.path.join(s, n)) and n != os.path.basename(a.work))]
+        else:
+            sources.append(s)
+    refs = _refs(ports, a.refs.split(',') if a.refs else None)
+    for s in sources:
+        prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
+    text = prepare.survey(a.work)
+    with open(os.path.join(a.work, 'survey.md'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    print(text)
+
+
+def cmd_survey(a):
+    from . import prepare
+    print(prepare.survey(a.work))
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -158,6 +192,18 @@ def main(argv=None):
     s.add_argument('--out', default=os.path.join(HERE, 'renderer'))
     s.add_argument('--force', action='store_true', help='replace an existing src/native')
     s.set_defaults(fn=cmd_neutral)
+    s = sub.add_parser('prepare', parents=[lang_opt],
+                       help='a game as it comes (archive, STFS package, folder; or a folder of '
+                            'them) -> extracted, ReXGlue codegen, its layer')
+    s.add_argument('sources', nargs='+')
+    s.add_argument('--work', required=True, help='one folder per game is made here')
+    s.add_argument('--rexglue', help='rexglue.exe (default: $REXNATIVE_REXGLUE)')
+    s.add_argument('--refs', help='references to use (default: every port in ports.json)')
+    s.add_argument('--max-rounds', type=int, default=40, help='codegen rounds adding hints')
+    s.set_defaults(fn=cmd_prepare)
+    s = sub.add_parser('survey', parents=[lang_opt], help='table of the games prepared in --work')
+    s.add_argument('--work', required=True)
+    s.set_defaults(fn=cmd_survey)
     a = ap.parse_args(argv)
     i18n.set_lang(a.lang)
     a.fn(a)
