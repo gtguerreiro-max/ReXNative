@@ -103,17 +103,41 @@ def adapt(target, refs, overrides=None, log=print):
                 row['cross'][run['name']] = (mm.target, mm.how, mm.confidence())
         funcs[canon] = row
 
-    # Resolve: which function to hook and where its arguments are.
-    ra = abi.resolve_abi(R, T, p, m.map)
+    # Resolve: which function to hook and where its arguments are. Its signature changed between
+    # XDK builds (a public wrapper over an inner function with more arguments by 6995-11626,
+    # inlined again by LTCG), so it comes from the reference whose Resolve looks most like this
+    # game's, which need not be the primary one (Perfect Dark's 9328 and Super Meat Boy's 11626
+    # are From Dust's shape, not PGR4's).
+    candidates = []
+    for run in runs:
+        rk = abi.resolve_abi(run['R'], T, run['profile'], run['m'].map)
+        if not rk:
+            continue
+        pf = run['profile']['functions']
+        ref_fn = pf.get('ResolveInner') or pf.get('Resolve')
+        tgt_fn = rk['inner'] or abi.thin_wrapper(T, rk['hook']) or rk['hook']
+        sim = matcher.ratio(run['R'][ref_fn], T[tgt_fn]) if ref_fn in run['R'] and tgt_fn in T else 0
+        candidates.append((sim, run['name'], rk))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    ra, ra_ref = (candidates[0][2], candidates[0][1]) if candidates else (None, None)
     if ra:
+        ra['steps'].append('Resolve from the reference %s (listing %.2f%s)' % (
+            ra_ref, candidates[0][0], ''.join(', %s %.2f' % (n, s) for s, n, _ in candidates[1:])))
         r = funcs['Resolve']
-        r.update(address=ra['hook'], ref=primary['name'], ref_address=p['functions']['Resolve'])
+        r.update(address=ra['hook'], ref=ra_ref,
+                 ref_address=refs[ra_ref]['functions']['Resolve'])
         if r['how'] in ('not found', 'wrapper'):
             r.update(how='wrapper' if ra['inner'] == ra['hook'] else 'public wrapper',
                      confidence='medium', detail='; '.join(ra['steps']))
         elif ra['inner'] and ra['inner'] != ra['hook']:
             r.update(how='public wrapper', detail='; '.join(ra['steps']))
         inner = ra['inner'] if ra['inner'] and ra['inner'] != ra['hook'] else None
+        if inner is None:
+            # What the hooked function wraps (through trampolines), else the matcher's.
+            inner = abi.thin_wrapper(T, ra['hook'])
+            mi = funcs['ResolveInner'].get('address')
+            if inner is None and mi and mi != ra['hook']:
+                inner = mi
         funcs['ResolveInner'].update(
             address=inner, how='abi' if inner else 'same as Resolve',
             confidence=r['confidence'] if inner else None,

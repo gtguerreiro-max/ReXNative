@@ -203,13 +203,42 @@ def wrapper_moves(insns):
     return args
 
 
-def thin_wrapper(tree, f, max_insns=48):
-    """The function `f` wraps (its only real call), or None."""
+def trampoline(tree, f):
+    """The address a `lis rX,hi; addi rX,rX,lo; mtctr rX; bctr` function jumps to, or None
+    (Jet Set Radio reaches its inner Resolve through one)."""
     insns = tree.funcs.get(f, ())
-    calls = [c for c in tree.calls.get(f, ()) if c[1] in tree.funcs]
-    if not insns or len(insns) > max_insns or len(calls) != 1:
+    if len(insns) != 4:
         return None
-    return calls[0][1]
+    t = [text for _, text in insns]
+    m0 = re.match(r'^lis (r\d+),(-?\d+)$', t[0])
+    m1 = re.match(r'^addi (r\d+),(r\d+),(-?\d+)$', t[1])
+    if not (m0 and m1 and m1.group(2) == m0.group(1) and t[2] == 'mtctr %s' % m1.group(1)
+            and t[3].startswith('bctr')):
+        return None
+    return ((int(m0.group(2)) << 16) + int(m1.group(3))) & 0xFFFFFFFF
+
+
+def thin_wrapper(tree, f, max_insns=48):
+    """The function `f` wraps (its only real call, through a trampoline if there is one), or
+    None."""
+    insns = tree.funcs.get(f, ())
+    if not insns or len(insns) > max_insns:
+        return None
+    # The register save right after `mflr r12` and the restore the function ends with are
+    # __savegprlr / __restgprlr, which some games' trees list as functions (Super Meat Boy).
+    save = insns[1][0] if len(insns) > 1 and insns[0][1] == 'mflr r12' else None
+    last = insns[-1][0]
+    calls = [c for c in tree.calls.get(f, ()) if c[1] in tree.funcs and c[0] != save and
+             not (c[2] == 'tail' and c[0] == last)]
+    if len(calls) != 1:
+        return None
+    callee = calls[0][1]
+    for _ in range(3):
+        jump = trampoline(tree, callee)
+        if jump is None or jump not in tree.funcs:
+            break
+        callee = jump
+    return callee
 
 
 def best(votes):
@@ -265,7 +294,23 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
     steps = []
     m = matches.get(ref_hooked)
     target_inner = None
-    if m is not None and m.how != 'wrapper':
+    ref_is_wrapper = thin_wrapper(R, ref_hooked) is not None
+    if m is not None and m.how != 'wrapper' and ref_is_wrapper:
+        # The reference hooks the XDK's public wrapper (From Dust) and the target has it too:
+        # hook it, and its callee is the inner function. Never climb to a wrapper of it: that
+        # one is the game's own (Double Dragon Neon wraps the D3D's wrapper).
+        target_fn = m.target
+        target_inner = thin_wrapper(T, target_fn)
+        ref_moves, tgt_moves = wrapper_moves(R[ref_hooked]), wrapper_moves(T[target_fn])
+        if target_inner and ref_moves == tgt_moves:
+            to_ref = {a: (a, 1, 1) for a in PUBLIC}
+            steps.append('target %08X is the same public wrapper as the reference %08X (same '
+                         'argument moves), inner %08X' % (target_fn, ref_hooked, target_inner))
+        else:
+            to_ref = best(correspond(R[ref_hooked], T[target_fn]))
+            steps.append('target %08X matched to the reference wrapper %08X (%s), its moves '
+                         'differ: arguments by aligned uses' % (target_fn, ref_hooked, m.how))
+    elif m is not None and m.how != 'wrapper':
         target_fn = m.target
         # The target may still have a public wrapper over the matched function (the reference
         # predates the XDK's wrapper: PGR4 -> From Dust). Hook the wrapper: the game calls it.
