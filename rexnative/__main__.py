@@ -126,12 +126,19 @@ def cmd_prepare(a):
                  '(scripts/build-sdk.ps1 installs it in <sdk-install>/bin)')
     ports = prof.load_ports(a.ports)
     sources = []
+    work = os.path.normcase(os.path.abspath(a.work))
     for s in a.sources:
-        if os.path.isdir(s) and not prepare.find_xex(s) and not prepare.find_packages(s):
-            # A folder of games: each archive, package or sub-folder in it.
-            sources += [os.path.join(s, n) for n in sorted(os.listdir(s))
-                        if n.lower().endswith(prepare.ARCHIVES) or
-                        (os.path.isdir(os.path.join(s, n)) and n != os.path.basename(a.work))]
+        names = sorted(os.listdir(s)) if os.path.isdir(s) else []
+        top_xex = any(n.lower() == 'default.xex' for n in names)
+        if os.path.isdir(s) and not top_xex:
+            # A folder of games: each archive, package or sub-folder in it (never the work
+            # folder, which may sit inside it).
+            for n in names:
+                p = os.path.join(s, n)
+                if os.path.normcase(os.path.abspath(p)) == work:
+                    continue
+                if n.lower().endswith(prepare.ARCHIVES) or os.path.isdir(p) or                         prepare.stfs.is_package(p):
+                    sources.append(p)
         else:
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)

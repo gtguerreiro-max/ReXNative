@@ -45,7 +45,8 @@ def check(build_dir, source_name, files, first_includes, drop_includes=(), log=p
     results = {}
     for src in files:
         cmd = [f['compiler'], '/nologo', '-TP'] + f['defines'] + includes + flags + ['/Zs', src]
-        p = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
+        p = subprocess.run(cmd, capture_output=True, text=True, errors='replace',
+                           creationflags=0x00004000 if os.name == 'nt' else 0)  # below normal
         out = (p.stdout + p.stderr).strip()
         errors = [l for l in out.splitlines() if ' error' in l or 'error:' in l]
         results[src] = (p.returncode, errors, out)
