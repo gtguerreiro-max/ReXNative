@@ -290,6 +290,8 @@ def call_args(R, T, ref_fn, tgt_fn, ref_args=None):
     ref_args = ref_args or list(range(3, 11))
     ref_entry_of_public = {('r', 3 + i): (('r', s) if s else ('0',)) for i, s in enumerate(ref_args)}
     to_ref = best(correspond(R[ref_fn], T[tgt_fn]))  # target arg -> (ref arg, n, total)
+    # A register that moved needs two aligned uses: one can be a coincidence.
+    to_ref = {b: v for b, v in to_ref.items() if v[0] == b or v[1] >= 2}
     ref_to_target = {a: b for b, (a, n, tot) in to_ref.items()}
     claimed = set(to_ref)
     # Argument registers the target copies before using (`mr r17,r5`): real arguments.

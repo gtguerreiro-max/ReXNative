@@ -162,8 +162,14 @@ def adapt(target, refs, overrides=None, log=print):
         sim, run, ref_fn = best_run
         ref_args = (run['profile'].get('call_args') or {}).get(canon)
         regs, evidence = abi.call_args(run['R'], T, ref_fn, tgt_fn, ref_args)
+        uncertain = False
+        if regs != list(range(3, 11)) and sim < 0.85:
+            # A remap read from a weak match is worse than none (garbage counts hang the GPU):
+            # the public order, flagged in the report.
+            uncertain, evidence = True, evidence + ['not applied: listing %.2f < 0.85' % sim]
+            regs = list(range(3, 11))
         call[canon] = {'args': regs, 'ref': run['name'], 'listing': round(sim, 2),
-                       'evidence': evidence}
+                       'evidence': evidence, 'uncertain': uncertain}
 
     # -- d3d_surface.inc: the reference's entries found with a usable confidence ----------------
     surface, seen, dropped = [], set(), []

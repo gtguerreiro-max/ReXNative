@@ -133,6 +133,10 @@ MESSAGES = {
         'r_scene_measured': '- Given in overrides.json: surface `0x%X` (mask `0x%X`), width %s, pitch %s, '
                             'height %s.',
         'c_scene_auto': 'Scene: check the `ReXNative scene: learned` line in the log',
+        'r_args': '## Draw arguments (public r3..r7 <- entry register, 0 = constant 0)',
+        'r_args_moved': 'moved',
+        'r_args_uncertain': 'a remap was found but the match is weak: kept in the public order',
+        'c_args_uncertain': '%s: its arguments may be in other registers (weak match): check the function',
         'c_scene': "Scene: measure the scene surface (python -m rexnative scene)",
         'c_devices': 'Devices: the renderer follows any device (kFollowSwapDeviceOnly false). If the '
                      'game draws on another device while loading (heap corruption 0xC0000374, as '
@@ -247,6 +251,10 @@ MESSAGES = {
         'r_scene_measured': '- Dada no overrides.json: superfície `0x%X` (máscara `0x%X`), largura %s, '
                             'pitch %s, altura %s.',
         'c_scene_auto': 'Cena: confirmar a linha `ReXNative scene: learned` no log',
+        'r_args': '## Argumentos dos draws (r3..r7 públicos <- registo de entrada, 0 = constante 0)',
+        'r_args_moved': 'mudados',
+        'r_args_uncertain': 'há um rearranjo, mas a correspondência é fraca: fica na ordem pública',
+        'c_args_uncertain': '%s: os argumentos podem estar noutros registos (correspondência fraca): verificar a função',
         'c_scene': 'Cena: medir a superfície da cena (python -m rexnative scene)',
         'c_devices': 'Devices: o renderer segue qualquer device (kFollowSwapDeviceOnly false). Se o '
                      'jogo desenhar noutro device ao carregar (corrupção do heap 0xC0000374, como '

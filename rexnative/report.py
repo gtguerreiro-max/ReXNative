@@ -93,6 +93,19 @@ def adapter_report(res):
         check.append(tr('c_no_hook'))
     w('')
     cc = res.get('clear_color')
+    ca = res.get('call_args') or {}
+    if ca:
+        w(tr('r_args'))
+        w('')
+        for name, v in ca.items():
+            moved = v['args'] != list(range(3, 11))
+            w('- %s: `%s`%s (%s, %s %s)%s' % (
+                name, v['args'][:5], ' **' + tr('r_args_moved') + '**' if moved else '',
+                ', '.join(v.get('evidence') or []) or '—', v.get('ref'), v.get('listing'),
+                ' — ' + tr('r_args_uncertain') if v.get('uncertain') else ''))
+            if v.get('uncertain'):
+                check.append(tr('c_args_uncertain', name))
+        w('')
     w(tr('r_clear'))
     w('')
     if cc:
