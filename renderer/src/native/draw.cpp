@@ -12,6 +12,7 @@
 #include "draw.h"
 #include "memexport.h"
 
+#include "cmd_replay.h"
 #include "geometry_shader.h"
 #include "log.h"
 #include "motion_history.h"
@@ -1109,6 +1110,13 @@ struct DrawRenderer::Impl {
   ShaderMemo vs_memo[ShaderMemo::kEntries], ps_memo[ShaderMemo::kEntries];
   ShaderMemo* vs_last = nullptr;  // the entry the previous draw used
   ShaderMemo* ps_last = nullptr;
+  // Shaders loaded by replayed command buffers (ShaderRef::immediate_seq kReplayedShaderSeq),
+  // apart from the API's: keyed by address, size and the content hash their `binding` holds, so
+  // no memory is sampled and a buffer recorded again over the same addresses never evicts the
+  // API's entries or reads as a shader rebound in place.
+  ShaderMemo replay_vs_memo[ShaderMemo::kEntries], replay_ps_memo[ShaderMemo::kEntries];
+  ShaderMemo* replay_vs_last = nullptr;
+  ShaderMemo* replay_ps_last = nullptr;
   // SelectModifications is a function of the two shaders and these registers: the last call.
   struct ModsMemo {
     const DxbcShader* vs = nullptr;
@@ -1191,6 +1199,10 @@ struct DrawRenderer::Impl {
     kDebugNoStencil = 512,     // stencil off, depth as the guest has it
     kDebugDepthAlways = 1024,  // depth test always passes (writes and stencil kept)
     kDebugReadDepthAlways = 2048,  // the same for the draws that test depth without writing it
+    // Draws replayed from recorded command buffers (cmd_replay.h): skipped, or the only ones
+    // issued. Tested before render targets are bound, so a skipped draw changes no target.
+    kDebugNoCommandBuffers = 4096,
+    kDebugOnlyCommandBuffers = 8192,
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -1293,6 +1305,7 @@ struct DrawRenderer::Impl {
                            const BoundTargets& targets, DxbcShaderTranslator::SystemConstants& sys);
   DxbcShader* LoadShader(ShaderMemo* table, ShaderMemo*& last, const ShaderRef& ref,
                          xenos::ShaderType type);
+  DxbcShader* LoadReplayedShader(const ShaderRef& ref, xenos::ShaderType type);
   // Copies go to the end of `out`.
   bool RequestVertices(const DrawState& s, const DxbcShader& vs, std::vector<VertexCopy>& out);
   // Memexport (draws whose shaders write guest memory through the shared memory UAV).
@@ -2823,6 +2836,8 @@ DrawRenderer::Impl::FanIndices DrawRenderer::Impl::UploadFanIndices(const DrawSt
 DxbcShader* DrawRenderer::Impl::LoadShader(ShaderMemo* table, ShaderMemo*& last,
                                            const ShaderRef& ref, xenos::ShaderType type) {
   if (!ref.ucode || !ref.dwords) return nullptr;
+  if (ref.immediate_seq == kReplayedShaderSeq) [[unlikely]]
+    return LoadReplayedShader(ref, type);
   // The previous draw's shader again (most draws): no guest memory read, as before the table.
   if (last && last->shader && last->ucode == ref.ucode && last->dwords == ref.dwords &&
       last->immediate_seq == ref.immediate_seq && last->binding == ref.binding)
@@ -2857,12 +2872,40 @@ DxbcShader* DrawRenderer::Impl::LoadShader(ShaderMemo* table, ShaderMemo*& last,
   return memo.shader;
 }
 
+// A shader a replayed command buffer loaded: its `binding` is the XXH3 of its whole ucode
+// (cmd_replay.cpp), which decides alone, with the address and size, whether an entry holds it.
+DxbcShader* DrawRenderer::Impl::LoadReplayedShader(const ShaderRef& ref, xenos::ShaderType type) {
+  const bool pixel = type == xenos::ShaderType::kPixel;
+  ShaderMemo* const table = pixel ? replay_ps_memo : replay_vs_memo;
+  ShaderMemo*& last = pixel ? replay_ps_last : replay_vs_last;
+  const auto holds = [&ref](const ShaderMemo& m) {
+    return m.shader && m.ucode == ref.ucode && m.dwords == ref.dwords && m.binding == ref.binding;
+  };
+  if (last && holds(*last)) return last->shader;
+  const uint32_t key = ref.ucode ^ (ref.dwords << 16) ^ uint32_t(ref.binding ^ (ref.binding >> 32));
+  ShaderMemo& memo = table[(key * 0x9E3779B1u) >> (32 - ShaderMemo::kBits)];
+  last = &memo;
+  if (holds(memo)) return memo.shader;
+  memo.ucode = ref.ucode;
+  memo.dwords = ref.dwords;
+  memo.immediate_seq = ref.immediate_seq;
+  memo.binding = ref.binding;
+  ++PrepDiag().shader_loads;
+  const uint32_t* ucode =
+      ref.immediate ? ref.immediate : reinterpret_cast<const uint32_t*>(membase + ref.ucode);
+  memo.shader = shaders.Load(type, ucode, ref.dwords);
+  return memo.shader;
+}
+
 // Vertex ranges the VS fetches and the index range into `out`. Fan indices are only checked:
 // WriteFanIndices reads them from guest memory.
 bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& vs,
                                          std::vector<VertexCopy>& out) {
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
   const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
+  // A replayed draw's data from a recorded Begin call: the recording's own memory, rewritten
+  // each time the game records again; watching it would fault on every recording.
+  const bool replayed = s.fn == HookFn::kRunCommandBuffer;
   for (uint32_t w = 0; w < 3; ++w) {
     uint32_t bits = vmap.vertex_fetch_bitmap[w];
     while (bits) {
@@ -2876,7 +2919,8 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
         if (f.type != xenos::FetchConstantType::kInvalidVertex) return false;
       }
       const uint32_t start = f.address << 2, size = f.size << 2;
-      const bool inline_data = s.inline_vertices && start == s.inline_vertices;
+      const bool inline_data = (s.inline_vertices && start == s.inline_vertices) ||
+                               (replayed && cmdbuf::InlineData(start, size));
       if (coherency) coherency->slot = uint8_t(index);
       if (!RequestRange(start, size, !inline_data, out)) return false;
     }
@@ -2888,7 +2932,9 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
     return InSharedMemory(s.index_address, index_bytes);
   // Inline indices (BeginIndexedVertices) are in the push buffer like inline vertices: copied
   // for every draw rather than watched.
-  return RequestRange(s.index_address, index_bytes, !s.inline_indices, out);
+  const bool inline_indices =
+      s.inline_indices || (replayed && cmdbuf::InlineData(s.index_address, index_bytes));
+  return RequestRange(s.index_address, index_bytes, !inline_indices, out);
 }
 
 // A memexport draw's destination ranges into `out` like its vertex ranges (what the shaders do
@@ -3897,6 +3943,14 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     if (prep->audit_count) AuditDraw(list, *prep);
     if (!prep->upload_ok) {
       ++stats.failed;
+      return;
+    }
+  }
+  // Here, before shaders and render targets: a skipped draw leaves no trace on any target.
+  if (debug_mask & (kDebugNoCommandBuffers | kDebugOnlyCommandBuffers)) [[unlikely]] {
+    const bool replayed = s.fn == HookFn::kRunCommandBuffer;
+    if ((debug_mask & kDebugNoCommandBuffers) ? replayed : !replayed) {
+      ++stats.skipped;
       return;
     }
   }

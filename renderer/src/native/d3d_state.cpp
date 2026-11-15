@@ -12,6 +12,7 @@
 #include <simde/x86/sse2.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
 #include <iterator>
@@ -137,6 +138,35 @@ template <size_t kI>
 
 // Shader-rebind dirty bits in the mask at +16 (ShaderLoad): 19 vertex shader, 20 pixel shader.
 constexpr uint64_t kVsRebind = 1ull << 19, kPsRebind = 1ull << 20;
+
+// By register: 1 + (dirty mask << 8 | bit) of the flush group holding it, the bit FlushBlock
+// uses for it (`top - g`); 0 outside the flush blocks.
+constexpr std::array<uint16_t, kGuestRegisterCount> kRegisterGroups = [] {
+  std::array<uint16_t, kGuestRegisterCount> t{};
+  for (const Block& b : kFlushBlocks)
+    for (uint32_t i = 0; i < b.count; ++i)
+      t[b.reg + i] = uint16_t(1 + ((uint32_t(b.mask) << 8) | (uint32_t(b.top) - i / b.per)));
+  return t;
+}();
+static_assert([] {
+  uint32_t total = 0, mapped = 0;
+  for (const Block& b : kFlushBlocks) total += b.count;
+  for (uint16_t g : kRegisterGroups) mapped += g != 0;
+  return total == mapped;  // no register in two blocks
+}());
+
+// The registers ShaderLoad (kShaderLoadBits) writes into the shadow, and their groups in mask +16.
+constexpr uint32_t kShaderLoadRegs[] = {0x2001, 0x2180, 0x2181, 0x2182, 0x2203, 0x2208};
+constexpr uint64_t kShaderLoadWrites = [] {
+  uint64_t bits = 0;
+  for (uint32_t reg : kShaderLoadRegs) bits |= 1ull << ((kRegisterGroups[reg] - 1) & 0xFF);
+  return bits;
+}();
+static_assert([] {
+  for (uint32_t reg : kShaderLoadRegs)
+    if (!kRegisterGroups[reg] || ((kRegisterGroups[reg] - 1) >> 8) != 2) return false;
+  return true;
+}());
 
 }  // namespace
 
@@ -303,6 +333,29 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
   const bool vs_imm_new = vs_imm_pending_valid_;
   vs_imm_pending_valid_ = false;
 
+  // RunCommandBuffer (d3d_state.h CommandBufferHeader) flushes exactly dirty & inherit before the
+  // buffer runs, the shaders only under inherited shader-load bits, and writes nothing into the
+  // shadow; its dirty masks on return are ~keep, so the compare below would take the wrong
+  // groups. In Iron Brigade inherit = keep = {-1, -1, 0, 0, 0} (sub_823ECB40's
+  // BeginCommandBuffer call): only the dirty float constants go out. No scissor here: Run writes
+  // it after the buffer, where EndCommandBuffer puts it (cmd_replay.h AfterRun). The async kind
+  // and unreadable objects keep the path below.
+  if (fn == HookFn::kRunCommandBuffer) {
+    CommandBufferHeader h;
+    if (ReadCommandBufferHeader(base, r[1], &h)) {  // r[1] = r4 at entry: the object
+      uint64_t flushed[6];
+      for (uint32_t m = 0; m < 5; ++m) flushed[m] = e.dirty[m] & h.inherit[m];
+      flushed[5] = 0;
+      const uint64_t rebind = flushed[2];
+      // The shader load writes its registers into the shadow and Run flushes them with the rest.
+      if (rebind & kShaderLoadBits) flushed[2] |= kShaderLoadWrites;
+      inline_fetch_ = false;
+      CopyFlushed(base, device, flushed);
+      if (rebind & kShaderLoadBits) UpdateShaders(base, device, rebind, false, vs_imm_new);
+      return;
+    }
+  }
+
   // What the call sent to the GPU. Float constants: only the 4-vec4 groups whose dirty bit the
   // call cleared (sub_826DE030; bit 63 - k = constants 4k..4k+3). The rest of the shadow may
   // hold values the game wrote without a dirty bit (c247-c255 in the tap traces).
@@ -336,59 +389,9 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
   if (game_draw && verify_) [[unlikely]]
     Verify(base, device, fn_addr);
 
-  // Window scissor: sub_826C33C0 writes PA_SC_WINDOW_OFFSET/SCISSOR_TL/BR straight into the
-  // stream from the rectangle SetScissorRect (fn_826C59D8) keeps at device+10436/+10440 (15-bit
-  // signed x | y << 16); Resolve, Clear and the others write their own and then restore it
-  // from there. Untiled form (offset 0); with predicated tiling the D3D writes one clamped
-  // copy per tile instead.
-  {
-    const uint32_t tl = Load32(base, device + dev::kScissorTL),
-                   br = Load32(base, device + dev::kScissorBR);
-    auto field = [](uint32_t v) { return uint32_t(int32_t(v << 17) >> 17); };
-    Put(0x2080, 0);
-    Put(0x2081, ((field(tl >> 16) << 16) & 0x3FFF0000u) | (field(tl) & 0x3FFFu));
-    Put(0x2082, ((field(br >> 16) << 16) & 0x3FFF0000u) | (field(br) & 0x3FFFu));
-  }
-
-  if (game_draw || fn == HookFn::kRunCommandBuffer) {
-    // Bound shaders and the literal constants ShaderLoad loads when they are rebound (after
-    // the constant flush, so they win over the shadow). That load, under the mask +16 bits
-    // 17..20, is the only place the D3D changes which ucode the GPU runs and patches a variant
-    // for a declaration, so the shader objects are read only then or when the object differs
-    // (after an attach, which binds none).
-    const uint32_t vs = Load32(base, device + dev::kVertexShader);
-    const uint32_t ps = Load32(base, device + dev::kPixelShader);
-    uint64_t rebind = e.dirty[2];
-    if (stride_changed && vs) rebind |= kVsRebind;  // BeginVertices sets it itself
-    const bool shader_load = (rebind & kShaderLoadBits) != 0;
-    if (!vs) {
-      vs_ = {};
-    } else if (vs_imm_new) {
-      // ImmediateVs ran inside this draw: the GPU now holds the patched copy.
-      vs_imm_.swap(vs_imm_pending_);
-      vs_ = vs_imm_pending_ref_;
-      vs_.immediate = vs_imm_.data();
-    } else if (vs_.immediate ? (rebind & kVsRebind) != 0 : shader_load || vs != vs_.object) {
-      // IM_LOAD of the object's variant. After an immediate load the D3D reloads the VS only
-      // under the VS rebind bit. Variant 1 is used without a pixel shader when the object has
-      // one (flag 0x20).
-      const uint32_t variant = (!ps && (Load32(base, vs + 872) & 0x20)) ? 1 : 0;
-      const uint32_t sub = vs + Load32(base, vs + 896 + variant * 8);
-      vs_ = {vs, GpuAddress(Load32(base, vs + 32) + Load32(base, sub + 872)),
-             Load32(base, sub + 876) >> 2};
-      vs_.binding = XXH3_64bits(HostPtr(base, vs + 416 * variant + 40), 24);
-    }
-    if (vs && (rebind & (kVsRebind | kPsRebind)))
-      LoadLiterals(base, vs + 872, Load32(base, vs + 32));
-    if (!ps) {
-      ps_ = {};
-    } else if (shader_load || ps != ps_.object) {
-      const uint32_t sub = ps + Load32(base, ps + 64);
-      ps_ = {ps, GpuAddress(Load32(base, ps + 24) + Load32(base, sub + 40)),
-             Load32(base, sub + 44) >> 2};
-    }
-    if (ps && (rebind & kPsRebind)) LoadLiterals(base, ps + 40, Load32(base, ps + 24));
-  }
+  PutWindowScissor(base, device);
+  if (game_draw || fn == HookFn::kRunCommandBuffer)
+    UpdateShaders(base, device, e.dirty[2], stride_changed, vs_imm_new);
 
   // Registers the draw functions write straight into the stream (not into the shadow).
   switch (fn) {
@@ -455,6 +458,137 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
   }
 }
 
+// Window scissor: sub_826C33C0 writes PA_SC_WINDOW_OFFSET/SCISSOR_TL/BR straight into the
+// stream from the rectangle SetScissorRect (fn_826C59D8) keeps at device+10436/+10440 (15-bit
+// signed x | y << 16); Resolve, Clear and the others write their own and then restore it
+// from there. Untiled form (offset 0); with predicated tiling the D3D writes one clamped
+// copy per tile instead.
+void GuestStateTracker::PutWindowScissor(const uint8_t* base, uint32_t device) {
+  const uint32_t tl = Load32(base, device + dev::kScissorTL),
+                 br = Load32(base, device + dev::kScissorBR);
+  auto field = [](uint32_t v) { return uint32_t(int32_t(v << 17) >> 17); };
+  Put(0x2080, 0);
+  Put(0x2081, ((field(tl >> 16) << 16) & 0x3FFF0000u) | (field(tl) & 0x3FFFu));
+  Put(0x2082, ((field(br >> 16) << 16) & 0x3FFF0000u) | (field(br) & 0x3FFFu));
+}
+
+// Bound shaders and the literal constants ShaderLoad loads when they are rebound (after the
+// constant flush, so they win over the shadow). That load, under the mask +16 bits 17..20, is
+// the only place the D3D changes which ucode the GPU runs and patches a variant for a
+// declaration, so the shader objects are read only then or when the object differs (after an
+// attach, which binds none, or a replayed command buffer, which loaded its own).
+void GuestStateTracker::UpdateShaders(const uint8_t* base, uint32_t device, uint64_t rebind,
+                                      bool stride_changed, bool vs_imm_new) {
+  const uint32_t vs = Load32(base, device + dev::kVertexShader);
+  const uint32_t ps = Load32(base, device + dev::kPixelShader);
+  if (stride_changed && vs) rebind |= kVsRebind;  // BeginVertices sets it itself
+  const bool shader_load = (rebind & kShaderLoadBits) != 0;
+  if (!vs) {
+    vs_ = {};
+  } else if (vs_imm_new) {
+    // ImmediateVs ran inside this draw: the GPU now holds the patched copy.
+    vs_imm_.swap(vs_imm_pending_);
+    vs_ = vs_imm_pending_ref_;
+    vs_.immediate = vs_imm_.data();
+  } else if (vs_.immediate ? (rebind & kVsRebind) != 0 : shader_load || vs != vs_.object) {
+    // IM_LOAD of the object's variant. After an immediate load the D3D reloads the VS only
+    // under the VS rebind bit. Variant 1 is used without a pixel shader when the object has
+    // one (flag 0x20).
+    const uint32_t variant = (!ps && (Load32(base, vs + 872) & 0x20)) ? 1 : 0;
+    const uint32_t sub = vs + Load32(base, vs + 896 + variant * 8);
+    vs_ = {vs, GpuAddress(Load32(base, vs + 32) + Load32(base, sub + 872)),
+           Load32(base, sub + 876) >> 2};
+    vs_.binding = XXH3_64bits(HostPtr(base, vs + 416 * variant + 40), 24);
+  }
+  if (vs && (rebind & (kVsRebind | kPsRebind)))
+    LoadLiterals(base, vs + 872, Load32(base, vs + 32));
+  if (!ps) {
+    ps_ = {};
+  } else if (shader_load || ps != ps_.object) {
+    const uint32_t sub = ps + Load32(base, ps + 64);
+    ps_ = {ps, GpuAddress(Load32(base, ps + 24) + Load32(base, sub + 40)),
+           Load32(base, sub + 44) >> 2};
+  }
+  if (ps && (rebind & kPsRebind)) LoadLiterals(base, ps + 40, Load32(base, ps + 24));
+}
+
+bool ReadCommandBufferHeader(const uint8_t* base, uint32_t cb, CommandBufferHeader* out) {
+  *out = {};
+  out->object = cb;
+  if (!cb || (cb & 3)) return false;
+  out->common = Load32(base, cb + kCbCommon);
+  if ((out->common & 0xF) != kCbTypeCommandBuffer) return false;
+  out->flags = Load32(base, cb + kCbFlags);
+  for (uint32_t m = 0; m < 5; ++m) {
+    out->inherit[m] = Load64(base, cb + kCbInherit + m * 8);
+    out->keep[m] = Load64(base, cb + kCbKeep + m * 8);
+  }
+  out->chunks = Load32(base, cb + kCbChunks);
+  return true;
+}
+
+void GuestStateTracker::BeginReplay(const CommandBufferHeader& h) {
+  std::copy(std::begin(h.keep), std::end(h.keep), replay_keep_);
+  replaying_ = true;
+  replay_vs_ = replay_ps_ = false;
+}
+
+GuestStateTracker::ReplayWrite GuestStateTracker::ReplayPut(uint32_t reg, uint32_t value) {
+  // Every register the draw path reads is in a flush block or is the window scissor (the
+  // renderer reads nothing else from the register file): each one is either restored by the
+  // flush that follows once the D3D re-dirties it, or kept as the GPU keeps it. Anything else
+  // (VGT_DMA_*, cache and event registers) would stay in the render thread's copy for good.
+  if (reg >= kGuestRegisterCount) return ReplayWrite::kIgnored;
+  const uint32_t g = kRegisterGroups[reg];
+  if (!g && (reg < 0x2080 || reg > 0x2082)) return ReplayWrite::kIgnored;
+  // Through Put: regs_, raw_ (so the next flush's compare with the shadow restores it) and the
+  // render thread's log, in order with the draws.
+  Put(reg, value);
+  if (g && ((replay_keep_[(g - 1) >> 8] >> ((g - 1) & 0xFF)) & 1)) return ReplayWrite::kKept;
+  return ReplayWrite::kApplied;
+}
+
+void GuestStateTracker::ReplayShader(bool pixel, const ShaderRef& ref) {
+  if (pixel) {
+    ps_ = ref;
+    replay_ps_ = true;
+  } else {
+    vs_ = ref;
+    replay_vs_ = true;
+  }
+}
+
+void GuestStateTracker::EndCommandBuffer(const uint8_t* base, uint32_t device,
+                                         const CommandBufferHeader& h) {
+  if (replaying_) {
+    // A shader the buffer loaded stays on the GPU until the D3D loads one again: at the next
+    // game draw when the buffer does not keep the shader-load groups (Run re-dirties them;
+    // object 0 makes UpdateShaders read the bound objects then). When it keeps them the D3D
+    // will not reload either: the replayed shader stays, tagged with the bound object so the
+    // next draw does not take it for a new binding.
+    if (replay_vs_) {
+      if (h.keep[2] & kVsRebind) {
+        vs_.object = Load32(base, device + dev::kVertexShader);
+      } else {
+        vs_.object = 0;
+        vs_.immediate = nullptr;
+      }
+    }
+    if (replay_ps_) {
+      if (h.keep[2] & kPsRebind) {
+        ps_.object = Load32(base, device + dev::kPixelShader);
+      } else {
+        ps_.object = 0;
+        ps_.immediate = nullptr;
+      }
+    }
+    replaying_ = false;
+  }
+  // Run re-emits the window scissor after the buffer unless the buffer keeps it (keep mask +32
+  // bits 46-48 all set; sub_8264EF50 then skips sub_82643268).
+  if ((h.keep[4] & (7ull << 46)) != (7ull << 46)) PutWindowScissor(base, device);
+}
+
 void GuestStateTracker::AfterImmediateVs(const uint8_t* base, const uint32_t r[8]) {
   // ImmediateVs(device, patch, vs object, ..., variant): reserves 5 + n dwords, writes
   // INVALIDATE_STATE (0xC0003B00, 0x100) and IM_LOAD_IMMEDIATE (header, 0 = vertex, n), copies
@@ -476,7 +610,8 @@ void GuestStateTracker::AfterImmediateVs(const uint8_t* base, const uint32_t r[8
   }
   vs_imm_pending_.resize(dwords);
   std::memcpy(vs_imm_pending_.data(), HostPtr(base, start), size_t(dwords) * 4);
-  vs_imm_pending_ref_ = {vs, GpuAddress(start), dwords, nullptr, ++vs_imm_seq_};
+  if (++vs_imm_seq_ == kReplayedShaderSeq) vs_imm_seq_ = 1;  // that value marks replayed loads
+  vs_imm_pending_ref_ = {vs, GpuAddress(start), dwords, nullptr, vs_imm_seq_};
   vs_imm_pending_valid_ = true;
 }
 
@@ -532,6 +667,31 @@ bool GuestStateTracker::ReadDrawState(const uint8_t* base, const HookArgs& a, Dr
       s->inline_vertices = inline_vertices_;
       s->inline_indices = true;
       break;
+    case HookFn::kRunCommandBuffer: {
+      // A draw packet replayed from a recorded command buffer (cmd_replay.h): r[1]
+      // VGT_DRAW_INITIATOR, r[2] VGT_DMA_BASE, r[3] VGT_DMA_SIZE (0 for auto indices). The
+      // registers and shaders are the tracker's own, which the replay wrote in stream order.
+      const uint32_t init = a.r[1];
+      s->count = init >> 16;
+      switch ((init >> 6) & 3) {  // source select
+        case 0: {                 // DMA: indices from guest memory
+          s->indexed = true;
+          s->index_32bit = ((init >> 11) & 1) != 0;
+          const uint32_t size = s->index_32bit ? 4u : 2u;
+          s->index_address = (a.r[2] & 0x1FFFFFFFu) & ~(size - 1);
+          s->index_endian = a.r[3] >> 30;
+          s->count = std::min(s->count, a.r[3] & 0xFFFFFFu);  // num_words, as the CP clamps
+          if (!s->index_address) return false;
+          break;
+        }
+        case 2:  // auto index: non-indexed
+          break;
+        default:  // immediate indices (unsupported, as in the references) or invalid
+          return false;
+      }
+      s->base_vertex = regs_[0x2102];
+      break;
+    }
     default:
       return false;
   }

@@ -67,7 +67,7 @@ gaps and cross-check.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | the renderer's origin: the whole game ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **built from ReXNative**: plays (menus, levels, HUD), as with its hand-made copy ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, the intro and its video (its GPU hang came from draw arguments its LTCG build moves, now remapped; the video is a Scaleform bitmap drawn with DrawIndexedVerticesUP, hooked since 2026-11-15, into a gamma render target) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, the intro and its video, the first mission with its scenery (its GPU hang came from draw arguments its LTCG build moves, now remapped; the video is a Scaleform bitmap drawn with DrawIndexedVerticesUP, hooked since 2026-11-15, into a gamma render target; the static scenery is in recorded command buffers, replayed since 2026-11-15) |
 
 From Dust and Iron Brigade now build their renderer from this repository (`rexnative_add()`
 and a generated `game_layer.h`), with no copy of their own: tested on a PC, each draws what its
@@ -165,7 +165,7 @@ Starting a game for every experiment costs minutes (logos, intro, menus). Instea
 Iron Brigade's static scenery (2026-11-15): the pixel history showed no G-buffer draw on a
 building whose depth was there; its mesh was drawn only in the shadow and depth passes, and the
 push-buffer trace showed two large INDIRECT_BUFFERs into ordinary memory: recorded command
-buffers (RunCommandBuffer), whose draws no hook sees (roadmap 9).
+buffers (RunCommandBuffer), whose draws no hook saw. They are replayed now (roadmap 9).
 
 ## Layout
 
@@ -210,11 +210,18 @@ Improving it a little at a time:
    target the renderer wrote linear, half as bright (now in the console's gamma,
    `--rexnative_gamma_targets`). Still to do: a game whose picture needs memexport, and avoiding
    the wait when nothing on the CPU needs it.
-9. Recorded command buffers (RunCommandBuffer): Iron Brigade records its static scenery's
-   G-buffer draws once and replays them every frame through INDIRECT_BUFFER packets, which no
-   hook sees, so that scenery is missing in game (it shows the previous passes' data, yellow).
-   To do: hook RunCommandBuffer and replay the buffer's PM4 (the tap already decodes it) as
-   native draws.
+9. ~~Recorded command buffers (RunCommandBuffer).~~ Done (2026-11-15). Iron Brigade records
+   its static scenery's G-buffer draws on a second device and runs them each frame through
+   INDIRECT_BUFFER packets, which no hook saw, so that scenery showed the previous passes' data
+   (yellow). RunCommandBuffer is now hooked (overrides.json `functions.RunCommandBuffer`), and
+   `renderer/src/native/cmd_replay.cpp` reads the object's chunk list and walks its PM4: register
+   writes, constants, shader loads, predication, and DRAW_INDX packets as native draws, with the
+   state the call inherits and keeps as the GPU has it. A buffer is checked whole before anything
+   is applied. In Iron Brigade's first mission that is 2 buffers and 343 draws a frame, about
+   0.5 ms of decoding. `--rexnative_cmdbuf` 0 off, 1 count and log, 2 replay (the layer's
+   `kDefaultCmdBuf`); `--rexnative_d3d_control` takes `cmdbuf 0|1|2`, `cmdbuf log N` and
+   `cmdbuf dump [tag]` (each packet of the next two buffers into the trace folder);
+   draw-debug.txt bits 4096 and 8192 skip the replayed draws or all others.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

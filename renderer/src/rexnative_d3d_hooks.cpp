@@ -20,9 +20,14 @@
 // frame, one command per line:
 //   trace <tag> [frames]   write the next N complete frames to --rexnative_d3d_trace_dir (ignored
 //                          while the tap is off)
-//   skip <draw,clear,resolve|none>
+//   skip <draw,clear,resolve|none>   (on the presenting device only, see MayDropPackets)
 //   tap on|off             stop or resume decoding (hooks keep counting and forwarding); off
 //                          also drops the frames a trace has still to write
+//   cmdbuf 0|1|2           recorded command buffers off, counted or replayed, from the next
+//                          frame (native/cmd_replay.h)
+//   cmdbuf log N           log the next N RunCommandBuffer calls in detail
+//   cmdbuf dump [tag]      write the next two decoded calls, packet by packet, to
+//                          --rexnative_d3d_trace_dir
 // --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
@@ -32,6 +37,7 @@
 // Built only into the PGR4 game project (games/pgr4, scripts/build.sh).
 
 #include "native/clock.h"
+#include "native/cmd_replay.h"
 #include "native/d3d_state.h"
 #include "native/guest_d3d.h"
 #include "native/guest_memory.h"
@@ -162,6 +168,10 @@ constexpr bool IsDrawCounterFn(FnId id) {
 }
 // The calls rex_drawcount_api_counters reports: the draw builders and Resolve.
 constexpr bool IsCountedFn(FnId id) { return IsDrawCounterFn(id) || id == kFnResolve; }
+
+// RunCommandBuffer (native/cmd_replay.h): kFnCount, and every path for it compiled out, when the
+// game has no hook for it.
+constexpr FnId kFnRunCommandBuffer = FnIdOf(game::kFnRunCommandBuffer);
 
 // Skippable entry points: void, and nothing in the caller depends on their result.
 enum Skip : uint32_t { kSkipDraw = 1, kSkipClear = 2, kSkipResolve = 4 };
@@ -427,6 +437,21 @@ struct Tap {
 Tap g_tap;
 std::atomic<uint64_t> g_calls[kFnCount + 1];  // (+1: kFnCount, functions the game lacks) IsCountedFn's, for rex_drawcount_api_counters
 std::atomic<uint32_t> g_skip{0};
+// The device the game presents with (the first Swap's), the one the renderer follows; set only
+// with game_layer.h kFollowSwapDeviceOnly (OnHook).
+std::atomic<uint32_t> g_main_device{0};
+
+// Whether a call on `device` may lose its PM4 (the debug skip classes, the replaced
+// DrawIndexedVertices): only on the device the game presents with. A game that records command
+// buffers draws on a second device too, and what that one writes is replayed later by
+// RunCommandBuffer: a skipped packet there would be missing from the recorded buffer. Before the
+// first Swap no call qualifies. A game that follows every device has no presenting device of its
+// own (g_main_device stays 0): every call qualifies, as before.
+inline bool MayDropPackets(uint32_t device) {
+  if constexpr (!rexnative::game::kFollowSwapDeviceOnly) return true;
+  const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
+  return main_device && device == main_device;
+}
 // Pass-through hooks (IsPassThrough) take OnHook's path only while the tap decodes the stream or
 // the profiler times the guest D3D; otherwise they jump straight to the original.
 std::atomic<bool> g_hook_all{false};
@@ -916,6 +941,14 @@ void PollControl(Tap& t, uint8_t* base) {
       t.enabled = on;
       if (!on) t.trace_left = 0;
       g_hook_all.store(on || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+    } else if (cmd == "cmdbuf") {
+      if (kFnRunCommandBuffer == kFnCount) {
+        REXNATIVE_WARN_ONCE("ReXNative D3D control: '{}' ignored: no RunCommandBuffer hook", l);
+        continue;
+      }
+      std::string arg2;
+      ss >> arg2;
+      rexnative::cmdbuf::Control(arg, arg2, REXCVAR_GET(rexnative_d3d_trace_dir));
     }
     REXLOG_INFO("ReXNative D3D control: {} (skip mask {})", l, g_skip.load());
   }
@@ -1030,7 +1063,8 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
   Tap& t = g_tap;
   const uint32_t r3 = ctx.r3.u32;
   constexpr uint32_t kSkip = SkipClassOf(kId);
-  const bool forward = kSkip == 0 || !(kSkip & g_skip.load(std::memory_order_relaxed));
+  const bool forward = kSkip == 0 || !(kSkip & g_skip.load(std::memory_order_relaxed)) ||
+                       !MayDropPackets(r3);
   auto call = [&] {
     if (forward)
       run(ctx, base);
@@ -1221,11 +1255,12 @@ inline void RunOriginal(PPCContext& c, uint8_t* b) {
   --t_original_depth;
 }
 
-// The guest function, or its replacement (--rexnative_replace_draws, native/guest_d3d.h).
+// The guest function, or its replacement (--rexnative_replace_draws, native/guest_d3d.h), which
+// writes no packets: only on the presenting device (MayDropPackets).
 template <FnId kId, GuestFn kOriginal>
 void Body(PPCContext& c, uint8_t* b) {
   if constexpr (kId == kFnDrawIndexed)
-    if (rexnative::guest_d3d::DrawIndexed(c, b)) return;
+    if (MayDropPackets(c.r3.u32) && rexnative::guest_d3d::DrawIndexed(c, b)) return;
   kOriginal(c, b);
 }
 
@@ -1301,14 +1336,38 @@ inline bool TrackState(const rexnative::NativeRenderer* r) {
   return r || g_tap.enabled || REXCVAR_GET(rexnative_d3d_tap);
 }
 
+// The tap's register mirror for the writes a replayed command buffer makes (cmd_replay.h).
+void TapMirrorWrite(uint32_t reg, uint32_t v) { WriteReg(g_tap, reg, v); }
+
+// After a RunCommandBuffer on `device` returned and the tracker's AfterCall ran for it: the
+// replay (native/cmd_replay.h), or on any other thread than the Swap thread only the tracker's
+// end of the call, before anything of the tap's is read. `r`: the live renderer, or null.
+[[gnu::noinline]] void AfterRunCommandBuffer(const uint8_t* base, uint32_t device, uint32_t cb,
+                                             rexnative::NativeRenderer* r) {
+  namespace cmdbuf = rexnative::cmdbuf;
+  if (!cmdbuf::OnSwapThread()) [[unlikely]] {
+    cmdbuf::AfterRunOtherThread(base, device, cb);
+    return;
+  }
+  cmdbuf::RunContext rc;
+  rc.device = device;
+  rc.cb = cb;
+  rc.renderer = r;
+  rc.main_device = g_main_device.load(std::memory_order_relaxed);
+  rc.follow_swap_device_only = rexnative::game::kFollowSwapDeviceOnly;
+  rc.in_native_call = t_native_depth != 0;
+  const bool tap = g_tap.enabled && g_tap.device == device;
+  rc.trace = tap && g_tap.tracing ? &g_tap.out : nullptr;
+  rc.tap_write = tap ? &TapMirrorWrite : nullptr;
+  rc.frame = g_tap.frame_index;
+  cmdbuf::AfterRun(base, rc);
+}
+
 // The state tracker (native/d3d_state) needs the dirty masks at the entry of every flushing
 // call, at every depth, and the call's exit before anything reads the state (the tap's per-draw
 // compare inside OnCall, OnDraw here). So the original is wrapped; OnCall's skip path does not
 // run it and nothing is tracked then. Everything that depends on the function is resolved at
 // compile time: each hook holds only its own path.
-// The device the game presents with (the first Swap's), the one the renderer follows.
-std::atomic<uint32_t> g_main_device{0};
-
 template <FnId kId, GuestFn kOriginal>
 inline void OnHook(PPCContext& ctx, uint8_t* base) {
   namespace nat = rexnative;
@@ -1331,6 +1390,18 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     uint32_t none = 0;
     g_main_device.compare_exchange_strong(none, ctx.r3.u32, std::memory_order_relaxed);
   }
+  // Recorded command buffers: the replay's thread and mode follow the Swaps on the presenting
+  // device (every Swap when the game does not single one out).
+  if constexpr (kId == kFnSwap && kFnRunCommandBuffer != kFnCount) {
+    const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
+    if (!main_device || ctx.r3.u32 == main_device)
+      nat::cmdbuf::OnSwap(REXCVAR_GET(rexnative_d3d_stats_frames));
+  }
+  // RunCommandBuffer's arguments, for after the guest function (which clobbers r3 and r4). Its
+  // replay runs from the kNatNone path only: as a draw it would reach OnDraw with the object.
+  static_assert(kId != kFnRunCommandBuffer || kClass == kNatNone,
+                "d3d_surface.inc: RunCommandBuffer must be kOther");
+  [[maybe_unused]] const uint32_t entry_r3 = ctx.r3.u32, entry_r4 = ctx.r4.u32;
   nat::NativeRenderer* r = nat::NativeRenderer::Live();
   // The state tracker is one object without locks, fed from the thread that draws on the
   // followed device (and read by the render thread's register log): a call on another device,
@@ -1371,6 +1442,9 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
   };
   if (!r) {
     OnCall<kId>(ctx, base, run);
+    // `track && entry_r3`: exactly when `run` called AfterCall, which EndCommandBuffer pairs.
+    if constexpr (kId == kFnRunCommandBuffer)
+      if (track && entry_r3) AfterRunCommandBuffer(base, entry_r3, entry_r4, nullptr);
     if constexpr (kId == kFnSwap) {
       if (nat::NativeRenderer* suspended = nat::NativeRenderer::Get()) suspended->OnSwapSuspended();
       NoteFrameBegin();
@@ -1392,6 +1466,11 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
       t_tiling_call = kId == kFnBeginTiling ? nat::TilingCall::kBegin : nat::TilingCall::kEnd;
       OnCall<kId>(ctx, base, run);
       t_tiling_call = outer;
+    } else if constexpr (kId == kFnRunCommandBuffer) {
+      // After OnCall: after AfterCall copied Run's inherited flush and after the tap's exit
+      // Sync, so the tap, like the GPU, sees that flush before the buffer's own writes.
+      OnCall<kId>(ctx, base, run);
+      if (track && entry_r3) AfterRunCommandBuffer(base, entry_r3, entry_r4, r);
     } else {
       OnCall<kId>(ctx, base, run);
     }

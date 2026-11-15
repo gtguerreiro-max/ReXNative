@@ -21,6 +21,16 @@ EMIT = ('high', 'medium')  # confidences written to the layer; 'low' ones are on
 # The defaults' keys before the options were renamed (pgr4_* -> rexnative_*).
 OLD_DEFAULT_KEYS = {'pgr4_render_height': 'render_height', 'pgr4_native_occlusion': 'occlusion',
                     'pgr4_native_display_aspect': 'display_aspect', 'pgr4_native_primary': 'enabled'}
+# d3d_surface.inc category of each hooked function; the others are kDraw.
+HOOK_CATS = {'Swap': 'kSwap', 'Resolve': 'kResolve', 'Clear': 'kClear', 'ClearF': 'kClear',
+             'BeginTiling': 'kTiling', 'EndTiling': 'kTiling', 'QueryIssue': 'kQuery',
+             'QueryGetData': 'kQuery', 'CreateDevice': 'kDevice', 'MakeSpace': 'kPush',
+             'StartSegment': 'kPush', 'SwitchSegment': 'kPush', 'RestoreSegment': 'kPush',
+             'RestoreSegment13392': 'kPush', 'RestorePush': 'kPush',
+             'RunCommandBuffer': 'kOther'}
+# Named functions that never get a D3D_FN row: hooked by symbol (ShaderLoad, ImmediateVs), or
+# running inside a hooked one (ResolveInner).
+NOT_HOOKED = ('ShaderLoad', 'ImmediateVs', 'ResolveInner')
 
 
 def score_reference(target_info, ref_profile):
@@ -193,17 +203,13 @@ def adapt(target, refs, overrides=None, log=print):
             seen.add(mm.target)
             surface.append([mm.target, name, cat, mm.how, mm.confidence(),
                             run['name'] if run is not primary else ''])
-    # Every hooked function must be in the surface (its kFn_ id); add the missing ones.
-    cats = {'Swap': 'kSwap', 'Resolve': 'kResolve', 'Clear': 'kClear', 'ClearF': 'kClear',
-            'BeginTiling': 'kTiling', 'EndTiling': 'kTiling', 'QueryIssue': 'kQuery',
-            'QueryGetData': 'kQuery', 'CreateDevice': 'kDevice', 'MakeSpace': 'kPush',
-            'StartSegment': 'kPush', 'SwitchSegment': 'kPush', 'RestoreSegment': 'kPush',
-            'RestoreSegment13392': 'kPush', 'RestorePush': 'kPush'}
+    # Every hooked function must be in the surface (its kFn_ id); add the missing ones. A matched
+    # RunCommandBuffer is not: hooking it changes how recorded command buffers reach the renderer
+    # (kDefaultCmdBuf), a choice for overrides.json; a reference's row for it still comes through.
     for canon in prof.FUNCTIONS:
         a = funcs[canon]['address']
-        if a and a not in seen and canon not in ('ShaderLoad', 'ImmediateVs', 'ResolveInner',
-                                                 'RunCommandBuffer'):
-            surface.append([a, canon, cats.get(canon, 'kDraw'), funcs[canon]['how'],
+        if a and a not in seen and canon not in NOT_HOOKED + ('RunCommandBuffer',):
+            surface.append([a, canon, HOOK_CATS.get(canon, 'kDraw'), funcs[canon]['how'],
                             funcs[canon]['confidence'], 'hook'])
             seen.add(a)
     # The inner Resolve of a hooked public wrapper runs inside it: hooked too (a reference may name
@@ -259,10 +265,12 @@ def adapt(target, refs, overrides=None, log=print):
         # The game's own frame height (PGR4's 800 is its Steam Deck mode, made by its own
         # hooks), occlusion queries on the host off (From Dust hung with them; a new game's
         # query hooks are often not found), the console's 16:9.
+        # Recorded command buffers are not replayed (cmdbuf 0) unless overrides.json says so.
         'defaults': {'enabled': True,
                      'render_height': p['scene'].get('height', 720),
                      'occlusion': False,
-                     'display_aspect': '16.0 / 9.0'},
+                     'display_aspect': '16.0 / 9.0',
+                     'cmdbuf': 0},
         'devices': {
             'follow_swap_device_only': False,
             'configure_at_first_device': funcs['CreateDevice']['address'] is None,
@@ -344,6 +352,13 @@ def apply_overrides(result, ov):
             # Not hooked any more under any name: out of d3d_surface.inc too.
             result['surface'] = [e for e in result['surface'] if e[0] != old]
         row.update(address=new, how='override', confidence='override', detail='overrides.json')
+        # An address set by hand is hooked: its D3D_FN row, unless a reference's row already
+        # names that function (it keeps the reference's name and category).
+        if (new and name in prof.FUNCTIONS and name not in NOT_HOOKED
+                and not any(e[0] == new for e in result['surface'])):
+            result['surface'].append([new, name, HOOK_CATS.get(name, 'kDraw'), 'override',
+                                      'override', 'hook'])
+            result['surface'].sort()
     if 'scene' in ov:
         # A measured scene: the renderer uses it as it is, unless the file says "auto": true.
         result['scene'].update(ov['scene'])

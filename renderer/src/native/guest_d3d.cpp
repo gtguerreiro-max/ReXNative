@@ -32,6 +32,9 @@ namespace rexnative::guest_d3d {
 // With predicated tiling on (device byte +10940, bit 0) the original writes the draw packet in
 // its predicated form and records its address in the tile list at +13232 for the per-tile
 // replay; without a packet there is nothing to record, so the replacement covers both forms.
+// The hook dispatch calls it only for the presenting device (rexnative_d3d_hooks.cpp,
+// MayDropPackets): on a device that records a command buffer the packets it skips would be
+// missing from the buffer RunCommandBuffer runs later (cmd_replay.h).
 bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
   // Start-up flags: the renderer switch changes NativeRenderer::Live, not these.
   // The replacement reads the public signature's registers: not for a game whose

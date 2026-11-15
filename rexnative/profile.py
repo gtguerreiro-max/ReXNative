@@ -138,6 +138,7 @@ def extract_layer(port, name=None):
         'render_height': num(const('kDefaultRenderHeight')),
         'occlusion': const('kDefaultOcclusion') == 'true',
         'display_aspect': const('kDefaultDisplayAspect'),
+        'cmdbuf': int(const('kDefaultCmdBuf', '0')),  # layers made before it: 0 (hook_args.h)
     }
     clear = None
     if num(const('kResolveDefaultClearColor')):

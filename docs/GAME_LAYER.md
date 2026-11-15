@@ -28,6 +28,8 @@ the same folder and run `adapt` again, rather than editing the files.
 | `REXNATIVE_SCENE_AUTO` | 1: the renderer learns the scene at run time (`renderer/src/native/scene.h`): the colour surface with MSAA or an HDR format resolved at nearly the frame's full size, earliest in the frame, adopted after 30 frames in a row and logged as `ReXNative scene: learned at frame ...`; the upscaler and the scene's targets are then made again for it. `adapt` writes 1 unless `overrides.json` gives a measured scene. Absent (older layers) = 0. `--rexnative_scene_auto=1` / `0` forces either at run time |
 | `kDefaultEnabled` | whether ReXNative draws and presents the game without any option (the `rexnative` cvar's default; `--rexnative=false` / `true` overrides it) |
 | `kDefaultRenderHeight`, `kDefaultOcclusion`, `kDefaultDisplayAspect` | defaults of `rexnative_render_height`, `rexnative_occlusion`, `rexnative_display_aspect` |
+| `kDefaultCmdBuf` | default of `rexnative_cmdbuf`, for a game that hooks `RunCommandBuffer` (overrides.json `defaults.cmdbuf`): 0 off, 1 count and log the recorded command buffers, 2 replay their draws (`renderer/src/native/cmd_replay.h`). Replay needs `kFollowSwapDeviceOnly` (the recording device's own calls would draw twice otherwise); without it 2 counts. Absent (older layers) = 0 from `hook_args.h` |
+| `kCmdBufBinMaskOffset` | the device's bin mask (low, then high word), the predication state a replayed buffer starts from; `hook_args.h` has 12956 (D3D 2.0.20353), a layer may override it |
 
 ## overrides.json
 
@@ -39,7 +41,7 @@ the same folder and run `adapt` again, rather than editing the files.
             "scaled_pitch": 1040, "height": 600},
   "clear_color": {"address": "82007F50", "vector": true},
   "resolve_args": [3, 4, 5, 6, 7, 8, 9, 10],
-  "defaults": {"enabled": true, "render_height": 600, "occlusion": false}
+  "defaults": {"enabled": true, "render_height": 600, "occlusion": false, "cmdbuf": 2}
 }
 ```
 

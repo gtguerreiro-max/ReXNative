@@ -16,6 +16,13 @@ inline constexpr uint32_t kFnDrawIndexedVerticesUP = 0;
 // Distinct HookFn values below 0x100 (the generator numbers its own sentinels from 1).
 inline constexpr uint32_t kHookBeginIndexedVertices = 0xF0;
 inline constexpr uint32_t kHookDrawIndexedVerticesUP = 0xF1;
+// --rexnative_cmdbuf's default (cmd_replay.h): 0 off, 1 count, 2 replay recorded command buffers.
+inline constexpr int32_t kDefaultCmdBuf = 0;
+// The device's bin mask, low then high word, which the D3D's segment start (Iron Brigade's
+// sub_826430B0) emits as SET_BIN_MASK_LO/HI with SET_BIN_SELECT = 0x00000000FFFFFFFF and which
+// RunCommandBuffer restores after the buffer: the bin state a replay starts from. D3D 2.0.20353
+// (Iron Brigade, From Dust); PGR4's 2.0.6132 has it at 12700.
+inline constexpr uint32_t kCmdBufBinMaskOffset = 12956;
 }  // namespace rexnative::game_defaults
 namespace rexnative::game {
 using namespace rexnative::game_defaults;
@@ -25,7 +32,8 @@ namespace rexnative {
 
 // Guest D3D functions the native path hears of (addresses in the base-disc default.xex; names
 // from src/d3d_surface.inc). All of them flush the device's register shadow
-// (d3d_state.h, IsStateFlushingFn); all but kRunCommandBuffer reach the renderer's On* calls.
+// (d3d_state.h, IsStateFlushingFn); all but kRunCommandBuffer reach the renderer's On* calls
+// themselves (kRunCommandBuffer's recorded draws do, through native/cmd_replay.h).
 enum class HookFn : uint32_t {
   kBeginVertices = rexnative::game::kHookBeginVertices,        // draw; the game writes the vertices after it returns
   kDrawVerticesUP = rexnative::game::kHookDrawVerticesUP,       // draw
@@ -46,10 +54,16 @@ enum class HookFn : uint32_t {
   // LTCG D3D). EntryArgs (ib_d3d_trace.cpp) rearranges its arguments into the public signature.
   kResolve = rexnative::game::kHookResolve,
   kSwap = rexnative::game::kHookSwap,
-  // fn_826D6610(dev, object, r5): flushes the dirty state the object's masks select (+24..+56,
-  // one per dirty mask +0..+32; shader load included), then writes the packets of the object's
-  // chunk list (+116) into the push buffer. [INFERENCE: the XDK's D3DDevice_RunCommandBuffer.]
-  // PGR4's sub_826D6610 has no From Dust copy (tools/match_d3d.py): never matched.
+  // RunCommandBuffer(dev, command buffer object) (PGR4's fn_826D6610, Iron Brigade's
+  // sub_8264EF50; r5 is unused in Iron Brigade's LTCG build) [INFERENCE: the XDK's
+  // D3DDevice_RunCommandBuffer]. Object layout in d3d_state.h (CommandBufferHeader). It flushes
+  // dirty & inherit (+24..+56, one mask per dirty mask +0..+32; shader load included), emits one
+  // INDIRECT_BUFFER per entry of the chunk list at +116 (into the push segment when flag 0x20 is
+  // clear, straight into the ring when it is set), re-emits the window scissor unless keep
+  // (+96) bits 46-48 are all set, and sets the dirty masks to ~keep (+64..+96). With
+  // --rexnative_cmdbuf 2 the buffer's draws reach OnDraw with this fn and r[1..3] = the draw
+  // initiator, VGT_DMA_BASE and VGT_DMA_SIZE (native/cmd_replay.h). From Dust has no copy
+  // (tools/match_d3d.py): never matched.
   kRunCommandBuffer = rexnative::game::kHookRunCommandBuffer,
   // QueryIssue(query, flags) and QueryGetData(query, data, size, flags): the guest D3D's
   // Direct3DQuery Issue and GetData (occlusion.h).

@@ -100,6 +100,32 @@ constexpr bool IsStateFlushingFn(uint32_t addr) {
 // RB_COPY_DEST_BASE, the queries' RB_SAMPLE_COUNT_ADDR); CompareWithTap skips them.
 bool IsTapOnlyRegister(uint32_t reg);
 
+// The XDK command buffer object (D3DRTYPE 9) RunCommandBuffer runs (cmd_replay.h). The same
+// layout in PGR4's D3D 2.0.6132 (sub_826D6610) and Iron Brigade's 2.0.20353 (sub_8264EF50):
+//   +0    Common: the low nibble is the resource type (10: the async kind, another layout,
+//         which Iron Brigade's RunCommandBuffer hands to sub_8264F858);
+//   +24   five inherit masks, one per dirty mask +0..+32: RunCommandBuffer flushes only
+//         dirty & inherit before the buffer runs;
+//   +64   five keep masks: at its end the device's dirty masks become ~keep (a plain store),
+//         and bits 46-48 of the fifth all set keep the window scissor, which it re-emits
+//         otherwise;
+//   +108  flags (0x20: the IBs go straight into the ring, 0x40: SET_BIN_SELECT_HI = 0 before
+//         them) with the status in the low nibble (EndCommandBuffer: 1 OK, 7 out of memory;
+//         BeginCommandBuffer: 2);
+//   +116  the chunk list: 136-byte nodes {+0 next, +4 entry count, +8 up to 16 entries of
+//         {0x81000000 | dwords (0x8F: the async kind), physical address}}, linked through
+//         0xC0000000 + physical aliases.
+inline constexpr uint32_t kCbCommon = 0, kCbInherit = 24, kCbKeep = 64, kCbFlags = 108,
+                          kCbChunks = 116;
+inline constexpr uint32_t kCbTypeCommandBuffer = 9, kCbTypeAsync = 10;
+struct CommandBufferHeader {
+  uint32_t object = 0, common = 0, flags = 0;  // object address, +0 Common, +108 flags | status
+  uint64_t inherit[5] = {}, keep[5] = {};      // +24..+56, +64..+96 (host order)
+  uint32_t chunks = 0;                         // +116: first node (0xC0000000 + physical)
+};
+// False (only `object` and `common` filled) unless cb != 0, (cb & 3) == 0 and the type is 9.
+bool ReadCommandBufferHeader(const uint8_t* base, uint32_t cb, CommandBufferHeader* out);
+
 // A shader as the GPU loads it (IM_LOAD): physical ucode address and size in dwords.
 //
 // When the bound vertex declaration does not match a vertex shader's built-in binding, the
@@ -114,6 +140,12 @@ bool IsTapOnlyRegister(uint32_t reg);
 // place (sub_826DE190) and records the declaration in the variant's binding record (vs + 416 *
 // variant: declaration id at +40, stream layout at +48 and +56). `binding` hashes that record;
 // the ucode at `ucode` changes with it while its address, size and first and last dwords stay.
+//
+// A shader loaded by a replayed command buffer (cmd_replay.h) has no object (0), `immediate_seq`
+// kReplayedShaderSeq and the XXH3 of its whole ucode as `binding`: the renderer memoizes these
+// apart from the API's (draw.cpp LoadShader), by content, so a buffer recorded again over the
+// same memory never reuses a stale translation and never evicts the API's entries.
+inline constexpr uint32_t kReplayedShaderSeq = 0xFFFFFFFFu;
 struct ShaderRef {
   uint32_t object = 0;  // guest D3D shader object (0 = none bound)
   uint32_t ucode = 0;   // physical address of the ucode, big-endian dwords
@@ -123,6 +155,8 @@ struct ShaderRef {
   uint64_t binding = 0;
 };
 
+// `fn == HookFn::kRunCommandBuffer` marks a draw replayed from a recorded command buffer
+// (cmd_replay.h); ReadDrawState took its primitive, count and indices from the draw packet.
 struct DrawState {
   // The register file as the GPU sees it at this draw, host byte order, kGuestRegisterCount
   // entries (0x4000 VS constants, 0x4400 PS constants, 0x4800 fetch constants, 0x4900
@@ -208,6 +242,23 @@ class GuestStateTracker {
     vs_imm_pending_valid_ = false;
   }
 
+  // A recorded command buffer replayed into the tracker (cmd_replay.h), on the thread that
+  // drives the followed device, after AfterCall for its RunCommandBuffer: BeginReplay, then the
+  // buffer's register writes (ReplayPut) and shader loads (ReplayShader) in stream order, with
+  // its draws (OnDraw) between them, then EndCommandBuffer.
+  void BeginReplay(const CommandBufferHeader& h);
+  // kIgnored: not a register any draw reads (outside the flush blocks and the window scissor
+  // 0x2080-0x2082), dropped. Otherwise written through Put: the next flush restores it from the
+  // shadow once the D3D re-dirties it, or, kKept, its group is in the buffer's keep masks and the
+  // value stays, as on the GPU.
+  enum class ReplayWrite : uint8_t { kIgnored, kApplied, kKept };
+  ReplayWrite ReplayPut(uint32_t reg, uint32_t value);
+  void ReplayShader(bool pixel, const ShaderRef& ref);
+  // After every RunCommandBuffer whose header reads (ReadCommandBufferHeader), replayed or not:
+  // ends a replay (the next game draw reloads the bound shaders unless the buffer keeps them)
+  // and writes the window scissor RunCommandBuffer re-emits after the buffer.
+  void EndCommandBuffer(const uint8_t* base, uint32_t device, const CommandBufferHeader& h);
+
   // For the trace tap (--rexnative_d3d_tap): compares the registers the tap has seen written in the
   // push buffer (`tap_written[r] != 0`) with this view at the current draw. Returns the number
   // of differing registers and adds one per register to `per_reg[r]` (may be null). A register
@@ -242,9 +293,18 @@ class GuestStateTracker {
   // --rexnative_track_verify: logs block registers whose shadow differs from regs_.
   void Verify(const uint8_t* base, uint32_t device, uint32_t fn_addr);
   void LoadLiterals(const uint8_t* base, uint32_t table, uint32_t data);
+  // The bound shaders after a call that may have loaded them (ShaderLoad under the rebind bits
+  // `rebind`, mask +16), and the literal constants that load sends.
+  void UpdateShaders(const uint8_t* base, uint32_t device, uint64_t rebind, bool stride_changed,
+                     bool vs_imm_new);
+  // PA_SC_WINDOW_OFFSET/SCISSOR_TL/BR as the D3D writes them from its scissor rectangle.
+  void PutWindowScissor(const uint8_t* base, uint32_t device);
 
   uint32_t device_ = 0;
   ShaderRef vs_, ps_;
+  // BeginReplay .. EndCommandBuffer: the buffer's keep masks, and which shaders it loaded.
+  uint64_t replay_keep_[5] = {};
+  bool replaying_ = false, replay_vs_ = false, replay_ps_ = false;
   uint32_t inline_vertices_ = 0;
   // The last BeginIndexedVertices: its inline indices (physical), their count and format, and
   // the base vertex.

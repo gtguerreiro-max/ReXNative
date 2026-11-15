@@ -179,13 +179,16 @@ def game_layer_h(layer, comments=True):
     d = layer['defaults']
     if comments:
         w('// Defaults of the game\'s options (rexnative, rexnative_render_height,')
-        w('// rexnative_occlusion, rexnative_display_aspect).')
+        w('// rexnative_occlusion, rexnative_display_aspect, rexnative_cmdbuf).')
     if comments:
         w('// kDefaultEnabled: ReXNative draws and presents the game unless --rexnative=false.')
     w('inline constexpr bool kDefaultEnabled = %s;' % str(bool(d.get('enabled', True))).lower())
     w('inline constexpr int32_t kDefaultRenderHeight = %d;' % d.get('render_height', sc.get('height', 720)))
     w('inline constexpr bool kDefaultOcclusion = %s;' % str(bool(d.get('occlusion', False))).lower())
     w('inline constexpr double kDefaultDisplayAspect = %s;' % d.get('display_aspect', '16.0 / 9.0'))
+    if comments:
+        w('// kDefaultCmdBuf: recorded command buffers (RunCommandBuffer): 0 off, 1 count, 2 replay.')
+    w('inline constexpr int32_t kDefaultCmdBuf = %d;' % int(d.get('cmdbuf', 0)))
     w('')
     w('}  // namespace rexnative::game')
     return '\n'.join(out) + '\n'
