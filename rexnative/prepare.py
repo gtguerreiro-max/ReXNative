@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-from . import stfs, xex
+from . import profile as prof, stfs, xex
 
 BELOW_NORMAL = 0x00004000  # Windows process priority class
 SEVEN_ZIP = [r'C:\Program Files\7-Zip\7z.exe', r'C:\Program Files (x86)\7-Zip\7z.exe', '7z']
@@ -255,11 +255,15 @@ def survey(work_root):
         a = (s.get('steps') or {}).get('adapt') or {}
         f = a.get('functions') or {}
         missing = [k for k in KEY if k not in f]
-        rows.append('| %s | %s | %s | %s | %s | %s | %s |' % (
+        # BeginIndexedVertices: the game draws with inline indices (DrawIndexedVerticesUP),
+        # found by position (adapt.indexed_up); absent where the linker dropped it.
+        indexed_up = f.get('BeginIndexedVertices')
+        rows.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
             name, x.get('title_id', ''), ' '.join(v for v in (x.get('d3d') or []) if v) or '—',
-            a.get('primary', '—'), ('%d/25' % len(f)) if f else '—',
+            a.get('primary', '—'), ('%d/%d' % (len(f), len(prof.FUNCTIONS))) if f else '—',
             ', '.join(missing) if f else (' '.join(s.get('error', '').split())[:90] or '—'),
-            'ok' if s.get('ok') else 'FAILED'))
-    head = ['| Game | Title | XDK D3D | Reference | Functions | Key hooks missing | Status |',
-            '|---|---|---|---|---|---|---|']
+            indexed_up or '—', 'ok' if s.get('ok') else 'FAILED'))
+    head = ['| Game | Title | XDK D3D | Reference | Functions | Key hooks missing | '
+            'Inline indices | Status |',
+            '|---|---|---|---|---|---|---|---|']
     return '\n'.join(head + rows) + '\n'

@@ -12,6 +12,7 @@
 """
 import json
 import os
+import re
 
 from . import abi, constants, listing, matcher, offsets, profile as prof, xex
 from .i18n import tr
@@ -279,7 +280,10 @@ def indexed_up(T, funcs):
     The XDK keeps its draw builders in source order: DrawVerticesUP, BeginIndexedVertices,
     DrawIndexedVerticesUP, DrawVertices. Between the two found ones, DrawIndexedVerticesUP is the
     function that calls exactly one other function of that range, BeginIndexedVertices, which
-    reserves its space through MakeSpace."""
+    reserves its space through MakeSpace. Calls may go through trampolines (Jet Set Radio, Super
+    Meat Boy). A game may keep BeginIndexedVertices alone (Bionic Commando Rearmed): then the
+    only function between them that calls MakeSpace and tests bit 2 of its index format (r8,
+    32-bit indices)."""
     rows = [funcs[n] for n in ('BeginIndexedVertices', 'DrawIndexedVerticesUP')]
     if any(r['address'] for r in rows):
         return
@@ -288,21 +292,44 @@ def indexed_up(T, funcs):
     if not (up and dv and space and up < dv):
         return
     between = [f for f in T.starts if up < f < dv]
+
+    def callees(f):
+        return {abi.trampoline(T, c) or c for _, c, kind in T.calls.get(f, ()) if kind == 'bl'}
+
+    makes_space = [f for f in between if space in callees(f)]
     found = []
     for y in between:
-        inner = {c for _, c, kind in T.calls.get(y, ()) if kind == 'bl' and c in between and c != y}
-        if len(inner) != 1:
-            continue
-        x = next(iter(inner))
-        if any(c == space for _, c, _ in T.calls.get(x, ())):
-            found.append((x, y))
-    if len(found) != 1:
+        inner = {c for c in callees(y) if c in between and c != y}
+        if len(inner) == 1 and next(iter(inner)) in makes_space:
+            found.append((next(iter(inner)), y))
+    where = 'between DrawVerticesUP %08X and DrawVertices %08X' % (up, dv)
+    if len(found) == 1:
+        x, y = found[0]
+        detail = '%s: %08X calls only %08X, which calls MakeSpace' % (where, y, x)
+        for row, a in zip(rows, (x, y)):
+            row.update(address=a, how='position', confidence='high', detail=detail)
         return
-    x, y = found[0]
-    detail = ('between DrawVerticesUP %08X and DrawVertices %08X: %08X calls only %08X, '
-              'which calls MakeSpace' % (up, dv, y, x))
-    for row, a in zip(rows, (x, y)):
-        row.update(address=a, how='position', confidence='high', detail=detail)
+    if found:
+        return
+    index32 = re.compile(r'^rlwinm\. r\d+,(r\d+),0,29,29$')
+
+    def tests_index32(f):
+        # r8 or a copy of it (`mr r24,r8` in Bionic Commando Rearmed).
+        regs = {'r8'}
+        for _, t in T[f]:
+            m = re.match(r'^mr (r\d+),(r\d+)$', t)
+            if m and m.group(2) in regs:
+                regs.add(m.group(1))
+            m = index32.match(t)
+            if m and m.group(1) in regs:
+                return True
+        return False
+
+    alone = [f for f in makes_space if tests_index32(f)]
+    if len(alone) == 1:
+        rows[0].update(address=alone[0], how='position', confidence='high',
+                       detail='%s: %08X, the only one that calls MakeSpace and tests the index '
+                              'format for 32-bit indices (no DrawIndexedVerticesUP)' % (where, alone[0]))
 
 
 def apply_overrides(result, ov):
