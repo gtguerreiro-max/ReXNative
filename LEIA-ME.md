@@ -243,10 +243,24 @@ Melhorar aos poucos:
     projectos são uma palavra só: a cola CMake do ReXGlue junta as palavras de um nome
     (`jetsetradio_pch.h`) onde as suas fontes as mantêm separadas. O comando do HUD de definições
     vem do XInputGetState do jogo (o wrapper de três instruções do XDK, encontrado pela forma),
-    intercetado em todos os jogos, por isso o Back + Start funciona em todos. O Jet Set Radio
-    compila e arranca as suas threads; as funções a que chega por ponteiros aparecem uma de cada
-    vez, por isso a seguir vão ser encontradas de antemão (tabelas de endereços de código nos
-    dados).
+    intercetado em todos os jogos, por isso o Back + Start funciona em todos.
+
+    O que um jogo novo precisa, feito pela ferramenta (`project --find-functions`,
+    rexnative/functions.py): os inícios de funções que o codegen não encontrou, procurados de
+    antemão na imagem carregada (`--rexnative_dump_image`): o que é apontado, construído com
+    lis + addi, com prólogo, ou deixado entre funções depois de código que não continua (Super
+    Meat Boy 3523, Jet Set Radio 4280; as rotinas do XDK que guardam e repõem registos nunca
+    viram funções, o codegen trata as chamadas a elas); tabelas de saltos que o codegen leu
+    curtas, pela verificação do limite (`cmplwi`, `bgt`, `lis`/`addi`, `lwzx`, `bctr`), dadas
+    inteiras como `[[switch_tables]]` (o Double Dragon Neon parava nos casos 16 a 143); gotos
+    para labels de outras funções feitos funções (Minecraft); imports que o runtime não tem
+    feitos stubs (a câmara Vision, `XUsbcam*`); uma função por endereço no layer (Perfect Dark,
+    Bionic Commando Rearmed). A app escreve `crash.txt` (pilha do anfitrião; o
+    `build/<nome>.map` dá os nomes das funções do jogo). Primeiros resultados no PC
+    (2026-11-15): Dungeons & Dragons: Chronicles of Mystara joga-se (menus, escolha de capítulo,
+    o primeiro capítulo, 60 FPS); Double Dragon Neon chega ao ecrã de título; Castlevania:
+    Symphony of the Night à moldura do menu; Jet Set Radio pára no descodificador de JPEG
+    (libjpeg) logo depois de arrancar, também com o renderer original.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

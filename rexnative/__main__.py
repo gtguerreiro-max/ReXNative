@@ -157,12 +157,20 @@ def cmd_project(a):
     name = project.write(a.work)
     print('%s: project written in %s' % (name, os.path.abspath(a.work)))
     args = (a.sdk_install, a.sdk_src, a.fidelityfx, a.dlss_sdk, a.dlss_nr)
-    if a.build or a.discover:
-        project.build(a.work, *args, jobs=a.jobs)
+    rexglue = a.rexglue or os.environ.get('REXNATIVE_REXGLUE')
+    if rexglue and not os.path.exists(rexglue):
+        rexglue = None
+    if (a.discover or a.find_functions) and not rexglue:
+        sys.exit('rexglue.exe not found: pass --rexglue or set REXNATIVE_REXGLUE')
+    if a.build or a.discover or a.find_functions:
+        if rexglue:  # branch targets in other functions become hints, codegen runs again
+            project.build_fixing(a.work, rexglue, args, jobs=a.jobs)
+        else:
+            project.build(a.work, *args, jobs=a.jobs)
+    if a.find_functions:
+        added = project.find_functions(a.work, rexglue, args)
+        print('%d function starts added to hints.txt' % len(added))
     if a.discover:
-        rexglue = a.rexglue or os.environ.get('REXNATIVE_REXGLUE')
-        if not rexglue or not os.path.exists(rexglue):
-            sys.exit('rexglue.exe not found: pass --rexglue or set REXNATIVE_REXGLUE')
         added = project.discover(a.work, rexglue, args, rounds=a.discover,
                                  seconds=a.discover_seconds)
         print('%d functions added to hints.txt' % len(added))
@@ -238,6 +246,10 @@ def main(argv=None):
     s.add_argument('--dlss-sdk', default=env('REXNATIVE_DLSS_SDK'))
     s.add_argument('--dlss-nr', default=env('REXNATIVE_DLSS_NR'))
     s.add_argument('--jobs', type=int, default=0)
+    s.add_argument('--find-functions', action='store_true',
+                   help='after the build, dump the loaded image and find the function starts '
+                        'codegen missed (reached only through pointers) ahead, as hints; then '
+                        'codegen and the build run again')
     s.add_argument('--discover', type=int, default=0, metavar='N',
                    help='after the build, run the game up to N times: each function it reports '
                         'missing (a thread entry, an indirect call) becomes a codegen hint, then '

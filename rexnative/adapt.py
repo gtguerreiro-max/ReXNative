@@ -154,6 +154,7 @@ def adapt(target, refs, overrides=None, log=print):
 
     indexed_up(T, funcs)
     xinput_get_state(T, target['generated'], funcs)
+    unique_addresses(funcs)
 
     # Resolve: which function to hook and where its arguments are. Its signature changed between
     # XDK builds (a public wrapper over an inner function with more arguments by 6995-11626,
@@ -377,6 +378,35 @@ def indexed_up(T, funcs):
         rows[0].update(address=alone[0], how='position', confidence='high',
                        detail='%s: %08X, the only one that calls MakeSpace and tests the index '
                               'format for 32-bit indices (no DrawIndexedVerticesUP)' % (where, alone[0]))
+
+
+# Functions that may share an address: a public wrapper that is its own inner function, and the
+# two names of the segment restore.
+SAME_ADDRESS_OK = ({'Resolve', 'ResolveInner'}, {'RestoreSegment', 'RestoreSegment13392'})
+
+
+def unique_addresses(funcs):
+    """No address for two functions (the renderer switches on them: Perfect Dark's position-found
+    BeginIndexedVertices was its DrawIndexedVertices, Bionic Commando Rearmed's RunCommandBuffer
+    match its BeginIndexedVertices). The surer one keeps it: higher confidence, then one matched
+    to a reference over one found by position."""
+    rank = {'high': 3, 'medium': 2, 'low': 1}
+    by = {}
+    for canon, row in funcs.items():
+        if row.get('address'):
+            by.setdefault(row['address'], []).append(canon)
+    for a, names in by.items():
+        if len(names) < 2 or any(set(names) <= s for s in SAME_ADDRESS_OK):
+            continue
+        names.sort(key=lambda n: (rank.get(funcs[n].get('confidence'), 0),
+                                  funcs[n].get('how') != 'position'), reverse=True)
+        keep = names[0]
+        for n in names[1:]:
+            if any({keep, n} <= s for s in SAME_ADDRESS_OK):
+                continue
+            funcs[n].update(address=None, how='not found', confidence=None,
+                            detail='%08X is %s (%s, %s)' % (a, keep, funcs[keep].get('how'),
+                                                           funcs[keep].get('confidence')))
 
 
 def apply_overrides(result, ov):

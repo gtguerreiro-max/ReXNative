@@ -258,9 +258,22 @@ Improving it a little at a time:
     call) a codegen hint, then builds again. Project names are one word: ReXGlue's CMake glue
     runs a name's words together (`jetsetradio_pch.h`) where its sources keep them apart. The
     settings HUD's pad comes from the game's XInputGetState (the XDK's three-instruction
-    wrapper, found by its shape), hooked in every game, so Back + Start works everywhere. Jet Set
-    Radio builds and starts its threads; the functions it reaches through pointers come one at a
-    time, so they are next to be found ahead (tables of code addresses in its data).
+    wrapper, found by its shape), hooked in every game, so Back + Start works everywhere.
+
+    What a new game needs, done by the tool (`project --find-functions`, rexnative/functions.py):
+    the function starts codegen missed, found ahead in the loaded image (`--rexnative_dump_image`):
+    anything pointed to, built with lis + addi, with a prologue, or left between functions after
+    code that does not fall through (Super Meat Boy 3523, Jet Set Radio 4280; the XDK's register
+    save / restore helpers are never made functions, codegen handles their calls); jump tables
+    codegen read short, from their bound check (`cmplwi`, `bgt`, `lis`/`addi`, `lwzx`, `bctr`),
+    given whole as `[[switch_tables]]` (Double Dragon Neon trapped on its cases 16 to 143);
+    gotos to labels of other functions made functions (Minecraft); imports the runtime lacks
+    made stubs (the Vision camera, `XUsbcam*`); one function per layer address (Perfect Dark,
+    Bionic Commando Rearmed). The app writes `crash.txt` (host stack; `build/<name>.map` names
+    the guest functions). First results on the PC (2026-11-15): Dungeons & Dragons: Chronicles of
+    Mystara plays (menus, chapter select, the first chapter, 60 FPS); Double Dragon Neon reaches
+    its title screen; Castlevania: Symphony of the Night its menu frame; Jet Set Radio stops in
+    its JPEG decoder (libjpeg) right after start-up, with the stock renderer too.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

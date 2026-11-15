@@ -149,7 +149,11 @@ def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.10.1"',
              'game_root = "game-data"', '', '[entrypoint]', 'file_path = "game-data/default.xex"',
-             'out_directory_path = "generated/default"', 'includes = []']
+             'out_directory_path = "generated/default"']
+    # Jump tables codegen cut short, given whole ([[switch_tables]], `rexnative project
+    # --find-functions`, functions.jump_tables).
+    tables = os.path.exists(os.path.join(work, 'switch_tables.toml'))
+    lines.append('includes = [%s]' % ('"switch_tables.toml"' if tables else ''))
     lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
     hints = _hints(work)
     if hints:
