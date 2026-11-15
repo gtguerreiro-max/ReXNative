@@ -224,6 +224,15 @@ Melhorar aos poucos:
    `kDefaultCmdBuf` do layer); o `--rexnative_d3d_control` aceita `cmdbuf 0|1|2`, `cmdbuf log N`
    e `cmdbuf dump [etiqueta]` (cada pacote dos dois buffers seguintes para a pasta do trace); os
    bits 4096 e 8192 do draw-debug.txt saltam os draws reproduzidos ou todos os outros.
+10. ~~Pipelines compilados de antemão.~~ Feito (2026-11-15). Os pipelines que um jogo cria
+    ficam guardados (`<cache_root>\rexnative\pipelines.bin`, mais uma biblioteca de pipelines
+    D3D12) e são todos compilados outra vez ao arrancar, em segundo plano, os usados mais
+    recentemente primeiro (no máximo 4096); nenhum é esquecido
+    (`--rexnative_pipeline_prewarm_sessions` e `--rexnative_pipeline_keep_sessions` limitam-nos
+    às últimas N sessões). Só um pipeline que o jogo nunca criou ainda segura um frame enquanto
+    compila (50 a 170 ms no Steam Deck). O uso de um pipeline guardado era marcado noutro registo
+    (os registos eram ordenados à parte dos seus hashes), por isso pipelines em uso podiam ser
+    esquecidos.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

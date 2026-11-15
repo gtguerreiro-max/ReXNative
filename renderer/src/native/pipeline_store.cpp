@@ -57,7 +57,7 @@ uint64_t PipelineStore::RecordHash(uint64_t vs_hash, uint64_t vs_mod, uint64_t p
 }
 
 void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
-                         uint32_t key_version) {
+                         uint32_t key_version, uint32_t keep_sessions, uint32_t hot_sessions) {
   if (key_size > kMaxKeySize) {
     REXLOG_WARN("ReXNative pipelines: key of {} bytes is over {}, no pipeline store", key_size,
                 kMaxKeySize);
@@ -125,32 +125,39 @@ void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
       good = pos;
     }
   }
-  // The touches fold into the records, and what no recent session used leaves the store: the
-  // pipelines of content the player has not played in kKeepSessions never cost a start again.
+  // The touches fold into the records, and with keep_sessions what no session used in that
+  // many leaves the store (the pipelines of content the player no longer plays).
   size_t evicted = 0;
-  std::vector<Pipeline> kept;
-  std::vector<uint64_t> kept_hashes;
+  struct Kept {
+    Pipeline p;
+    uint64_t hash;
+  };
+  std::vector<Kept> kept;
   kept.reserve(loaded_pipelines_.size());
-  kept_hashes.reserve(loaded_pipelines_.size());
   for (size_t i = 0; i < loaded_pipelines_.size(); ++i) {
     Pipeline& p = loaded_pipelines_[i];
     auto t = touches.find(record_hashes_[i]);
     if (t != touches.end()) p.last_session = std::max(p.last_session, t->second);
-    if (uint64_t(session_) > uint64_t(p.last_session) + kKeepSessions) {
+    if (keep_sessions && uint64_t(session_) > uint64_t(p.last_session) + keep_sessions) {
       ++evicted;
       continue;
     }
-    kept_hashes.push_back(record_hashes_[i]);
-    kept.push_back(std::move(p));
+    kept.push_back({std::move(p), record_hashes_[i]});
   }
-  // Most recently used first: prewarm replays the player's current rotation, not their history.
-  std::stable_sort(kept.begin(), kept.end(), [](const Pipeline& a, const Pipeline& b) {
-    return a.last_session > b.last_session;
+  // Most recently used first: prewarm starts with the player's current rotation. Each record
+  // keeps its own hash through the sort (TouchEntry appends the hash at the index it is given;
+  // sorted apart, a use marked another record and the used one could be evicted).
+  std::stable_sort(kept.begin(), kept.end(), [](const Kept& a, const Kept& b) {
+    return a.p.last_session > b.p.last_session;
   });
+  if (kept.size() > kStoreMax) {
+    evicted += kept.size() - kStoreMax;
+    kept.resize(kStoreMax);
+  }
   std::unordered_set<uint64_t> referenced;
-  for (const Pipeline& p : kept) {
-    referenced.insert(p.vs_hash);
-    if (p.ps_hash) referenced.insert(p.ps_hash);
+  for (const Kept& k : kept) {
+    referenced.insert(k.p.vs_hash);
+    if (k.p.ps_hash) referenced.insert(k.p.ps_hash);
   }
   for (auto it = loaded_shaders_.begin(); it != loaded_shaders_.end();) {
     if (!referenced.count(it->first)) {
@@ -159,15 +166,21 @@ void PipelineStore::Open(const std::filesystem::path& dir, uint32_t key_size,
       ++it;
     }
   }
-  loaded_pipelines_ = std::move(kept);
-  record_hashes_ = std::move(kept_hashes);
+  loaded_pipelines_.clear();
+  record_hashes_.clear();
+  loaded_pipelines_.reserve(kept.size());
+  record_hashes_.reserve(kept.size());
+  for (Kept& k : kept) {
+    loaded_pipelines_.push_back(std::move(k.p));
+    record_hashes_.push_back(k.hash);
+  }
   for (size_t i = 0; i < loaded_pipelines_.size(); ++i)
     entry_by_hash_.emplace(record_hashes_[i], uint32_t(i));
   pipelines_written_.insert(record_hashes_.begin(), record_hashes_.end());
   for (const auto& s : loaded_shaders_) shaders_written_.insert(s.first);
   hot_count_ = 0;
   for (const Pipeline& p : loaded_pipelines_) {
-    if (uint64_t(session_) >= uint64_t(p.last_session) + kHotSessions) break;
+    if (hot_sessions && uint64_t(session_) >= uint64_t(p.last_session) + hot_sessions) break;
     ++hot_count_;
   }
   hot_count_ = std::min(hot_count_, kPrewarmMax);

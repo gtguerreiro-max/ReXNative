@@ -90,6 +90,14 @@ REXCVAR_DEFINE_BOOL(rexnative_pipeline_cache, true, "ReXNative",
                     "Keep the shaders and pipelines the native renderer creates under "
                     "<cache_root>\\rexnative and compile them at start-up in later runs "
                     "(prewarm, plus a D3D12 pipeline library)");
+REXCVAR_DEFINE_INT32(rexnative_pipeline_prewarm_sessions, 0, "ReXNative",
+                     "With --rexnative_pipeline_cache, the stored pipelines compiled at start-up "
+                     "in the background: those the last N sessions used (0: all of them, most "
+                     "recently used first, at most 4096)");
+REXCVAR_DEFINE_INT32(rexnative_pipeline_keep_sessions, 0, "ReXNative",
+                     "With --rexnative_pipeline_cache, a stored pipeline no session used in N "
+                     "sessions is forgotten (0: never; the store keeps at most 16384, the least "
+                     "recently used go first)");
 REXCVAR_DEFINE_STRING(rexnative_watch_trace, "", "ReXNative",
                       "Binary log of vertex write-watch events (arms and faults, one 64-bit "
                       "record each, see WatchTrace) for offline analysis of the watch policy");
@@ -1075,7 +1083,7 @@ struct DrawRenderer::Impl {
     ComPtr<ID3D12PipelineState> pso;
     std::atomic<uint8_t> state{kCompiling};
     // The store record the pipeline was prewarmed from: the first draw that uses it touches the
-    // record (it survives another kKeepSessions), then this is kNoEntry again (draw thread only).
+    // record (marked used this session), then this is kNoEntry again (draw thread only).
     uint32_t store_entry = PipelineStore::kNoEntry;
     bool prewarm = false;  // its job was queued in prewarm_jobs (draw thread only)
     // A specialization whose draws use their unspecialized shaders' pipeline until it is ready
@@ -1821,7 +1829,9 @@ bool DrawRenderer::Impl::Initialize() {
       REXLOG_WARN("ReXNative pipelines: no cache root, no pipeline cache");
     } else {
       dir /= "rexnative";
-      store.Open(dir, sizeof(PipelineKey), kPipelineKeyVersion);
+      store.Open(dir, sizeof(PipelineKey), kPipelineKeyVersion,
+                 uint32_t(std::max(0, REXCVAR_GET(rexnative_pipeline_keep_sessions))),
+                 uint32_t(std::max(0, REXCVAR_GET(rexnative_pipeline_prewarm_sessions))));
       library_path = dir / "pipelines.d3d12lib";
     }
   }
@@ -2838,9 +2848,9 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
 
 void DrawRenderer::Impl::Prewarm() {
   const std::vector<PipelineStore::Pipeline>& list = store.loaded_pipelines();
-  // The store is ordered most recently used first; only its hot prefix is prewarmed (the rest
-  // compiles on demand if it comes up), so a start pays for what the player plays, not for
-  // everything they ever played.
+  // The store is ordered most recently used first; its hot prefix is prewarmed (every record
+  // by default, --rexnative_pipeline_prewarm_sessions; the rest compiles on demand if it comes
+  // up).
   const size_t hot = std::min(store.hot_count(), list.size());
   if (prewarm_next >= hot) return;
   const auto t0 = std::chrono::steady_clock::now();

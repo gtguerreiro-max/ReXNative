@@ -4,11 +4,14 @@
 // pipelines for, in <cache_root>\rexnative\pipelines.bin. Every pipeline record carries the
 // session that last created or used it; a later session's use is a 16-byte touch record,
 // appended and flushed once per frame (the game is usually killed, not shut down). At
-// start-up the store counts its session up, drops the records no recent session used
-// (kKeepSessions) and rewrites the file, so the store stays the size of what the player plays
-// instead of everything they ever played, and DrawRenderer prewarms (translates and creates
-// ahead of the first draw) only what the last kHotSessions sessions used, most recently used
-// first. Threading: the renderer's thread (DrawRenderer's On* calls) only.
+// start-up the store counts its session up, orders its records most recently used first,
+// drops what no session used in keep_sessions (if set; never past kStoreMax records) and
+// rewrites the file. DrawRenderer prewarms (translates and creates ahead of the first draw, in
+// the background) what the last hot_sessions sessions used, or every record with 0, at most
+// kPrewarmMax, most recently used first. Both default to 0 (--rexnative_pipeline_keep_sessions,
+// --rexnative_pipeline_prewarm_sessions): an XBLA game has a few hundred pipelines, and a
+// pipeline it compiles for the first time holds a frame (50 to 170 ms on the Steam Deck).
+// Threading: the renderer's thread (DrawRenderer's On* calls) only.
 //
 // PipelineLibrary: an ID3D12PipelineLibrary in <cache_root>\rexnative\pipelines.d3d12lib, so
 // the driver's compiled pipelines are loaded instead of compiled again. Saved by a pipeline
@@ -47,13 +50,15 @@ class PipelineStore {
 
   // Reads <dir>\pipelines.bin (started over if its header does not match the format, key_size
   // and key_version, or cut at the last whole record), counts its session up, evicts what no
-  // recent session used, rewrites the file and opens it for appending. Stays closed if
-  // key_size is over kMaxKeySize.
-  void Open(const std::filesystem::path& dir, uint32_t key_size, uint32_t key_version);
+  // session used in keep_sessions (0: nothing) and what is past kStoreMax, rewrites the file
+  // and opens it for appending. hot_sessions: how far back prewarm covers (0: everything).
+  // Stays closed if key_size is over kMaxKeySize.
+  void Open(const std::filesystem::path& dir, uint32_t key_size, uint32_t key_version,
+            uint32_t keep_sessions, uint32_t hot_sessions);
   bool is_open() const { return file_ != nullptr; }
 
   // Records from earlier runs, most recently used first. The first hot_count() (the last
-  // kHotSessions sessions', at most kPrewarmMax) are what a run prewarms; the rest compile on
+  // hot_sessions sessions', at most kPrewarmMax) are what a run prewarms; the rest compile on
   // demand if they come up.
   const std::vector<Pipeline>& loaded_pipelines() const { return loaded_pipelines_; }
   size_t hot_count() const { return hot_count_; }
@@ -78,9 +83,8 @@ class PipelineStore {
   void Flush();
 
   static constexpr uint32_t kMaxKeySize = 256;
-  // Sessions a record survives without a use, and how far back prewarm covers.
-  static constexpr uint32_t kKeepSessions = 8, kHotSessions = 3;
-  static constexpr size_t kPrewarmMax = 4096;
+  // Records the store keeps (the least recently used go first) and prewarms, at most.
+  static constexpr size_t kStoreMax = 16384, kPrewarmMax = 4096;
 
  private:
   // The record's identity: over the hashes, modifications and key, not the session.
