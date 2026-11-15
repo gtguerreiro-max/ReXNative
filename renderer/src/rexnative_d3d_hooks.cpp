@@ -143,6 +143,7 @@ constexpr FnId kFnSwap = FnIdOf(game::kFnSwap), kFnResolve = FnIdOf(game::kFnRes
                kFnBeginVertices = FnIdOf(game::kFnBeginVertices),
                kFnRestorePush = FnIdOf(game::kFnRestorePush),
                kFnDrawVerticesUP = FnIdOf(game::kFnDrawVerticesUP),
+               kFnBeginIndexedVertices = FnIdOf(game::kFnBeginIndexedVertices),
                kFnDrawVertices = FnIdOf(game::kFnDrawVertices),
                kFnDrawIndexed = FnIdOf(game::kFnDrawIndexedVertices),
                kFnClear = FnIdOf(game::kFnClear), kFnBeginTiling = FnIdOf(game::kFnBeginTiling),
@@ -1120,9 +1121,10 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
 // reaches the renderer: the D3D's own draws inside them (Clear -> ClearF -> DrawIndx2Inline,
 // Resolve's copy quads, Swap -> DrawIndx2Split, BeginVertices inside DrawVerticesUP) are not
 // game draws. Other hooked functions do not count as outer calls (BeginTiling fn_820EC610
-// clears through a nested ClearF, which must reach OnClear). A top-level BeginVertices only
-// reserves space: the game writes the vertices after it returns, so its OnDraw is held until
-// the entry of RestorePush (EndVertices) or of the next hooked call that is not a pass-through.
+// clears through a nested ClearF, which must reach OnClear). A top-level BeginVertices (or
+// BeginIndexedVertices) only reserves space: the game writes the vertices after it returns, so
+// its OnDraw is held until the entry of RestorePush (EndVertices) or of the next hooked call that
+// is not a pass-through.
 // The query calls reach it at every depth (native/occlusion.h).
 enum NativeClass : uint8_t { kNatNone, kNatDraw, kNatClear, kNatResolve, kNatSwap, kNatQuery };
 
@@ -1344,6 +1346,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     if constexpr (nat::IsStateFlushingFn(kAddr)) {
       if (track && c.r3.u32) {
         const std::array<uint32_t, 8> rr = PublicRegs(kAddr, c);
+        const uint32_t sp = c.r1.u32;  // at entry: stack arguments (BeginIndexedVertices)
         nat::CallEntry e;
         {
           nat::profile::Scope scope(nat::profile::kTrack);
@@ -1353,7 +1356,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
         RunOriginal<kId, Body<kId, kOriginal>>(c, b);
         nat::profile::Scope scope(nat::profile::kTrack);
         ++nat::profile::g.track_calls;
-        nat::GuestState().AfterCall(b, kAddr, e, rr.data(), c.r3.u64);
+        nat::GuestState().AfterCall(b, kAddr, e, rr.data(), c.r3.u64, sp);
         return;
       }
     }
@@ -1395,7 +1398,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     if (!outer) return;
     a.ret = ctx.r3.u64;
     if constexpr (kClass == kNatDraw) {
-      if constexpr (kId == kFnBeginVertices) {
+      if constexpr (kId == kFnBeginVertices || kId == kFnBeginIndexedVertices) {
         t_pending_args = a;
         t_pending_vertices = true;
       } else {

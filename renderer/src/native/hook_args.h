@@ -7,6 +7,20 @@
 #include <cstdint>
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
+// What a layer generated before a function was known lacks: its constants, "not found". Qualified
+// lookup (rexnative::game::kX) searches a namespace named by a using-directive only when the
+// layer itself declares no kX, so a layer's own value always wins.
+namespace rexnative::game_defaults {
+inline constexpr uint32_t kFnBeginIndexedVertices = 0;
+inline constexpr uint32_t kFnDrawIndexedVerticesUP = 0;
+// Distinct HookFn values below 0x100 (the generator numbers its own sentinels from 1).
+inline constexpr uint32_t kHookBeginIndexedVertices = 0xF0;
+inline constexpr uint32_t kHookDrawIndexedVerticesUP = 0xF1;
+}  // namespace rexnative::game_defaults
+namespace rexnative::game {
+using namespace rexnative::game_defaults;
+}
+
 namespace rexnative {
 
 // Guest D3D functions the native path hears of (addresses in the base-disc default.xex; names
@@ -15,6 +29,13 @@ namespace rexnative {
 enum class HookFn : uint32_t {
   kBeginVertices = rexnative::game::kHookBeginVertices,        // draw; the game writes the vertices after it returns
   kDrawVerticesUP = rexnative::game::kHookDrawVerticesUP,       // draw
+  // BeginIndexedVertices(dev, prim, base vertex, vertex count, index count, index format, stride,
+  // ppIndexData; ppVertexData on the stack): reserves inline vertices and, after them, inline
+  // indices in the push buffer; the game writes both after it returns. DrawIndexedVerticesUP
+  // is BeginIndexedVertices + two copies + the push restore (Scaleform's draws in Iron Brigade:
+  // the bitmap fills, its intro video among them).
+  kBeginIndexedVertices = rexnative::game::kHookBeginIndexedVertices,  // draw
+  kDrawIndexedVerticesUP = rexnative::game::kHookDrawIndexedVerticesUP,  // draw
   kDrawVertices = rexnative::game::kHookDrawVertices,         // draw
   kDrawIndexedVertices = rexnative::game::kHookDrawIndexedVertices,  // draw
   kDrawIndx2Inline = rexnative::game::kHookDrawIndx2Inline,      // draw, called only from inside the D3D library
@@ -51,6 +72,8 @@ enum class TilingCall : uint8_t { kNone, kBegin, kEnd };
 //   DrawVertices(dev, prim, start_vertex, vertex_count)
 //   DrawVerticesUP(dev, prim, vertex_count, data_ptr, stride)
 //   BeginVertices(dev, prim, vertex_count, stride) -> r3 = pointer the game writes into
+//   BeginIndexedVertices(dev, prim, base_vertex, vertex_count, index_count, index_format,
+//                        stride, ppIndexData; ppVertexData at sp+84) -> r3 = 0 (S_OK)
 //   Clear(dev, count, rects_ptr, flags, color; z in f1, stencil in r9)
 //   ClearF(dev, flags, rect_ptr, color_ptr; z in f1, stencil in r8)
 //   (a float argument takes the next integer register's slot)

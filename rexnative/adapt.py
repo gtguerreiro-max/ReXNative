@@ -103,6 +103,8 @@ def adapt(target, refs, overrides=None, log=print):
                 row['cross'][run['name']] = (mm.target, mm.how, mm.confidence())
         funcs[canon] = row
 
+    indexed_up(T, funcs)
+
     # Resolve: which function to hook and where its arguments are. Its signature changed between
     # XDK builds (a public wrapper over an inner function with more arguments by 6995-11626,
     # inlined again by LTCG), so it comes from the reference whose Resolve looks most like this
@@ -269,6 +271,38 @@ def adapt(target, refs, overrides=None, log=print):
     if overrides:
         apply_overrides(result, overrides)
     return result
+
+
+def indexed_up(T, funcs):
+    """BeginIndexedVertices and DrawIndexedVerticesUP, when no reference has them (the linker
+    drops them from games that never draw with user-pointer indices, as From Dust and PGR4).
+    The XDK keeps its draw builders in source order: DrawVerticesUP, BeginIndexedVertices,
+    DrawIndexedVerticesUP, DrawVertices. Between the two found ones, DrawIndexedVerticesUP is the
+    function that calls exactly one other function of that range, BeginIndexedVertices, which
+    reserves its space through MakeSpace."""
+    rows = [funcs[n] for n in ('BeginIndexedVertices', 'DrawIndexedVerticesUP')]
+    if any(r['address'] for r in rows):
+        return
+    up, dv = funcs['DrawVerticesUP']['address'], funcs['DrawVertices']['address']
+    space = funcs['MakeSpace']['address']
+    if not (up and dv and space and up < dv):
+        return
+    between = [f for f in T.starts if up < f < dv]
+    found = []
+    for y in between:
+        inner = {c for _, c, kind in T.calls.get(y, ()) if kind == 'bl' and c in between and c != y}
+        if len(inner) != 1:
+            continue
+        x = next(iter(inner))
+        if any(c == space for _, c, _ in T.calls.get(x, ())):
+            found.append((x, y))
+    if len(found) != 1:
+        return
+    x, y = found[0]
+    detail = ('between DrawVerticesUP %08X and DrawVertices %08X: %08X calls only %08X, '
+              'which calls MakeSpace' % (up, dv, y, x))
+    for row, a in zip(rows, (x, y)):
+        row.update(address=a, how='position', confidence='high', detail=detail)
 
 
 def apply_overrides(result, ov):

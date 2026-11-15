@@ -35,7 +35,7 @@ def _write(path, text):
 
 def _refs(ports, names, exclude=()):
     names = [n for n in (names or ports) if n not in exclude]
-    return {n: prof.extract(ports[n], n) for n in names}
+    return {n: prof.as_reference(prof.extract(ports[n], n)) for n in names}
 
 
 def cmd_info(a):

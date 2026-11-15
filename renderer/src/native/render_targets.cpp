@@ -34,7 +34,7 @@ bool Is64bpp(uint32_t color_format) {
 DXGI_FORMAT ColorFormat(uint32_t f) {
   switch (f) {
     case 0:  // k_8_8_8_8
-    case 1:  // k_8_8_8_8_GAMMA (gamma not applied on the host yet)
+    case 1:  // k_8_8_8_8_GAMMA: the pixel shader writes PWL gamma (draw.cpp, gamma_targets)
       return DXGI_FORMAT_R8G8B8A8_UNORM;
     case 2:   // k_2_10_10_10
     case 10:  // k_2_10_10_10_AS_10_10_10_10

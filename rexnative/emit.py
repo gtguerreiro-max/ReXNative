@@ -8,7 +8,8 @@ import os
 
 from . import profile as prof
 
-HOOK_ORDER = ['BeginVertices', 'DrawVerticesUP', 'DrawVertices', 'DrawIndexedVertices',
+HOOK_ORDER = ['BeginVertices', 'DrawVerticesUP', 'BeginIndexedVertices', 'DrawIndexedVerticesUP',
+              'DrawVertices', 'DrawIndexedVertices',
               'DrawIndx2Inline', 'DrawIndx2Split', 'ClearF', 'Clear', 'Resolve', 'Swap',
               'RunCommandBuffer', 'QueryIssue', 'QueryGetData']
 

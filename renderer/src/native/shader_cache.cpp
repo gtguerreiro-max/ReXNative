@@ -45,7 +45,7 @@ void DumpFile(const char* name, const void* data, size_t size) {
 // statements).
 ShaderCache::ShaderCache()
     : translator_(rex::ui::GraphicsProvider::GpuVendorID(0x10DE), /*bindless=*/true,
-                  /*edram_rov_used=*/false, /*gamma_render_target_as_unorm8=*/false,
+                  /*edram_rov_used=*/false, /*gamma_render_target_as_unorm8=*/true,
                   /*msaa_2x_supported=*/true) {}
 
 ShaderCache::~ShaderCache() = default;

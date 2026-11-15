@@ -22,13 +22,16 @@ from . import xex as xexmod
 FUNCTIONS = [
     'Swap', 'Resolve', 'ResolveInner', 'CreateDevice', 'RestoreSegment13392', 'RestoreSegment',
     'StartSegment', 'SwitchSegment', 'MakeSpace', 'BeginVertices', 'RestorePush',
-    'DrawVerticesUP', 'DrawVertices', 'DrawIndexedVertices', 'DrawIndx2Inline',
+    'DrawVerticesUP', 'BeginIndexedVertices', 'DrawIndexedVerticesUP', 'DrawVertices',
+    'DrawIndexedVertices', 'DrawIndx2Inline',
     'DrawIndx2Split', 'ClearF', 'Clear', 'BeginTiling', 'EndTiling', 'QueryIssue',
     'QueryGetData', 'RunCommandBuffer', 'ShaderLoad', 'ImmediateVs',
 ]
 # hook_args.h HookFn enumerators -> canonical names.
 HOOKFN = {
     'kBeginVertices': 'BeginVertices', 'kDrawVerticesUP': 'DrawVerticesUP',
+    'kBeginIndexedVertices': 'BeginIndexedVertices',
+    'kDrawIndexedVerticesUP': 'DrawIndexedVerticesUP',
     'kDrawVertices': 'DrawVertices', 'kDrawIndexedVertices': 'DrawIndexedVertices',
     'kDrawIndx2Inline': 'DrawIndx2Inline', 'kDrawIndx2Split': 'DrawIndx2Split',
     'kClearF': 'ClearF', 'kClear': 'Clear', 'kResolve': 'Resolve', 'kSwap': 'Swap',
@@ -46,6 +49,11 @@ KFN = {
     'kFnClear': 'Clear', 'kFnBeginTiling': 'BeginTiling', 'kFnEndTiling': 'EndTiling',
     'kFnQueryIssue': 'QueryIssue', 'kFnQueryGetData': 'QueryGetData',
 }
+# Functions the tool finds by their place in the target (adapt.indexed_up), never through a
+# reference: the linker drops them from games that do not use them, and a reference that has
+# them would hand one to such a game on a neighbour's address, shifting the neighbours along.
+POSITION_ONLY = ('BeginIndexedVertices', 'DrawIndexedVerticesUP')
+
 # Sentinels the hand-made layers give functions they could not find (hook_args.h).
 SENTINEL_MAX = 0x100
 
@@ -307,6 +315,17 @@ def unhexify(obj):
     if obj.get('clear_color'):
         out['clear_color'] = dict(obj['clear_color'], address=u(obj['clear_color']['address']))
     return out
+
+
+def as_reference(p):
+    """The profile as a reference for another game: without the POSITION_ONLY functions, in its
+    function table or its surface."""
+    funcs = dict(p['functions'])
+    drop = {funcs.get(n) for n in POSITION_ONLY} - {None}
+    for n in POSITION_ONLY:
+        funcs[n] = None
+    surface = [e for e in p['surface'] if e[0] not in drop and e[1] not in POSITION_ONLY]
+    return dict(p, functions=funcs, surface=surface)
 
 
 def save(profile, path):

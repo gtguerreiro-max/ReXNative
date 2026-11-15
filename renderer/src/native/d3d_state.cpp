@@ -289,14 +289,15 @@ void GuestStateTracker::Attach(const uint8_t* base, uint32_t device) {
 }
 
 void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const CallEntry& e,
-                                  const uint32_t r[8], uint64_t ret) {
+                                  const uint32_t r[8], uint64_t ret, uint32_t sp) {
   const uint32_t device = r[0];
   if (!device) return;
   if (device != device_) Attach(base, device);
   // DrawVerticesUP is BeginVertices + a copy + RestorePush; the nested BeginVertices call
-  // already reported its flush and its inline vertex buffer.
+  // already reported its flush and its inline vertex buffer. The same for DrawIndexedVerticesUP
+  // and BeginIndexedVertices.
   const HookFn fn = HookFn(fn_addr);
-  if (fn == HookFn::kDrawVerticesUP) return;
+  if (fn == HookFn::kDrawVerticesUP || fn == HookFn::kDrawIndexedVerticesUP) return;
   // An immediate VS load belongs to the draw it was made in; one made by Clear/Resolve's own
   // draws (DrawIndx2Inline) never reaches a game draw (the D3D re-dirties the VS after them).
   const bool vs_imm_new = vs_imm_pending_valid_;
@@ -316,9 +317,11 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
   for (uint32_t m = 0; m < 2; ++m)
     flushed[m] = e.dirty[m] & ~Load64(base, device + dev::kDirtyMasks + m * 8);
   const bool game_draw = fn == HookFn::kDrawIndexedVertices || fn == HookFn::kDrawVertices ||
-                         fn == HookFn::kBeginVertices;
+                         fn == HookFn::kBeginVertices || fn == HookFn::kBeginIndexedVertices;
+  // Both Begin calls rebind the VS when the stride (in dwords) changes.
   const bool stride_changed =
-      fn == HookFn::kBeginVertices && ((r[3] >> 2) & 0xFF) != e.vertex_stride_dwords;
+      (fn == HookFn::kBeginVertices && ((r[3] >> 2) & 0xFF) != e.vertex_stride_dwords) ||
+      (fn == HookFn::kBeginIndexedVertices && ((r[6] >> 2) & 0xFF) != e.vertex_stride_dwords);
   if (game_draw) {
     const bool shader_load = (e.dirty[2] & kShaderLoadBits) || stride_changed;
     flushed[2] = e.dirty[2] | (shader_load ? kShaderLoadBlocks : 0);
@@ -415,6 +418,36 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
       inline_vertices_ = GpuAddress(p);
       break;
     }
+    case HookFn::kBeginIndexedVertices: {
+      // (dev, prim, base vertex, vertex count, index count, index format, stride, ppIndexData;
+      // ppVertexData at sp+84). S_OK (0) or nothing was reserved. The vertices, then the
+      // indices, behind the packets; fetch constant 31 points at the vertices as in
+      // BeginVertices, and the DRAW_INDX reads the indices by DMA. The index format's bit 2 is
+      // 32-bit indices, its low 2 bits the endian swap (D3DFMT_INDEX16 1, D3DFMT_INDEX32 6).
+      Put(0x2102, r[2]);
+      inline_indices_ = 0;
+      if (uint32_t(ret) != 0 || !r[7] || !sp) break;
+      const uint32_t indices = Load32(base, r[7]);
+      const uint32_t pp_vertices = Load32(base, sp + 84);
+      const uint32_t vertices = pp_vertices ? Load32(base, pp_vertices) : 0;
+      if (!indices || !vertices) break;
+      const uint32_t bytes = r[3] * r[6];
+      const uint32_t f = 0x4800 + 31 * 6;
+      Put(f + 0, 1);
+      Put(f + 1, 0);
+      Put(f + 2, 1);
+      Put(f + 3, 0);
+      Put(f + 4, GpuAddress(vertices) | 3);
+      Put(f + 5, 0x10000002u | (((bytes >> 2) & 0xFFFFFFu) << 2));
+      inline_fetch_ = true;
+      inline_vertices_ = GpuAddress(vertices);
+      inline_indices_ = GpuAddress(indices);
+      inline_index_count_ = r[4];
+      inline_index_32bit_ = (r[5] & 4) != 0;
+      inline_index_endian_ = r[5] & 3;
+      inline_base_vertex_ = r[2];
+      break;
+    }
     default:
       break;
   }
@@ -460,6 +493,7 @@ bool GuestStateTracker::ReadDrawState(const uint8_t* base, const HookArgs& a, Dr
   s->index_endian = 0;
   s->base_vertex = 0;
   s->inline_vertices = 0;
+  s->inline_indices = false;
   switch (a.fn) {
     case HookFn::kDrawIndexedVertices: {  // (dev, prim, base vertex, start index, index count)
       s->base_vertex = a.r[2];
@@ -481,6 +515,20 @@ bool GuestStateTracker::ReadDrawState(const uint8_t* base, const HookArgs& a, Dr
     case HookFn::kDrawVerticesUP:  // (dev, prim, vertex count, data, stride)
       s->count = a.r[2];
       s->inline_vertices = inline_vertices_;
+      break;
+    case HookFn::kBeginIndexedVertices:
+    case HookFn::kDrawIndexedVerticesUP:
+      // What the (nested) BeginIndexedVertices reserved: the wrapper's own arguments are not
+      // read, an LTCG build may have moved them.
+      if (!inline_indices_) return false;
+      s->count = inline_index_count_;
+      s->indexed = true;
+      s->index_address = inline_indices_;
+      s->index_32bit = inline_index_32bit_;
+      s->index_endian = inline_index_endian_;
+      s->base_vertex = inline_base_vertex_;
+      s->inline_vertices = inline_vertices_;
+      s->inline_indices = true;
       break;
     default:
       return false;

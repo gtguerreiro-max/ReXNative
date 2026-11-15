@@ -81,6 +81,8 @@ constexpr bool IsStateFlushingFn(uint32_t addr) {
   switch (HookFn(addr)) {
     case HookFn::kBeginVertices:
     case HookFn::kDrawVerticesUP:
+    case HookFn::kBeginIndexedVertices:
+    case HookFn::kDrawIndexedVerticesUP:
     case HookFn::kDrawVertices:
     case HookFn::kDrawIndexedVertices:
     case HookFn::kDrawIndx2Inline:
@@ -141,6 +143,9 @@ struct DrawState {
   uint32_t base_vertex = 0;   // = regs[0x2102] VGT_INDX_OFFSET
   // BeginVertices / DrawVerticesUP: inline vertices in the push buffer (vfetch 95).
   uint32_t inline_vertices = 0;  // physical, 0 if none
+  // BeginIndexedVertices / DrawIndexedVerticesUP: the indices are in the push buffer too
+  // (index_address), rewritten every frame: copied for each draw, never watched.
+  bool inline_indices = false;
 
   ShaderRef vs, ps;
 };
@@ -178,9 +183,10 @@ class RegLog {
 
 class GuestStateTracker {
  public:
-  // After a flushing call returned. `r` = r3..r10 at entry (r[0] = device), `ret` = r3 after.
+  // After a flushing call returned. `r` = r3..r10 at entry (r[0] = device), `ret` = r3 after,
+  // `sp` = r1 at entry (BeginIndexedVertices' ppVertexData is a stack argument).
   void AfterCall(const uint8_t* base, uint32_t fn_addr, const CallEntry& entry, const uint32_t r[8],
-                 uint64_t ret);
+                 uint64_t ret, uint32_t sp = 0);
   // After ImmediateVs (immediate VS load) returned; `r` = r3..r10 at its entry (r3 device,
   // r5 vertex shader object, r10 variant). The copy is taken over by the draw that made it.
   void AfterImmediateVs(const uint8_t* base, const uint32_t r[8]);
@@ -240,6 +246,11 @@ class GuestStateTracker {
   uint32_t device_ = 0;
   ShaderRef vs_, ps_;
   uint32_t inline_vertices_ = 0;
+  // The last BeginIndexedVertices: its inline indices (physical), their count and format, and
+  // the base vertex.
+  uint32_t inline_indices_ = 0, inline_index_count_ = 0, inline_base_vertex_ = 0;
+  bool inline_index_32bit_ = false;
+  uint32_t inline_index_endian_ = 0;
   // Vertex fetch 31 holds BeginVertices' inline buffer, not the shadow's value.
   bool inline_fetch_ = false;
   // Immediate VS loads: the one made during the current flushing call (pending) and the one

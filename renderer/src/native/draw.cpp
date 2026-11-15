@@ -115,6 +115,10 @@ REXCVAR_DEFINE_INT32(rexnative_draw_log_frames, 1, "ReXNative",
 REXCVAR_DEFINE_INT32(rexnative_anisotropy, 1, "ReXNative",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
+REXCVAR_DEFINE_BOOL(rexnative_gamma_targets, true, "ReXNative",
+                    "Write k_8_8_8_8_GAMMA render targets in the console's piecewise-linear "
+                    "gamma, as its EDRAM holds them (resolves and the front buffer then match "
+                    "the Xenos plugin); false: linear values, darker mid-tones");
 REXCVAR_DEFINE_BOOL(rexnative_memexport, true, "ReXNative",
                     "Run the draws whose shaders write guest memory (memexport: Bink video, GPU "
                     "particles), with shared memory as a UAV (false: skip them)");
@@ -2879,7 +2883,9 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
   const uint32_t index_bytes = s.count * (s.index_32bit ? 4u : 2u);
   if (xenos::PrimitiveType(s.primitive) == xenos::PrimitiveType::kTriangleFan)
     return InSharedMemory(s.index_address, index_bytes);
-  return RequestRange(s.index_address, index_bytes, true, out);
+  // Inline indices (BeginIndexedVertices) are in the push buffer like inline vertices: copied
+  // for every draw rather than watched.
+  return RequestRange(s.index_address, index_bytes, !s.inline_indices, out);
 }
 
 // A memexport draw's destination ranges into `out` like its vertex ranges (what the shaders do
@@ -3371,6 +3377,16 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       const uint32_t index = w * 32 + uint32_t(std::countr_zero(bits));
       const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(index);
       std::fprintf(draw_log, " vf%u=%08X+%X", index, vf.address << 2, vf.size << 2);
+      // Small buffers (a UI quad, a rectangle) in full, as guest memory holds them (big-endian
+      // dwords, before the fetch's endian swap).
+      if (membase && vf.size && vf.size <= 16) {
+        const uint8_t* p = membase + (vf.address << 2);
+        std::fputs(" [", draw_log);
+        for (uint32_t i = 0; i < vf.size; ++i, p += 4)
+          std::fprintf(draw_log, i ? " %02X%02X%02X%02X" : "%02X%02X%02X%02X", p[0], p[1], p[2],
+                       p[3]);
+        std::fputc(']', draw_log);
+      }
     }
   auto float_hash = [&](const Shader* shader, uint32_t base) {
     uint64_t h = 0;
@@ -3744,7 +3760,15 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
           ? colorcontrol.alpha_func
           : xenos::CompareFunction::kAlways;
   flags |= uint32_t(alpha_func) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
-  // Gamma render targets are unorm16 on the host (the plugin's setting): no conversion flag.
+  // Gamma render targets are R8G8B8A8_UNORM here (render_targets.cpp): the pixel shader
+  // converts its color to the guest's PWL gamma before the write, the plugin's 8-bit RTV path
+  // (blending then happens in gamma space, the RTV path's approximation). Iron Brigade's
+  // Scaleform draws its intro video into one: without this, half as bright as on the console.
+  if (REXCVAR_GET(rexnative_gamma_targets))
+    for (uint32_t i = 0; i < 4; ++i)
+      if (targets.color[i] && regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
+                                  xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
+        flags |= DxbcShaderTranslator::kSysFlag_ConvertColor0ToGamma << i;
   sys.flags = flags;
   sys.tessellation_factor_range_min = regs.Get<float>(XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
   sys.tessellation_factor_range_max = regs.Get<float>(XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL) + 1.0f;
