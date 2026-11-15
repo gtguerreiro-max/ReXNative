@@ -75,8 +75,7 @@ struct FormatEntry {
 };
 // Same DXGI formats and load conversions as D3D12TextureCache::host_formats_ (non-decompressing
 // path; BCn with unaligned sizes needs D3D12 UnalignedBlockTexturesSupported, checked by the
-// cache). Formats not listed are not used by PGR4's menus and race (tap traces) and are
-// reported as unsupported.
+// cache). Formats not listed (not used by the games run so far) are reported as unsupported.
 constexpr FormatEntry kFormats[] = {
     {TextureFormat::k_8,
      {DXGI_FORMAT_R8_TYPELESS, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_SNORM, C::kCopy, false, kRRRR}},
@@ -136,6 +135,11 @@ constexpr FormatEntry kFormats[] = {
       DXGI_FORMAT_R32G32B32A32_FLOAT, C::kCopy, false, kRGBA}},
     {TextureFormat::k_DXN,
      {DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_UNKNOWN, C::kCopy, true, kRGGG}},
+    // DXT5A is a DXT5 alpha block alone (8 bytes per 4x4): BC4, as Xenia's host_formats_ (its
+    // DXT5AToR8 decompression is only for GPUs without unaligned block textures). Iron
+    // Brigade's intro uses one.
+    {TextureFormat::k_DXT5A,
+     {DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_UNKNOWN, C::kCopy, true, kRRRR}},
 };
 
 // Fetch constant formats are 6 bits.
