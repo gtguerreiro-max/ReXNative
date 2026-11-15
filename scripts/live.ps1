@@ -118,7 +118,7 @@ function Send-Schedule($p, [string]$schedule) {
         if ([RexLiveWin]::GetForegroundWindow() -ne $h) { "skipped '$key' at ${at}s: the game is not in front"; continue }
         if ($key -like 'hold:*') {
             $parts = $key.Split(':'); $names = $parts[1].Split('+'); $ms = [int]$parts[2]
-            $map = @{ SPACE = 0x20; ENTER = 0x0D; UP = 0x26; DOWN = 0x28; LEFT = 0x25; RIGHT = 0x27; TAB = 0x09; ESC = 0x1B }
+            $map = @{ SPACE = 0x20; ENTER = 0x0D; UP = 0x26; DOWN = 0x28; LEFT = 0x25; RIGHT = 0x27; TAB = 0x09; ESC = 0x1B; BACKSPACE = 0x08 }
             $vks = $names | ForEach-Object { if ($map.ContainsKey($_)) { [byte]$map[$_] } else { [byte][char]$_.ToUpper() } }
             foreach ($vk in $vks) { [RexLiveWin]::Key($vk, $true) }
             Start-Sleep -Milliseconds $ms

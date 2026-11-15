@@ -125,9 +125,21 @@ REXCVAR_DEFINE_BOOL(rexnative_memexport, true, "ReXNative",
                     "particles), with shared memory as a UAV (false: skip them)");
 REXCVAR_DEFINE_BOOL(rexnative_memexport_readback, true, "ReXNative",
                     "Write what memexport draws changed back into guest memory: before a draw "
-                    "reads a texture from it and at the Swap, the frame so far is submitted and "
-                    "waited for (false: only the GPU sees it; textures over it and the game's CPU "
-                    "code see the old memory)");
+                    "reads a texture from it (the frame so far is submitted and waited for) and "
+                    "after the Swap (--rexnative_memexport_readback_async); false: only the GPU "
+                    "sees it, textures over it and the game's CPU code see the old memory");
+REXCVAR_DEFINE_BOOL(rexnative_gpu_memcpy, true, "ReXNative",
+                    "Do the known GPU memory copies (a memexport shader that moves 64-byte blocks: "
+                    "Iron Brigade's engine moves resources with it every frame) in guest memory "
+                    "when the game issues them, instead of on the GPU with a readback");
+REXCVAR_DEFINE_INT32(rexnative_memexport_log, 24, "ReXNative",
+                     "How many distinct memexport destination ranges to log (debug)");
+REXCVAR_DEFINE_BOOL(rexnative_memexport_readback_async, false, "ReXNative",
+                    "Experimental: the Swap's memexport readback without waiting for the GPU, for "
+                    "ranges the game kept writing over the last frames (their results reach guest "
+                    "memory once the GPU has finished the frame). Off: the Swap waits (on the "
+                    "Steam Deck 7 to 17 ms a frame in Iron Brigade, whose engine copies memory "
+                    "with the GPU to new places every frame, so it would wait anyway)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 
 namespace rexnative {
@@ -172,7 +184,7 @@ void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::graph
       if (known) continue;
       if (g_memexport_ranges.size() >= 64) g_memexport_ranges.erase(g_memexport_ranges.begin());
       g_memexport_ranges.push_back(r);
-      if (g_memexport_logged++ < 24)
+      if (int32_t(g_memexport_logged++) < REXCVAR_GET(rexnative_memexport_log))
         REXLOG_INFO("ReXNative memexport: {} shader {:016X} writes {:08X}..{:08X} ({} x {}, "
                     "{} bytes){}", sh->type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
                     sh->ucode_data_hash(), r.base, r.base + r.bytes, r.count, fi->name, r.bytes,
@@ -854,6 +866,28 @@ struct DrawRenderer::Impl {
   std::vector<MemexportPending> memexport_pending;
   uint32_t memexport_used = 0, memexport_capacity = 0;  // bytes of each readback buffer
   ComPtr<ID3D12Resource> memexport_before, memexport_after;
+  // The asynchronous readback (--rexnative_memexport_readback_async): at the Swap the frame's
+  // ranges are copied into its `after` buffer at the end of the frame and handed over here with
+  // their buffers, and merged into guest memory once the frame's fence has passed (before a
+  // texture or a synchronous readback needs them, waiting then). The next frame records into
+  // the other pair of buffers (`spare`), so the two alternate.
+  struct MemexportInFlight {
+    bool active = false;
+    uint64_t fence = 0;
+    std::vector<MemexportPending> pending;
+    uint32_t used = 0, capacity = 0;
+    ComPtr<ID3D12Resource> before, after;
+  } memexport_inflight;
+  uint32_t memexport_spare_capacity = 0;
+  ComPtr<ID3D12Resource> memexport_spare_before, memexport_spare_after;
+  // Ranges the Swap's readbacks held lately, with the last frame of each (DeferMemexport).
+  struct MemexportRecent {
+    uint32_t start, size;
+    uint64_t frame;
+  };
+  std::vector<MemexportRecent> memexport_recent;
+  static constexpr uint64_t kMemexportSteadyFrames = 8;
+  bool memexport_async =REXCVAR_GET(rexnative_memexport_readback_async);
   enum MemexportFlush : uint32_t { kFlushTextures, kFlushFull, kFlushSwap, kFlushReasons };
   // Indexed memexport draws: shared memory is a UAV for them and cannot be their index buffer
   // too, so their indices are copied here first (like the Xenos backend's scratch buffer).
@@ -865,6 +899,7 @@ struct DrawRenderer::Impl {
   struct MemexportCounters {
     uint64_t frames = 0, draws = 0, flushes = 0, flush_by[kFlushReasons] = {};
     uint64_t bytes = 0, changed = 0, kept = 0, wait_ns = 0, wait_max_ns = 0;
+    uint64_t async_waits = 0;  // asynchronous readbacks that had to wait
   } mx;
   // Without the render thread: the copies of the draw being recorded. With it, Prepare
   // (guest thread) writes into the batch's vector instead: this one is the render thread's.
@@ -1064,6 +1099,7 @@ struct DrawRenderer::Impl {
   std::deque<PipelineJob> prewarm_jobs;  // taken only when pso_jobs is empty
   bool pso_stopping = false;
   static constexpr std::chrono::milliseconds kPipelineWaitBudget{500};
+  static constexpr std::chrono::milliseconds kPipelineMustWait{10000};
   bool pipeline_wait = false;
   bool generic_pipelines = false;        // --rexnative_generic_pipelines (with worker threads)
   std::vector<Pipeline*> frame_pending;  // pipelines of the frame's skipped draws, once each
@@ -1288,7 +1324,13 @@ struct DrawRenderer::Impl {
                                       DxbcShader*& ps, DxbcShader* vs_generic,
                                       DxbcShader* ps_generic, uint64_t pixel_mod,
                                       uint64_t generic_pixel_mod, const ShaderDrawRegs& sdr,
-                                      xenos::PrimitiveType prim);
+                                      xenos::PrimitiveType prim, bool must_draw);
+  // Waits for one pipeline (SelectPipeline's must_draw), at most kPipelineMustWait.
+  void WaitForPipeline(Pipeline* p);
+  // A known GPU memory copy, done in guest memory now (EmulateGpuMemcpy); the draw is dropped.
+  bool memcpy_emulation = REXCVAR_GET(rexnative_gpu_memcpy);
+  uint64_t memcpy_count = 0, memcpy_bytes = 0;
+  bool EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs);
   // What BindTextures reads besides the shader, and where it writes the texture signs.
   struct TextureBindContext {
     const DrawState& s;
@@ -1321,6 +1363,16 @@ struct DrawRenderer::Impl {
   bool CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes, bool wide,
                             D3D12_INDEX_BUFFER_VIEW* out);
   void FlushMemexport(MemexportFlush why);
+  // The Swap's readback without a wait (memexport_inflight); FlushMemexport(kFlushSwap) when
+  // asynchronous readback is off.
+  void DeferMemexport();
+  // Merges the readback in flight into guest memory: once its fence has passed, or now
+  // (waiting for it) with `wait`.
+  void FinishMemexportInFlight(bool wait);
+  // Writes what memexport draws changed into guest memory, from their snapshots and results:
+  // returns the bytes written (and adds the bytes the guest wrote meanwhile to *kept).
+  uint64_t MergeMemexport(const uint8_t* before, const uint8_t* after,
+                          const std::vector<MemexportPending>& pending, uint64_t* kept);
   void MemexportFrame(uint64_t completed_fence);
   void Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep, std::vector<VertexCopy>* out,
                std::vector<AuditRange>* audit);
@@ -2655,6 +2707,27 @@ void DrawRenderer::Impl::WaitForPipelines() {
   frame_pending.clear();
 }
 
+void DrawRenderer::Impl::WaitForPipeline(Pipeline* p) {
+  const auto t0 = std::chrono::steady_clock::now();
+  {
+    std::unique_lock<std::mutex> lock(pso_mutex);
+    pso_waiting = true;
+    pso_wait_cv.notify_all();
+    pso_ready_cv.wait_for(lock, kPipelineMustWait, [p] {
+      return p->state.load(std::memory_order_acquire) != kCompiling;
+    });
+    pso_waiting = false;
+  }
+  const uint64_t us = uint64_t(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+          .count());
+  stats.pso_wait_us += us;
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative pipelines: a memexport draw waited {} us for its pipeline "
+                      "instead of being skipped",
+                      us);
+}
+
 DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
     uint64_t hash, const PipelineKey& key, const DxbcShader::Translation& vs,
     const DxbcShader::Translation* ps, bool prewarm, uint32_t store_entry) {
@@ -3012,12 +3085,18 @@ bool DrawRenderer::Impl::TexturesReadMemexport(const RegisterFile& regs,
     uint32_t base_bytes, mips_bytes;
     GetGuestExtents(key, &base_bytes, &mips_bytes);
     const uint32_t base = key.base_page << 12, mips = key.mip_page << 12;
-    for (const MemexportPending& p : memexport_pending) {
-      const uint32_t end = p.start + p.size;
-      if ((base_bytes && base < end && p.start < base + base_bytes) ||
-          (mips_bytes && mips < end && p.start < mips + mips_bytes))
-        return true;
-    }
+    auto overlaps = [&](const std::vector<MemexportPending>& list) {
+      for (const MemexportPending& p : list) {
+        const uint32_t end = p.start + p.size;
+        if ((base_bytes && base < end && p.start < base + base_bytes) ||
+            (mips_bytes && mips < end && p.start < mips + mips_bytes))
+          return true;
+      }
+      return false;
+    };
+    if (overlaps(memexport_pending) ||
+        (memexport_inflight.active && overlaps(memexport_inflight.pending)))
+      return true;
   }
   return false;
 }
@@ -3101,8 +3180,172 @@ bool DrawRenderer::Impl::CopyMemexportIndices(CommandStream* list, uint32_t star
 // The readback of the batch: the ranges after its draws into memexport_after, the frame so far
 // submitted and waited for (NativeRenderer::SubmitAndWait), and the bytes that differ from the
 // snapshot written into guest memory. Textures over them load again at their next use.
+uint64_t DrawRenderer::Impl::MergeMemexport(const uint8_t* before, const uint8_t* after,
+                                            const std::vector<MemexportPending>& pending,
+                                            uint64_t* kept_out) {
+  // A byte the guest wrote since the snapshot (it no longer holds the snapshot's value) is
+  // newer than the GPU's write, which on the console landed when the draw ran: it stays.
+  // Iron Brigade's level loading frees memory its memexport draws wrote and loads meshes into
+  // it before the next Swap; copied back over them, a house's vertex buffer became the old
+  // texture blocks (green shards).
+  uint64_t changed = 0, kept = 0;
+  auto merge = [&](const uint8_t* b, const uint8_t* a, uint8_t* g, uint32_t j) {
+    if (g[j] != b[j]) {
+      ++kept;
+      return;
+    }
+    g[j] = a[j];
+    ++changed;
+  };
+  for (const MemexportPending& p : pending) {
+    // Per byte (exports of 8 and 16 bit formats), 8 bytes at a time where nothing changed.
+    const uint8_t* b = before + p.offset;
+    const uint8_t* a = after + p.offset;
+    uint8_t* g = guest_physical + p.start;
+    uint32_t lo = p.size, hi = 0, i = 0;
+    for (; i + 8 <= p.size; i += 8) {
+      uint64_t x, y;
+      std::memcpy(&x, b + i, 8);
+      std::memcpy(&y, a + i, 8);
+      if (x == y) continue;
+      for (uint32_t j = i; j < i + 8; ++j)
+        if (a[j] != b[j]) merge(b, a, g, j);
+      lo = std::min(lo, i);
+      hi = i + 8;
+    }
+    for (; i < p.size; ++i)
+      if (a[i] != b[i]) {
+        merge(b, a, g, i);
+        lo = std::min(lo, i);
+        hi = i + 1;
+      }
+    if (lo < hi) r.textures().InvalidateWritten(p.start + lo, hi - lo);
+  }
+  if (kept) {
+    mx.kept += kept;
+    REXNATIVE_LOG_FIRST(4, INFO,
+                        "ReXNative memexport: {} bytes the guest wrote after a memexport draw "
+                        "kept (the draw's results not copied over them)",
+                        kept);
+  }
+  mx.changed += changed;
+  *kept_out = kept;
+  return changed;
+}
+
+void DrawRenderer::Impl::DeferMemexport() {
+  if (memexport_pending.empty()) return;
+  // Only ranges the game's memexport draws have kept writing over the last frames go
+  // asynchronously: the CPU may read what a new one produced as soon as the next frame (Iron
+  // Brigade's level loading decompresses textures on the GPU into scratch memory and copies them
+  // on with the CPU: a frame late, they came out as colored blocks).
+  const uint64_t frame = r.frame_index();
+  bool steady = memexport_async;
+  for (const MemexportPending& p : memexport_pending) {
+    bool seen = false;
+    for (const MemexportRecent& m : memexport_recent)
+      if (m.start == p.start && m.size == p.size && frame - m.frame <= kMemexportSteadyFrames &&
+          m.frame != frame) {
+        seen = true;
+        break;
+      }
+    steady &= seen;
+  }
+  for (const MemexportPending& p : memexport_pending) {
+    auto it = std::find_if(memexport_recent.begin(), memexport_recent.end(),
+                           [&](const MemexportRecent& m) {
+                             return m.start == p.start && m.size == p.size;
+                           });
+    if (it != memexport_recent.end()) {
+      it->frame = frame;
+    } else {
+      memexport_recent.push_back({p.start, p.size, frame});
+    }
+  }
+  std::erase_if(memexport_recent, [&](const MemexportRecent& m) {
+    return frame - m.frame > kMemexportSteadyFrames;
+  });
+  if (!steady) {
+    FlushMemexport(kFlushSwap);
+    return;
+  }
+  // The previous frame's: its fence has normally passed by now.
+  FinishMemexportInFlight(true);
+  CommandStream* list = r.command_list();
+  // The Swap's BeginFrame may have opened a new list: shared memory's state is then the common
+  // one, not what this module last set (a barrier from the wrong state copied half-written data,
+  // texture blocks of colored dots).
+  SyncListFrame();
+  TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  uint64_t bytes = 0;
+  for (const MemexportPending& p : memexport_pending) {
+    list->CopyBufferRegion(memexport_after.Get(), p.offset, shared.Get(), p.start, p.size);
+    bytes += p.size;
+  }
+  MemexportInFlight& f = memexport_inflight;
+  f.active = true;
+  f.fence = r.frame_fence();
+  f.pending.swap(memexport_pending);
+  f.used = memexport_used;
+  f.capacity = memexport_capacity;
+  f.before = std::move(memexport_before);
+  f.after = std::move(memexport_after);
+  memexport_pending.clear();
+  memexport_used = 0;
+  // The next frame's snapshots go into the other pair (none yet: SnapshotMemexport makes one).
+  memexport_before = std::move(memexport_spare_before);
+  memexport_after = std::move(memexport_spare_after);
+  memexport_capacity = memexport_spare_capacity;
+  memexport_spare_capacity = 0;
+  if (!memexport_flush_logged) {
+    memexport_flush_logged = true;
+    REXLOG_INFO("ReXNative memexport: first readback (at the Swap, asynchronous): {} ranges, {} "
+                "bytes copied back once the GPU has finished the frame",
+                f.pending.size(), bytes);
+  }
+  ++mx.flushes;
+  ++mx.flush_by[kFlushSwap];
+  mx.bytes += bytes;
+}
+
+void DrawRenderer::Impl::FinishMemexportInFlight(bool wait) {
+  MemexportInFlight& f = memexport_inflight;
+  if (!f.active) return;
+  D3D12Device& d = r.device();
+  if (d.completed_fence() < f.fence) {
+    if (!wait) return;
+    const uint64_t t0 = NowNs();
+    d.WaitFence(f.fence);
+    const uint64_t ns = NowNs() - t0;
+    mx.wait_ns += ns;
+    mx.wait_max_ns = std::max(mx.wait_max_ns, ns);
+    ++mx.async_waits;
+  }
+  uint8_t *before = nullptr, *after = nullptr;
+  const D3D12_RANGE read = {0, f.used};
+  uint64_t kept = 0;
+  if (SUCCEEDED(f.before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
+      SUCCEEDED(f.after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
+    MergeMemexport(before, after, f.pending, &kept);
+  } else {
+    REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
+  }
+  const D3D12_RANGE none = {0, 0};
+  if (before) f.before->Unmap(0, &none);
+  if (after) f.after->Unmap(0, &none);
+  // Its buffers are the spare pair again (the larger pair when both exist).
+  if (f.capacity >= memexport_spare_capacity) {
+    memexport_spare_before = std::move(f.before);
+    memexport_spare_after = std::move(f.after);
+    memexport_spare_capacity = f.capacity;
+  }
+  f = MemexportInFlight{};
+}
+
 void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   if (memexport_pending.empty()) return;
+  // The older results first: the merge compares with what guest memory held before them.
+  FinishMemexportInFlight(true);
   CommandStream* list = r.command_list();
   SyncListFrame();
   TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3113,57 +3356,13 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   }
   uint64_t wait_ns = 0;
   const bool submitted = r.SubmitAndWait(&wait_ns);
-  uint64_t changed = 0;
+  uint64_t changed = 0, kept = 0;
   uint8_t *before = nullptr, *after = nullptr;
   const D3D12_RANGE read = {0, memexport_used};
   if (submitted &&
       SUCCEEDED(memexport_before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
       SUCCEEDED(memexport_after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
-    // A byte the guest wrote since the snapshot (it no longer holds the snapshot's value) is
-    // newer than the GPU's write, which on the console landed when the draw ran: it stays.
-    // Iron Brigade's level loading frees memory its memexport draws wrote and loads meshes into
-    // it before the next Swap; copied back over them, a house's vertex buffer became the old
-    // texture blocks (green shards).
-    uint64_t kept = 0;
-    auto merge = [&](const uint8_t* b, const uint8_t* a, uint8_t* g, uint32_t j) {
-      if (g[j] != b[j]) {
-        ++kept;
-        return;
-      }
-      g[j] = a[j];
-      ++changed;
-    };
-    for (const MemexportPending& p : memexport_pending) {
-      // Per byte (exports of 8 and 16 bit formats), 8 bytes at a time where nothing changed.
-      const uint8_t* b = before + p.offset;
-      const uint8_t* a = after + p.offset;
-      uint8_t* g = guest_physical + p.start;
-      uint32_t lo = p.size, hi = 0, i = 0;
-      for (; i + 8 <= p.size; i += 8) {
-        uint64_t x, y;
-        std::memcpy(&x, b + i, 8);
-        std::memcpy(&y, a + i, 8);
-        if (x == y) continue;
-        for (uint32_t j = i; j < i + 8; ++j)
-          if (a[j] != b[j]) merge(b, a, g, j);
-        lo = std::min(lo, i);
-        hi = i + 8;
-      }
-      for (; i < p.size; ++i)
-        if (a[i] != b[i]) {
-          merge(b, a, g, i);
-          lo = std::min(lo, i);
-          hi = i + 1;
-        }
-      if (lo < hi) r.textures().InvalidateWritten(p.start + lo, hi - lo);
-    }
-    if (kept) {
-      mx.kept += kept;
-      REXNATIVE_LOG_FIRST(4, INFO,
-                          "ReXNative memexport: {} bytes the guest wrote after a memexport draw "
-                          "kept (the draw's results not copied over them)",
-                          kept);
-    }
+    changed = MergeMemexport(before, after, memexport_pending, &kept);
   } else if (submitted) {
     REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
   }
@@ -3180,7 +3379,6 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   ++mx.flushes;
   ++mx.flush_by[why];
   mx.bytes += bytes;
-  mx.changed += changed;
   mx.wait_ns += wait_ns;
   mx.wait_max_ns = std::max(mx.wait_max_ns, wait_ns);
   memexport_pending.clear();
@@ -3192,19 +3390,92 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
 void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
   while (!memexport_retired.empty() && memexport_retired.front().first <= completed_fence)
     memexport_retired.erase(memexport_retired.begin());
+  FinishMemexportInFlight(false);  // the asynchronous readback, once the GPU is done with it
   if (++mx.frames < 150) return;
   if (mx.draws) {
     REXLOG_INFO("ReXNative memexport: {} frames: {} draws, {} readbacks ({} before a texture "
                 "read, {} buffers full, {} at the Swap), {:.2f} MB copied back, {:.1f} KB "
                 "changed, {:.1f} KB kept (the guest wrote them after the draw), waits {:.0f} us "
-                "on average, {:.0f} us at most",
+                "on average, {:.0f} us at most ({} asynchronous readbacks waited)",
                 mx.frames, mx.draws, mx.flushes, mx.flush_by[kFlushTextures],
                 mx.flush_by[kFlushFull], mx.flush_by[kFlushSwap], double(mx.bytes) / (1 << 20),
                 double(mx.changed) / 1024, double(mx.kept) / 1024,
                 mx.flushes ? double(mx.wait_ns) / 1000.0 / double(mx.flushes) : 0.0,
-                double(mx.wait_max_ns) / 1000.0);
+                double(mx.wait_max_ns) / 1000.0, mx.async_waits);
   }
   mx = {};
+}
+
+// The GPU memory copy Iron Brigade's engine issues about 140 times a frame to move resources
+// (level loading and streaming): a point list whose vertex shader fetches 64 bytes a vertex (8 x
+// k_16_16_16_16 integer at a stride of 16 dwords) and exports them unchanged to a memexport stream
+// of k_16_16_16_16 elements at element 8 * (index - c9.x) (c255 = 0, 1, 4, 8: the second group of
+// 4 at + 4). On the GPU its results reach guest memory only through a readback that waits for
+// the GPU (7 to 17 ms a frame on the Steam Deck), and the CPU uses them right after (the copies
+// of meshes the GPU then drew from stale memory: huge stretched triangles, green shards). Here
+// the bytes are moved in guest memory when the game issues the copy, as the console's shared
+// memory would hold them once the GPU ran it, and the draw is dropped: the destination's pages
+// are the guest's, uploaded again when a draw reads them. Anything that does not match the copy
+// exactly goes to the GPU as before.
+constexpr uint64_t kGpuMemcpy64Shader = 0x71B69663FD98B9E5ull;
+
+bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs) {
+  if (vs.ucode_data_hash() != kGpuMemcpy64Shader) return false;
+  if (s.indexed || xenos::PrimitiveType(s.primitive) != xenos::PrimitiveType::kPointList ||
+      !s.count)
+    return false;
+  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
+  auto vc = [&](uint32_t c, uint32_t k) {
+    return regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4 + k);
+  };
+  if (vc(255, 0) != 0.0f || vc(255, 1) != 1.0f || vc(255, 2) != 4.0f || vc(255, 3) != 8.0f)
+    return false;
+  // The one vertex fetch.
+  const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
+  int slot = -1;
+  for (uint32_t w = 0; w < 3; ++w)
+    for (uint32_t bits = vmap.vertex_fetch_bitmap[w]; bits; bits &= bits - 1) {
+      if (slot >= 0) return false;
+      slot = int(w * 32 + uint32_t(std::countr_zero(bits)));
+    }
+  if (slot < 0) return false;
+  const xenos::xe_gpu_vertex_fetch_t f = regs.GetVertexFetch(uint32_t(slot));
+  if (f.type != xenos::FetchConstantType::kVertex) return false;
+  // The one export stream.
+  const auto& streams = vs.memexport_stream_constants();
+  if (streams.size() != 1) return false;
+  const xenos::xe_gpu_memexport_stream_t st =
+      regs.GetMemExportStream(regs.Get<reg::SQ_VS_CONST>().base + *streams.begin());
+  if (st.const_0x1 != 0x1 || st.const_0x4b0 != 0x4B0 || st.const_0x96 != 0x96 ||
+      rex::graphics::FormatInfo::Get(xenos::TextureFormat(st.format))->bits_per_pixel != 64)
+    return false;
+  const uint32_t first = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
+  const double element = double(first) - double(vc(9, 0));
+  if (element < 0.0 || element != std::floor(element)) return false;
+  const uint64_t src_base = uint64_t(f.address) << 2, src_size = uint64_t(f.size) << 2;
+  const uint64_t dst_base = uint64_t(st.base_address) << 2;
+  const uint64_t dst_size = uint64_t(st.index_count) * 8;
+  const uint64_t src_off = uint64_t(first) * 64, dst_off = uint64_t(element) * 64;
+  uint64_t bytes = uint64_t(s.count) * 64;
+  bytes = std::min(bytes, src_size > src_off ? src_size - src_off : 0);
+  bytes = std::min(bytes, dst_size > dst_off ? dst_size - dst_off : 0);
+  if (!bytes) return true;  // nothing the GPU would write either
+  const uint64_t src = src_base + src_off, dst = dst_base + dst_off;
+  if (src + bytes > kSharedMemorySize || dst + bytes > kSharedMemorySize) return false;
+  // Through guest memory: a watched destination page faults as any guest write does, which
+  // gives it back to the guest (the texture cache's watches too).
+  std::memmove(guest_physical + dst, guest_physical + src, size_t(bytes));
+  // And without a watch: the next request copies the pages again.
+  const uint32_t p0 = uint32_t(dst >> kPageShift), p1 = uint32_t((dst + bytes - 1) >> kPageShift);
+  SetPageBits(valid.get(), p0, p1 + 1, false);
+  SetPageBits(gpu_written.get(), p0, p1 + 1, false);
+  ++memcpy_count;
+  memcpy_bytes += bytes;
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative memexport: GPU memory copy of {} bytes {:08X} -> {:08X} done in "
+                      "guest memory",
+                      bytes, uint32_t(src), uint32_t(dst));
+  return true;
 }
 
 void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep,
@@ -3220,6 +3491,10 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
     AuditShader(s.ps, prep->ps, "pixel");
   }
   if (!prep->vs) return;
+  if (memcpy_emulation && EmulateGpuMemcpy(s, *prep->vs)) {
+    prep->emulated = true;
+    return;
+  }
   if (coherency || audit_left) HashRegisterBlocks(s.regs, prep->regs_hash);
   upload_fence = tag;
   const bool indexed_ok = !s.indexed || s.index_address;
@@ -3541,7 +3816,7 @@ ID3D12PipelineState* DrawRenderer::Impl::SelectPipeline(
     const PipelineKey& key, const DxbcShader::Translation& vst, const DxbcShader::Translation* pst,
     DxbcShader*& vs, DxbcShader*& ps, DxbcShader* vs_generic, DxbcShader* ps_generic,
     uint64_t pixel_mod, uint64_t generic_pixel_mod, const ShaderDrawRegs& sdr,
-    xenos::PrimitiveType prim) {
+    xenos::PrimitiveType prim, bool must_draw) {
   const uint64_t key_hash = XXH3_64bits(&key, sizeof(key));
   PsoMemo& pso_slot = pso_memo[key_hash & 1023];
   if (pso_slot.pso && pso_slot.hash == key_hash) {
@@ -3598,7 +3873,16 @@ ID3D12PipelineState* DrawRenderer::Impl::SelectPipeline(
     store.TouchEntry(use->store_entry);
     use->store_entry = PipelineStore::kNoEntry;
   }
-  const uint8_t state = use->state.load(std::memory_order_acquire);
+  uint8_t state = use->state.load(std::memory_order_acquire);
+  if (state == kCompiling && must_draw) {
+    // A draw that writes guest memory (memexport) is not skipped: what it writes would be
+    // missing for good, not for a frame. Iron Brigade's level loading generates vertex and
+    // texture data with such draws; skipped while their pipelines compiled (a first run, a
+    // slower Steam Deck), meshes were left as zeros (huge stretched triangles).
+    if (use->prewarm) PromotePipeline(use);
+    WaitForPipeline(use);
+    state = use->state.load(std::memory_order_acquire);
+  }
   if (state == kCompiling) {
     if (use->prewarm) PromotePipeline(use);
     if (use->pending_frame != r.frame_index()) {
@@ -3987,6 +4271,10 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       }
     }
     if (prep->audit_count) AuditDraw(list, *prep);
+    if (prep->emulated) {
+      ++stats.skipped;
+      return;
+    }
     if (!prep->upload_ok) {
       ++stats.failed;
       return;
@@ -4252,8 +4540,9 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
   const DxbcShader* const vs_selected = vs;
   const DxbcShader* const ps_selected = ps;
-  ID3D12PipelineState* const pso = SelectPipeline(key, *vst, pst, vs, ps, vs_generic, ps_generic,
-                                                  mods.pixel, generic_pixel_mod, sdr, prim);
+  ID3D12PipelineState* const pso =
+      SelectPipeline(key, *vst, pst, vs, ps, vs_generic, ps_generic, mods.pixel,
+                     generic_pixel_mod, sdr, prim, memexport && memexport_on);
   if (draw_log)
     std::fprintf(draw_log, "  pso=%s\n",
                  !pso                ? "pending"
@@ -4267,8 +4556,11 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                                  (ps ? ps->GetUsedTextureMaskAfterTranslation() : 0);
   // The texture cache loads textures from guest memory: what the batch's memexport draws wrote
   // goes there before a texture over it is bound.
-  if (!memexport_pending.empty() && used_textures && TexturesReadMemexport(regs, used_textures))
+  if ((!memexport_pending.empty() || memexport_inflight.active) && used_textures &&
+      TexturesReadMemexport(regs, used_textures)) {
+    FinishMemexportInFlight(true);
     FlushMemexport(kFlushTextures);
+  }
   uint32_t desc_vs[64], desc_ps[64];
   uint8_t signs[32] = {};
   const TextureBindContext bind = {s,
@@ -4738,7 +5030,7 @@ void DrawRenderer::BeforeSubmit() {
   m.coherency_inflight.push_back(std::move(job));
 }
 
-void DrawRenderer::FlushMemexport() { impl_->FlushMemexport(Impl::kFlushSwap); }
+void DrawRenderer::FlushMemexport() { impl_->DeferMemexport(); }
 
 void DrawRenderer::InvalidateListState(ListBreak why) {
   impl_->ResetListState();

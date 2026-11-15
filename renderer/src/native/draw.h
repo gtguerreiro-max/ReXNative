@@ -87,6 +87,7 @@ struct DrawPrep {
   const VertexCopy* copies = nullptr;  // set by the render side before OnDraw
   uint32_t copy_count = 0;
   bool copy_segment = false;  // Prepare: the draw's copies start a copy segment
+  bool emulated = false;      // Prepare did what the draw does (a GPU memory copy): dropped
   // Triangle fans: the converted host indices in upload memory.
   D3D12_GPU_VIRTUAL_ADDRESS fan_indices = 0;
   uint32_t fan_count = 0;
