@@ -1188,6 +1188,9 @@ struct DrawRenderer::Impl {
     kDebugNoDepthBias = 64,
     kDebugOnlyListed = 128,  // issue only the draws the hashes select
     kDebugSnapshots = 256,   // snap_pending (below)
+    kDebugNoStencil = 512,     // stencil off, depth as the guest has it
+    kDebugDepthAlways = 1024,  // depth test always passes (writes and stencil kept)
+    kDebugReadDepthAlways = 2048,  // the same for the draws that test depth without writing it
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -3326,6 +3329,16 @@ PipelineKey DrawRenderer::Impl::BuildPipelineKey(
   }
   if (debug_mask & kDebugNoDepth) {
     key.depth_enable = key.depth_write = key.stencil_enable = 0;
+    key.dsv = DXGI_FORMAT_UNKNOWN;
+    if (!key.num_rts) key.samples = 1;
+  }
+  if (debug_mask & kDebugNoStencil) key.stencil_enable = 0;
+  if ((debug_mask & kDebugDepthAlways) && key.depth_enable)
+    key.depth_func = uint8_t(D3D12_COMPARISON_FUNC_ALWAYS);
+  if ((debug_mask & kDebugReadDepthAlways) && key.depth_enable && !key.depth_write)
+    key.depth_func = uint8_t(D3D12_COMPARISON_FUNC_ALWAYS);
+  if ((debug_mask & (kDebugNoStencil | kDebugDepthAlways)) && !key.depth_enable &&
+      !key.stencil_enable) {
     key.dsv = DXGI_FORMAT_UNKNOWN;
     if (!key.num_rts) key.samples = 1;
   }

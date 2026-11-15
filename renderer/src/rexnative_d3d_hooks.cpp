@@ -1332,16 +1332,23 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     g_main_device.compare_exchange_strong(none, ctx.r3.u32, std::memory_order_relaxed);
   }
   nat::NativeRenderer* r = nat::NativeRenderer::Live();
+  // The state tracker is one object without locks, fed from the thread that draws on the
+  // followed device (and read by the render thread's register log): a call on another device,
+  // from the loading thread, must not reach it, with the tap on as well (the tap check run
+  // corrupted the heap that way, 0xC0000374, right after the tracker had switched devices).
+  bool other_device = false;
   if constexpr (rexnative::game::kFollowSwapDeviceOnly &&
                 (nat::IsStateFlushingFn(kAddr) || kClass != kNatNone)) {
     const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
-    if (r && main_device && ctx.r3.u32 != main_device) [[unlikely]] {
-      REXNATIVE_LOG_FIRST(4, INFO, "{} on device {:08X}, not the presenting {:08X}: "
-                     "guest only", kFns[kId].name, ctx.r3.u32, main_device);
+    if (main_device && ctx.r3.u32 != main_device) [[unlikely]] {
+      if (r)
+        REXNATIVE_LOG_FIRST(4, INFO, "{} on device {:08X}, not the presenting {:08X}: "
+                       "guest only", kFns[kId].name, ctx.r3.u32, main_device);
       r = nullptr;
+      other_device = true;
     }
   }
-  const bool track = TrackState(r);
+  const bool track = !other_device && TrackState(r);
   auto run = [&](PPCContext& c, uint8_t* b) {
     if constexpr (nat::IsStateFlushingFn(kAddr)) {
       if (track && c.r3.u32) {
@@ -1496,6 +1503,12 @@ REX_EXTERN(REXNATIVE_IMP(REXNATIVE_IMMEDIATE_VS));
 REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_IMMEDIATE_VS)) {
   const std::array<uint32_t, 8> r = EntryRegs(ctx);
   REXNATIVE_IMP(REXNATIVE_IMMEDIATE_VS)(ctx, base);
+  // Only on the followed device (OnHook): a draw on another device, from another thread, would
+  // otherwise hand its patched VS to the next draw on the followed one, and race the tracker.
+  if constexpr (rexnative::game::kFollowSwapDeviceOnly) {
+    const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
+    if (main_device && r[0] != main_device) return;
+  }
   if (TrackState(rexnative::NativeRenderer::Live())) {
     rexnative::profile::Scope scope(rexnative::profile::kImmediateVs);
     rexnative::GuestState().AfterImmediateVs(base, r.data());

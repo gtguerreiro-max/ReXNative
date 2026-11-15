@@ -146,6 +146,27 @@ Other commands: `rexnative info <xex>` (title, XDK libraries), `rexnative valida
 changes into `renderer/`), and `python -m rexnative.checkneutral` (compile `renderer/` against a
 layer with a game build's flags). [docs/GAME_LAYER.md](docs/GAME_LAYER.md) describes the layer.
 
+### Debugging a game
+
+Starting a game for every experiment costs minutes (logos, intro, menus). Instead:
+
+- `scripts\live.ps1 start -Dir <game dir> -Exe <exe> -Route "<keys>"` starts it once in a
+  1280x720 window and drives it to the problem; then each experiment takes seconds on the
+  running game: `shot` (window capture), `debug "<mask>"` (the renderer's switches: depth,
+  stencil, cull, blend, alpha test off, skip a range of draws), `snap` (render targets after
+  given shaders; `python scripts\snaps.py` turns them into images), `drawlog` (one frame's
+  draws), `trace` (the guest push buffer of one frame), `log`, `stop`. Only a rebuild needs a
+  new start.
+- With `start -RenderDoc` (RenderDoc's folder in `REXNATIVE_RENDERDOC`), `capture` takes a
+  RenderDoc capture of the next frame, and `scripts\rdoc.ps1` queries it with the game closed:
+  `actions` (every draw, its index count and targets), `history -X -Y` (pixel history: which
+  draws touched a pixel and what failed), `inputs -Event` (a draw's textures as PNG), `save`.
+
+Iron Brigade's static scenery (2026-11-15): the pixel history showed no G-buffer draw on a
+building whose depth was there; its mesh was drawn only in the shadow and depth passes, and the
+push-buffer trace showed two large INDIRECT_BUFFERs into ordinary memory: recorded command
+buffers (RunCommandBuffer), whose draws no hook sees (roadmap 9).
+
 ## Layout
 
 ```
@@ -156,6 +177,8 @@ renderer/src/glue_defaults.cpp game-side functions, for a game with nothing spec
 renderer/rexnative.cmake       rexnative_add()
 sdk/                           the ReXGlue SDK the renderer needs: lock and patches
 scripts/build-sdk.ps1          fetch, patch, build and install that SDK
+scripts/live.ps1, snaps.py     a running game for experiments, snapshots as images
+scripts/rdoc.ps1, rdoc.py      RenderDoc capture queries (draws, pixel history, textures)
 rexnative/                     the adapter (python -m rexnative)
 docs/GAME_LAYER.md             what game_layer.h holds
 ```
@@ -187,6 +210,11 @@ Improving it a little at a time:
    target the renderer wrote linear, half as bright (now in the console's gamma,
    `--rexnative_gamma_targets`). Still to do: a game whose picture needs memexport, and avoiding
    the wait when nothing on the CPU needs it.
+9. Recorded command buffers (RunCommandBuffer): Iron Brigade records its static scenery's
+   G-buffer draws once and replays them every frame through INDIRECT_BUFFER packets, which no
+   hook sees, so that scenery is missing in game (it shows the previous passes' data, yellow).
+   To do: hook RunCommandBuffer and replay the buffer's PM4 (the tap already decodes it) as
+   native draws.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

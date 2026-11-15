@@ -140,6 +140,28 @@ o `renderer/` as alterações do renderer de um port) e `python -m rexnative.che
 (compilar o `renderer/` com uma camada e as flags do build de um jogo).
 [docs/GAME_LAYER.md](docs/GAME_LAYER.md) descreve a camada.
 
+### Depurar um jogo
+
+Arrancar um jogo para cada experiência custa minutos (logos, intro, menus). Em vez disso:
+
+- `scripts\live.ps1 start -Dir <pasta do jogo> -Exe <exe> -Route "<teclas>"` arranca-o uma vez
+  numa janela de 1280x720 e leva-o até ao problema; depois cada experiência leva segundos com o
+  jogo aberto: `shot` (captura da janela), `debug "<máscara>"` (os interruptores do renderer:
+  depth, stencil, cull, blend, alpha test desligados, saltar um intervalo de draws), `snap`
+  (render targets depois de certos shaders; `python scripts\snaps.py` passa-os a imagens),
+  `drawlog` (os draws de um frame), `trace` (o push buffer do jogo num frame), `log`, `stop`.
+  Só uma recompilação obriga a arrancar de novo.
+- Com `start -RenderDoc` (a pasta do RenderDoc em `REXNATIVE_RENDERDOC`), `capture` tira uma
+  captura RenderDoc do frame seguinte, e o `scripts\rdoc.ps1` interroga-a com o jogo fechado:
+  `actions` (cada draw, o número de índices e os targets), `history -X -Y` (pixel history: que
+  draws tocaram num píxel e o que falhou), `inputs -Event` (as texturas de um draw em PNG),
+  `save`.
+
+O cenário estático de Iron Brigade (2026-11-15): a pixel history não mostrou nenhum draw do
+G-buffer num edifício cuja profundidade lá estava; a malha só era desenhada nos passos de sombra
+e de profundidade, e o trace do push buffer mostrou dois INDIRECT_BUFFER grandes para memória
+normal: command buffers gravados (RunCommandBuffer), cujos draws nenhum hook vê (ponto 9).
+
 ## Próximos passos
 
 Melhorar aos poucos:
@@ -167,6 +189,11 @@ Melhorar aos poucos:
    lado do DrawVerticesUP), num render target `k_8_8_8_8_GAMMA` que o renderer escrevia linear,
    com metade do brilho (agora na gama da consola, `--rexnative_gamma_targets`). Falta: um jogo
    cuja imagem precise de memexport, e evitar a espera quando nada no CPU precisa do resultado.
+9. Command buffers gravados (RunCommandBuffer): Iron Brigade grava uma vez os draws de G-buffer
+   do cenário estático e reprodu-los em cada frame com pacotes INDIRECT_BUFFER, que nenhum hook
+   vê, por isso esse cenário falta no jogo (fica com os dados dos passos anteriores, amarelo).
+   Falta: intercetar o RunCommandBuffer e reproduzir o PM4 do buffer (o tap já o descodifica)
+   como draws nativos.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

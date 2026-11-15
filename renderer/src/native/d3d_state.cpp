@@ -433,9 +433,11 @@ void GuestStateTracker::AfterCall(const uint8_t* base, uint32_t fn_addr, const C
       if (!indices || !vertices) break;
       const uint32_t bytes = r[3] * r[6];
       const uint32_t f = 0x4800 + 31 * 6;
-      Put(f + 0, 1);
+      // Vertex fetches 93 and 94 zeroed, as this call writes them (Iron Brigade's stream); the
+      // vertices are fetch 95.
+      Put(f + 0, 0);
       Put(f + 1, 0);
-      Put(f + 2, 1);
+      Put(f + 2, 0);
       Put(f + 3, 0);
       Put(f + 4, GpuAddress(vertices) | 3);
       Put(f + 5, 0x10000002u | (((bytes >> 2) & 0xFFFFFFu) << 2));
