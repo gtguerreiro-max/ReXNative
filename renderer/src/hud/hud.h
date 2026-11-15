@@ -7,7 +7,8 @@
 // is the game's name from game_layer.h.
 //
 // The game's app calls SetConfigPath (OnConfigurePaths), Initialize (OnCreateDialogs, UI thread)
-// and Shutdown, and, if it hooks XInputGetState, FilterPad for the Back+Start chord.
+// and Shutdown. The pad reaches it through FilterPad, from ReXNative's XInputGetState hook (the
+// layer's REXNATIVE_XINPUT_GET_STATE, rexnative_d3d_hooks.cpp) or the port's own.
 #pragma once
 
 #include <cstdint>

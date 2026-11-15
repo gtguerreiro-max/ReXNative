@@ -7,6 +7,8 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative validate NAME [--refs a,b] [--out DIR]
   python -m rexnative scene RESOLVES.jsonl
   python -m rexnative neutral [--port NAME] [--out DIR]   game-neutral src/native (renderer/)
+  python -m rexnative prepare SOURCE... --work DIR        a game as it comes -> codegen, layer
+  python -m rexnative project WORK/GAME [--build]         a prepared game -> a project that runs
 
 Reports and messages are in English; --lang pt (before or after the command) or
 REXNATIVE_LANG=pt writes them in Portuguese.
@@ -150,6 +152,22 @@ def cmd_prepare(a):
     print(text)
 
 
+def cmd_project(a):
+    from . import project
+    name = project.write(a.work)
+    print('%s: project written in %s' % (name, os.path.abspath(a.work)))
+    args = (a.sdk_install, a.sdk_src, a.fidelityfx, a.dlss_sdk, a.dlss_nr)
+    if a.build or a.discover:
+        project.build(a.work, *args, jobs=a.jobs)
+    if a.discover:
+        rexglue = a.rexglue or os.environ.get('REXNATIVE_REXGLUE')
+        if not rexglue or not os.path.exists(rexglue):
+            sys.exit('rexglue.exe not found: pass --rexglue or set REXNATIVE_REXGLUE')
+        added = project.discover(a.work, rexglue, args, rounds=a.discover,
+                                 seconds=a.discover_seconds)
+        print('%d functions added to hints.txt' % len(added))
+
+
 def cmd_survey(a):
     from . import prepare
     print(prepare.survey(a.work))
@@ -208,6 +226,26 @@ def main(argv=None):
     s.add_argument('--refs', help='references to use (default: every port in ports.json)')
     s.add_argument('--max-rounds', type=int, default=40, help='codegen rounds adding hints')
     s.set_defaults(fn=cmd_prepare)
+    s = sub.add_parser('project', parents=[lang_opt],
+                       help='a game `prepare` made -> a ReXGlue project with ReXNative that runs '
+                            '(--build: built into build/, laid out in run/)')
+    s.add_argument('work', help="the game's folder in prepare's --work")
+    s.add_argument('--build', action='store_true')
+    env = os.environ.get
+    s.add_argument('--sdk-install', default=env('REXNATIVE_SDK_INSTALL'))
+    s.add_argument('--sdk-src', default=env('REXNATIVE_SDK_SRC'))
+    s.add_argument('--fidelityfx', default=env('REXNATIVE_FIDELITYFX'))
+    s.add_argument('--dlss-sdk', default=env('REXNATIVE_DLSS_SDK'))
+    s.add_argument('--dlss-nr', default=env('REXNATIVE_DLSS_NR'))
+    s.add_argument('--jobs', type=int, default=0)
+    s.add_argument('--discover', type=int, default=0, metavar='N',
+                   help='after the build, run the game up to N times: each function it reports '
+                        'missing (a thread entry, an indirect call) becomes a codegen hint, then '
+                        'codegen and the build run again')
+    s.add_argument('--discover-seconds', type=int, default=40,
+                   help='a run that lasts this long without a missing function ends --discover')
+    s.add_argument('--rexglue', help='rexglue.exe, for --discover (default: $REXNATIVE_REXGLUE)')
+    s.set_defaults(fn=cmd_project)
     s = sub.add_parser('survey', parents=[lang_opt], help='table of the games prepared in --work')
     s.add_argument('--work', required=True)
     s.set_defaults(fn=cmd_survey)

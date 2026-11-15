@@ -10,6 +10,7 @@
    (abi.py), the device offsets (offsets.py) and the default clear colour (constants.py).
 3. Applies <out>/overrides.json, if any (choices made by hand after checking the report).
 """
+import glob
 import json
 import os
 import re
@@ -30,7 +31,7 @@ HOOK_CATS = {'Swap': 'kSwap', 'Resolve': 'kResolve', 'Clear': 'kClear', 'ClearF'
              'RunCommandBuffer': 'kOther'}
 # Named functions that never get a D3D_FN row: hooked by symbol (ShaderLoad, ImmediateVs), or
 # running inside a hooked one (ResolveInner).
-NOT_HOOKED = ('ShaderLoad', 'ImmediateVs', 'ResolveInner')
+NOT_HOOKED = ('ShaderLoad', 'ImmediateVs', 'ResolveInner', 'XInputGetState')
 
 
 def score_reference(target_info, ref_profile):
@@ -65,6 +66,43 @@ def named_functions(p):
 
 def run_matcher(R, T, p):
     return matcher.Matcher(R, T, named_functions(p)).run()
+
+
+def xinput_get_state(T, generated, funcs):
+    """XInputGetState(user, state), the XDK's pad read: three instructions, `mr r5,r4`,
+    `li r4,1` (XINPUT_FLAG_GAMEPAD) and a branch to the XamInputGetState import, whose address
+    the generated code's import table gives (`{ 0x82B08504, __imp__XamInputGetState }`). The
+    settings HUD hooks it (rexnative_d3d_hooks.cpp) to keep its Back+Start chord from the game."""
+    row = funcs['XInputGetState']
+    imports = set()
+    for path in glob.glob(os.path.join(generated, '*.cpp')):
+        name = os.path.basename(path)
+        if not (name.endswith('_init.cpp') or name.endswith('_register.cpp')):
+            continue
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        imports.update(int(a, 16) for a in re.findall(
+            r'0x([0-9A-Fa-f]{8}),\s*__imp__XamInputGetState\b', text))
+    if not imports:
+        row.update(detail='no XamInputGetState import in the generated code')
+        return
+    found = []
+    for f, insns in T.funcs.items():
+        if len(insns) != 3:
+            continue
+        texts = [t.replace(' ', '') for _, t in insns]
+        if texts[0] != 'mrr5,r4' or texts[1] != 'lir4,1' or not texts[2].startswith('b0x'):
+            continue
+        if int(texts[2][3:], 16) in imports:
+            found.append(f)
+    if len(found) == 1:
+        row.update(address=found[0], how='pattern', confidence='high',
+                   detail='mr r5,r4; li r4,1; b XamInputGetState')
+    elif found:
+        row.update(detail='%d functions of its shape: %s' % (
+            len(found), ', '.join('%08X' % f for f in sorted(found))))
+    else:
+        row.update(detail='no function of its shape (mr r5,r4; li r4,1; b XamInputGetState)')
 
 
 def adapt(target, refs, overrides=None, log=print):
@@ -115,6 +153,7 @@ def adapt(target, refs, overrides=None, log=print):
         funcs[canon] = row
 
     indexed_up(T, funcs)
+    xinput_get_state(T, target['generated'], funcs)
 
     # Resolve: which function to hook and where its arguments are. Its signature changed between
     # XDK builds (a public wrapper over an inner function with more arguments by 6995-11626,

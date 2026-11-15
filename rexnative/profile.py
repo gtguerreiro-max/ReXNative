@@ -25,7 +25,7 @@ FUNCTIONS = [
     'DrawVerticesUP', 'BeginIndexedVertices', 'DrawIndexedVerticesUP', 'DrawVertices',
     'DrawIndexedVertices', 'DrawIndx2Inline',
     'DrawIndx2Split', 'ClearF', 'Clear', 'BeginTiling', 'EndTiling', 'QueryIssue',
-    'QueryGetData', 'RunCommandBuffer', 'ShaderLoad', 'ImmediateVs',
+    'QueryGetData', 'RunCommandBuffer', 'ShaderLoad', 'ImmediateVs', 'XInputGetState',
 ]
 # hook_args.h HookFn enumerators -> canonical names.
 HOOKFN = {

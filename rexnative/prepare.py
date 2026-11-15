@@ -127,6 +127,13 @@ def stage_game(source, work, log):
     return facts
 
 
+def ident_of(name):
+    """'jet-set-radio' -> 'jetsetradio': the [project] name (letters and digits, not
+    starting with a digit)."""
+    ident = re.sub(r'[^a-z0-9]', '', name.lower()) or 'game'
+    return 'game' + ident if ident[0].isdigit() else ident
+
+
 def _hints(work):
     p = os.path.join(work, 'hints.txt')
     out = {}
@@ -158,8 +165,20 @@ def _write_manifest(work, name):
 def codegen(work, name, rexglue, max_rounds, log):
     gen = os.path.join(work, 'generated', 'default')
     done = os.path.join(work, 'codegen.ok')
-    if os.path.exists(done) and any(f.endswith('.cpp') for f in os.listdir(gen) if os.path.isdir(gen)):
+    # Reused only when made under this name (prepare's older runs used names with '_').
+    if (os.path.exists(done) and os.path.isdir(gen) and
+            os.path.exists(os.path.join(gen, '%s_init.h' % name))):
         return {'reused': True, 'rounds': 0}
+    for old in os.listdir(work):
+        if old.endswith('_manifest.toml') and old != '%s_manifest.toml' % name:
+            os.remove(os.path.join(work, old))
+    if os.path.exists(done):
+        # Made under another name: codegen writes it again (the hints stay), and its
+        # generated/rexglue.cmake, written once, is rendered again under this name.
+        os.remove(done)
+        stale = os.path.join(work, 'generated', 'rexglue.cmake')
+        if os.path.exists(stale):
+            os.remove(stale)
     for rnd in range(max_rounds):
         manifest = _write_manifest(work, name)
         t0 = time.time()
@@ -210,9 +229,10 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
         save()
         if not lib:
             raise RuntimeError('no XDK D3D library in default.xex (not a D3D9 title?)')
-        ident = name.replace('-', '_')
-        if ident[0].isdigit():
-            ident = 'game_' + ident  # ReXGlue: letters, digits, '_', not starting with a digit
+        # One word: ReXGlue names the generated sources after the [project] name as it is
+        # (jet_set_radio_init.h) but generated/rexglue.cmake after its words run together
+        # (jetsetradio_manifest.toml, jetsetradio_pch.h), so a name with '_' does not build.
+        ident = ident_of(name)
         status['steps']['codegen'] = codegen(work, ident, rexglue, max_rounds, log)
         save()
         target = {'name': name, 'title': name, 'xex': os.path.join(work, 'game-data', 'default.xex'),

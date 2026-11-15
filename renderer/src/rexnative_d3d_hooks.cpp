@@ -44,6 +44,7 @@
 #include "native/log.h"
 #include "native/profile.h"
 #include "native/renderer.h"
+#include "hud/hud.h"
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
 #include <rex/cvar.h>
@@ -1573,6 +1574,24 @@ float RexNativeMotionBlurStep(float step) {
   }
 #include "d3d_surface.inc"
 #undef D3D_FN
+
+// XInputGetState(user, state): the game's pad reads pass through the settings HUD (hud.h,
+// FilterPad), which opens it on Back+Start, feeds it the pad, keeps the chord (and, for a
+// moment, a lone Back or Start) from the game and gives the game a neutral pad while it is up.
+// Here, on the thread the game reads its pads on: the runtime's input system is not made for
+// reads from two threads at once (a poll from the Swap thread corrupted the heap). Only while the
+// native renderer runs (it draws the HUD). A port that hooks the function itself defines
+// REXNATIVE_GAME_HOOKS_XINPUT (From Dust: frame_rate.cpp).
+#if defined(REXNATIVE_XINPUT_GET_STATE_FOUND) && REXNATIVE_XINPUT_GET_STATE_FOUND && \
+    !defined(REXNATIVE_GAME_HOOKS_XINPUT)
+REX_EXTERN(REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE));
+REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_XINPUT_GET_STATE)) {
+  const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
+  REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE)(ctx, base);
+  if (ctx.r3.u32 != 0 || !state || user >= 4 || !rexnative::NativeRenderer::Live()) return;
+  rexnative::hud::FilterPad(user, base + state + 4);  // XINPUT_STATE: packet, then the pad
+}
+#endif
 
 // ImmediateVs: the D3D's immediate vertex shader load (the variant copied into the push buffer
 // and patched for the bound vertex declaration), called from the draw flush ShaderLoad. The

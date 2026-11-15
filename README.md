@@ -26,7 +26,8 @@ the console never had:
 - **NVIDIA DLAA, DLSS Super Resolution and DLSS 5** neural rendering, or AMD FSR, on the 3D scene;
 - MSAA up to 8x, anisotropic filtering, FSR 1 screen scaling, frame generation, HDR10 output;
 - frame pacing on the display, and a **settings HUD** over the running game (F1, or Back + Start
-  on a pad) that saves into the game's configuration file;
+  on a pad: ReXNative hooks the game's XInputGetState, which the tool finds, and keeps the chord
+  from the game) that saves into the game's configuration file;
 - runs on Windows and on the Steam Deck (under Proton, through vkd3d-proton).
 
 The renderer comes from [pgr4-native](https://github.com/shaunsingh/pgr4-native) (Project Gotham
@@ -249,6 +250,17 @@ Improving it a little at a time:
     game never created before still holds a frame while it compiles (50 to 170 ms on the Steam
     Deck). A stored pipeline's use used to be marked on another record (the records were sorted
     apart from their hashes), so pipelines in use could be forgotten.
+11. Other games, end to end (started 2026-11-15). `python -m rexnative project <work>/<game>
+    --build` turns a game `prepare` made into a ReXGlue project drawn by ReXNative (CMakeLists,
+    the app with the settings HUD, a configuration file), builds it and lays out `run/` (the
+    executable, the DLLs, `game` as a link to its data); `--discover N` runs it and makes each
+    function the game reaches that codegen did not make one of (a thread entry, an indirect
+    call) a codegen hint, then builds again. Project names are one word: ReXGlue's CMake glue
+    runs a name's words together (`jetsetradio_pch.h`) where its sources keep them apart. The
+    settings HUD's pad comes from the game's XInputGetState (the XDK's three-instruction
+    wrapper, found by its shape), hooked in every game, so Back + Start works everywhere. Jet Set
+    Radio builds and starts its threads; the functions it reaches through pointers come one at a
+    time, so they are next to be found ahead (tables of code addresses in its data).
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

@@ -111,7 +111,8 @@ def game_layer_h(layer, comments=True):
     w('')
     if comments:
         w('// Hooked by symbol (REX_HOOK_RAW / REX_EXTERN take sub_XXXXXXXX tokens).')
-    for canon, macro in (('ShaderLoad', 'REXNATIVE_SHADER_LOAD'), ('ImmediateVs', 'REXNATIVE_IMMEDIATE_VS')):
+    for canon, macro in (('ShaderLoad', 'REXNATIVE_SHADER_LOAD'), ('ImmediateVs', 'REXNATIVE_IMMEDIATE_VS'),
+                         ('XInputGetState', 'REXNATIVE_XINPUT_GET_STATE')):
         a = layer['functions'][canon][0]
         w('#define %s %s' % (macro, ('%08X' % a) if a else '00000000'))
         w('#define %s_FOUND %d' % (macro, 1 if a else 0))

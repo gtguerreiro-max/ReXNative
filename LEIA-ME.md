@@ -21,7 +21,8 @@ espaço para o que a consola nunca teve:
 - **NVIDIA DLAA, DLSS Super Resolution e DLSS 5** (neural rendering), ou AMD FSR, na cena 3D;
 - MSAA até 8x, filtragem anisotrópica, FSR 1 no ecrã, frame generation, saída HDR10;
 - ritmo dos frames no ecrã e um **HUD de definições** por cima do jogo (F1, ou Back + Start no
-  comando) que grava no ficheiro de configuração do jogo;
+  comando: o ReXNative interceta o XInputGetState do jogo, que a ferramenta encontra, e esconde-lhe
+  a combinação) que grava no ficheiro de configuração do jogo;
 - corre em Windows e na Steam Deck (com Proton, através do vkd3d-proton).
 
 O renderer vem do [pgr4-native](https://github.com/shaunsingh/pgr4-native) (Project Gotham
@@ -233,6 +234,19 @@ Melhorar aos poucos:
     compila (50 a 170 ms no Steam Deck). O uso de um pipeline guardado era marcado noutro registo
     (os registos eram ordenados à parte dos seus hashes), por isso pipelines em uso podiam ser
     esquecidos.
+11. Outros jogos, de ponta a ponta (começado a 2026-11-15). `python -m rexnative project
+    <work>/<jogo> --build` faz de um jogo que o `prepare` preparou um projecto ReXGlue desenhado
+    pelo ReXNative (CMakeLists, a app com o HUD de definições, um ficheiro de configuração),
+    compila-o e monta `run/` (o executável, as DLLs, `game` como ligação aos dados); `--discover N`
+    corre-o e faz de cada função a que o jogo chega sem que o codegen a tenha feito (a entrada de
+    uma thread, uma chamada indireta) uma pista do codegen, e compila outra vez. Os nomes dos
+    projectos são uma palavra só: a cola CMake do ReXGlue junta as palavras de um nome
+    (`jetsetradio_pch.h`) onde as suas fontes as mantêm separadas. O comando do HUD de definições
+    vem do XInputGetState do jogo (o wrapper de três instruções do XDK, encontrado pela forma),
+    intercetado em todos os jogos, por isso o Back + Start funciona em todos. O Jet Set Radio
+    compila e arranca as suas threads; as funções a que chega por ponteiros aparecem uma de cada
+    vez, por isso a seguir vão ser encontradas de antemão (tabelas de endereços de código nos
+    dados).
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.
