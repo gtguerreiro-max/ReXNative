@@ -199,6 +199,10 @@ Melhorar aos poucos:
    mesma base fica com a profundidade dela (cada amostra é um pixel da 1x), como as partículas
    a meia resolução de Iron Brigade precisam para ficarem escondidas pelo cenário
    (`RenderTargets::AliasDepth`).
+
+   Readback do memexport: um byte que o jogo escreveu depois do draw memexport fica (na consola
+   a escrita da GPU veio primeiro); copiado por cima, o carregamento de nível de Iron Brigade
+   perdia uma malha para blocos de textura antigos.
 9. ~~Command buffers gravados (RunCommandBuffer).~~ Feito (2026-11-15). Iron Brigade grava os
    draws de G-buffer do cenário estático num segundo device e corre-os em cada frame com pacotes
    INDIRECT_BUFFER, que nenhum hook via, por isso esse cenário ficava com os dados dos passos

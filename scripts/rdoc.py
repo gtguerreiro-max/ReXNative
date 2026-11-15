@@ -201,9 +201,13 @@ def main():
                         data = controller.GetBufferData(bind.resource, bind.byteOffset, size)
                         f.write("%s cb%d %s (register %d, %d bytes)\n" % (
                             tag, i, cb.name, cb.fixedBindNumber, len(data)))
+                        # Fetch constants are bit fields: as hex dwords.
+                        fetch = "fetch" in cb.name
                         for k in range(len(data) // 16):
                             f.write("  [%d] %s\n" % (k, " ".join(
-                                "%.6g" % v for v in struct.unpack_from("<4f", data, k * 16))))
+                                ("%08X" if fetch else "%.6g") % v
+                                for v in struct.unpack_from("<4I" if fetch else "<4f", data,
+                                                            k * 16))))
         elif cmd == "buffer":
             # Bytes of a buffer as they are after `event` (0: the last action): resource id
             # `texture`, or the largest buffer (the renderer's copy of guest physical memory, so

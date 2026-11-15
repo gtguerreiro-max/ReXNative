@@ -218,6 +218,10 @@ Improving it a little at a time:
    EDRAM aliasing across MSAA: a 4x (or 2x) depth surface over a 1x one at the same base takes
    its depth (each sample is a pixel of the 1x surface), as Iron Brigade's half-resolution
    particles need to be hidden by the scenery (`RenderTargets::AliasDepth`).
+
+   Memexport readback: a byte the game wrote after the memexport draw is kept (the GPU's write
+   came first on the console); copied over it, Iron Brigade's level loading lost a mesh to old
+   texture blocks.
 9. ~~Recorded command buffers (RunCommandBuffer).~~ Done (2026-11-15). Iron Brigade records
    its static scenery's G-buffer draws on a second device and runs them each frame through
    INDIRECT_BUFFER packets, which no hook saw, so that scenery showed the previous passes' data

@@ -864,7 +864,7 @@ struct DrawRenderer::Impl {
   // Summed over --rexnative_memexport's summary window (MemexportFrame).
   struct MemexportCounters {
     uint64_t frames = 0, draws = 0, flushes = 0, flush_by[kFlushReasons] = {};
-    uint64_t bytes = 0, changed = 0, wait_ns = 0, wait_max_ns = 0;
+    uint64_t bytes = 0, changed = 0, kept = 0, wait_ns = 0, wait_max_ns = 0;
   } mx;
   // Without the render thread: the copies of the draw being recorded. With it, Prepare
   // (guest thread) writes into the batch's vector instead: this one is the render thread's.
@@ -3119,6 +3119,20 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   if (submitted &&
       SUCCEEDED(memexport_before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
       SUCCEEDED(memexport_after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
+    // A byte the guest wrote since the snapshot (it no longer holds the snapshot's value) is
+    // newer than the GPU's write, which on the console landed when the draw ran: it stays.
+    // Iron Brigade's level loading frees memory its memexport draws wrote and loads meshes into
+    // it before the next Swap; copied back over them, a house's vertex buffer became the old
+    // texture blocks (green shards).
+    uint64_t kept = 0;
+    auto merge = [&](const uint8_t* b, const uint8_t* a, uint8_t* g, uint32_t j) {
+      if (g[j] != b[j]) {
+        ++kept;
+        return;
+      }
+      g[j] = a[j];
+      ++changed;
+    };
     for (const MemexportPending& p : memexport_pending) {
       // Per byte (exports of 8 and 16 bit formats), 8 bytes at a time where nothing changed.
       const uint8_t* b = before + p.offset;
@@ -3131,21 +3145,24 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
         std::memcpy(&y, a + i, 8);
         if (x == y) continue;
         for (uint32_t j = i; j < i + 8; ++j)
-          if (a[j] != b[j]) {
-            g[j] = a[j];
-            ++changed;
-          }
+          if (a[j] != b[j]) merge(b, a, g, j);
         lo = std::min(lo, i);
         hi = i + 8;
       }
       for (; i < p.size; ++i)
         if (a[i] != b[i]) {
-          g[i] = a[i];
-          ++changed;
+          merge(b, a, g, i);
           lo = std::min(lo, i);
           hi = i + 1;
         }
       if (lo < hi) r.textures().InvalidateWritten(p.start + lo, hi - lo);
+    }
+    if (kept) {
+      mx.kept += kept;
+      REXNATIVE_LOG_FIRST(4, INFO,
+                          "ReXNative memexport: {} bytes the guest wrote after a memexport draw "
+                          "kept (the draw's results not copied over them)",
+                          kept);
     }
   } else if (submitted) {
     REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
@@ -3179,10 +3196,11 @@ void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
   if (mx.draws) {
     REXLOG_INFO("ReXNative memexport: {} frames: {} draws, {} readbacks ({} before a texture "
                 "read, {} buffers full, {} at the Swap), {:.2f} MB copied back, {:.1f} KB "
-                "changed, waits {:.0f} us on average, {:.0f} us at most",
+                "changed, {:.1f} KB kept (the guest wrote them after the draw), waits {:.0f} us "
+                "on average, {:.0f} us at most",
                 mx.frames, mx.draws, mx.flushes, mx.flush_by[kFlushTextures],
                 mx.flush_by[kFlushFull], mx.flush_by[kFlushSwap], double(mx.bytes) / (1 << 20),
-                double(mx.changed) / 1024,
+                double(mx.changed) / 1024, double(mx.kept) / 1024,
                 mx.flushes ? double(mx.wait_ns) / 1000.0 / double(mx.flushes) : 0.0,
                 double(mx.wait_max_ns) / 1000.0);
   }
