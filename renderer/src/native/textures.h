@@ -119,6 +119,10 @@ class TextureCache {
   // (Resolver::SetChangedCallback): textures with a subresource there recheck it at their next
   // Get.
   void OnResolved(uint32_t guest_physical);
+  // The memexport readback wrote guest memory in [start, start + length) through the physical
+  // membase, which no watch sees: the textures over it upload again at their next Get, for every
+  // draw (the GPU wrote the data before the draws that read it were recorded).
+  void InvalidateWritten(uint32_t start, uint32_t length);
 
   // Capture order. With the render thread, Get runs up to a frame after the game captured the
   // draw, and in primary mode the game may rewrite texture memory (update a dynamic texture or

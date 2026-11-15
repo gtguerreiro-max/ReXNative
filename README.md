@@ -67,7 +67,7 @@ gaps and cross-check.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | the renderer's origin: the whole game ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **built from ReXNative**: plays (menus, levels, HUD), as with its hand-made copy ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, and the intro runs (its GPU hang came from draw arguments its LTCG build moves, now remapped); the intro video is still black (memexport draws are not drawn yet) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, and the intro runs (its GPU hang came from draw arguments its LTCG build moves, now remapped); its intro video comes from memexport draws, which run since 2026-11-15 (not checked in game yet) |
 
 From Dust and Iron Brigade now build their renderer from this repository (`rexnative_add()`
 and a generated `game_layer.h`), with no copy of their own: tested on a PC, each draws what its
@@ -177,9 +177,12 @@ Improving it a little at a time:
    build match best.
 7. ~~The tool's reports and messages are in Portuguese for now; English output.~~ Done:
    English by default, `--lang pt` for Portuguese.
-8. Memexport draws (shaders that write to memory): Iron Brigade's intro video is drawn by one;
-   the shader translator already writes them, the renderer has to run them and hand the
-   result to the textures that read it.
+8. Memexport draws (shaders that write to memory): Iron Brigade's intro video is drawn by one.
+   In progress (2026-11-15, not checked in game yet): they run with shared memory as a UAV
+   (`--rexnative_memexport`), their pages stay the GPU's until the CPU writes them, and what
+   they changed is written back into guest memory before a texture over it is read and at the
+   Swap (`--rexnative_memexport_readback`, a wait for the GPU; Xenia Canary's snapshot and
+   diff). Still to do: check it in game, and avoid the wait when nothing on the CPU needs it.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

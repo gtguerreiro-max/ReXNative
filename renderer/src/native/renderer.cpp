@@ -1148,6 +1148,22 @@ void NativeRenderer::SubmitEarly() {
   ++stats_.submits;
 }
 
+bool NativeRenderer::SubmitAndWait(uint64_t* wait_ns) {
+  profile::Scope scope(profile::kSubmit);
+  textures_->FinishUploads();
+  if (!CloseUploadLists() || !device_->Submit(upload_lists_)) {
+    Fail();
+    return false;
+  }
+  draw_->InvalidateListState(DrawRenderer::ListBreak::kSubmit);
+  draws_submitted_ = stats_.draws;
+  ++stats_.submits;
+  const uint64_t t0 = NowNs();
+  device_->WaitIdle();
+  *wait_ns = NowNs() - t0;
+  return true;
+}
+
 bool NativeRenderer::CloseUploadLists() {
   profile::Scope scope(profile::kUploadList);
   upload_lists_.clear();
@@ -1208,6 +1224,8 @@ bool NativeRenderer::OwnGameWindow(bool own) {
 void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   const uint64_t t0 = NowNs();
   BeginFrame();
+  // What the frame's memexport draws wrote, into guest memory before the guest's next frame.
+  draw_->FlushMemexport();
   D3D12Device& d = *device_;
   if (gpu_timer_) gpu_timer_->Pass(d.command_list(), GpuTimer::KeyPresent());
   // A scene's first frame without the draws whose pipelines were compiling: the previous frame

@@ -60,7 +60,7 @@ falhas e confirmam.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | a origem do renderer: o jogo todo ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **compilado do ReXNative**: joga-se (menus, níveis, HUD), como com a cópia feita à mão ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **compilado do ReXNative**: ecrãs de título, HUD, e a intro corre (o hang da GPU vinha de argumentos de draw que o LTCG muda de sítio, agora rearrumados); o vídeo da intro ainda fica preto (os draws com memexport ainda não são desenhados) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **compilado do ReXNative**: ecrãs de título, HUD, e a intro corre (o hang da GPU vinha de argumentos de draw que o LTCG muda de sítio, agora rearrumados); o vídeo da intro vem de draws com memexport, que correm desde 2026-11-15 (ainda por testar no jogo) |
 
 From Dust e Iron Brigade já compilam o renderer a partir deste repositório (`rexnative_add()` e
 um `game_layer.h` gerado), sem cópia própria: testados num PC, cada um desenha o que a sua cópia
@@ -158,8 +158,12 @@ Melhorar aos poucos:
 7. ~~Os relatórios e mensagens da ferramenta estão em português; acrescentar inglês.~~ Feito:
    inglês por defeito, `--lang pt` para português.
 8. Draws com memexport (shaders que escrevem na memória): o vídeo da intro de Iron Brigade é
-   desenhado por um; o tradutor de shaders já os escreve, falta o renderer corrê-los e
-   entregar o resultado às texturas que o lêem.
+   desenhado por um. Em curso (2026-11-15, ainda por testar no jogo): correm com a memória
+   partilhada como UAV (`--rexnative_memexport`), as páginas que escrevem ficam da GPU até o
+   CPU lhes escrever, e o que mudaram é escrito de volta na memória do jogo antes de uma
+   textura por cima ser lida e no Swap (`--rexnative_memexport_readback`, uma espera pela GPU;
+   o snapshot e diff do Xenia Canary). Falta: testar no jogo, e evitar a espera quando nada no
+   CPU precisa do resultado.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

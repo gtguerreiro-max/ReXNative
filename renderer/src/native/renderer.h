@@ -145,6 +145,10 @@ class NativeRenderer {
   Resolver& resolver() { return *resolver_; }
   // The game's occlusion queries, counted by the draws; nullptr when they are not.
   OcclusionQueries* occlusion() { return occlusion_.get(); }
+  // Submits the frame so far (as --rexnative_submit_draws does, once the untile workers are
+  // done) and waits until the GPU has finished it: the memexport readback. Recording goes on in
+  // the next list (DrawRenderer::InvalidateListState). False when the submission failed (Fail).
+  bool SubmitAndWait(uint64_t* wait_ns);
   // The scene's upscaler while it replaces the scene's MSAA (--rexnative_upscaler, switched
   // with bind_upscaler); nullptr otherwise.
   Upscaler* upscaler() { return upscaler_on_ ? upscaler_.get() : nullptr; }

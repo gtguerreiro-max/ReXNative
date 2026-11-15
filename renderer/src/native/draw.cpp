@@ -4,11 +4,13 @@
 // CreateD3D12Pipeline (pipeline state), D3D12CommandProcessor::IssueDraw,
 // UpdateFixedFunctionState, UpdateSystemConstantValues and UpdateBindings (host render target
 // path, bindless), draw_util::GetHostViewportInfo / GetScissor / GetNormalizedDepthControl /
-// GetNormalizedColorMask / IsRasterizationPotentiallyDone / GetPreferredFacePolygonOffset,
+// GetNormalizedColorMask / IsRasterizationPotentiallyDone / GetPreferredFacePolygonOffset /
+// AddMemExportRanges, the memexport readback of IssueDraw (Xenia Canary's snapshot and diff),
 // D3D12TextureCache::GetSamplerParameters / WriteSampler, and the DMA index path of
 // PrimitiveProcessor::Process. Copyright Ben Vanik and Xenia developers; adapted by Tom Clay
 // for ReXGlue; adapted here for the native renderer.
 #include "draw.h"
+#include "memexport.h"
 
 #include "geometry_shader.h"
 #include "log.h"
@@ -113,9 +115,77 @@ REXCVAR_DEFINE_INT32(rexnative_draw_log_frames, 1, "ReXNative",
 REXCVAR_DEFINE_INT32(rexnative_anisotropy, 1, "ReXNative",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
+REXCVAR_DEFINE_BOOL(rexnative_memexport, true, "ReXNative",
+                    "Run the draws whose shaders write guest memory (memexport: Bink video, GPU "
+                    "particles), with shared memory as a UAV (false: skip them)");
+REXCVAR_DEFINE_BOOL(rexnative_memexport_readback, true, "ReXNative",
+                    "Write what memexport draws changed back into guest memory: before a draw "
+                    "reads a texture from it and at the Swap, the frame so far is submitted and "
+                    "waited for (false: only the GPU sees it; textures over it and the game's CPU "
+                    "code see the old memory)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 
 namespace rexnative {
+
+// Memexport destinations (memexport.h): the ranges memexport draws write (the first ones are
+// logged), so a texture read from one can say so.
+namespace xenos = rex::graphics::xenos;
+namespace reg = rex::graphics::reg;
+namespace {
+struct MemexportRange {
+  uint32_t base, bytes;
+  uint32_t format, count;
+  uint64_t vs_hash, ps_hash;
+};
+std::mutex g_memexport_mutex;
+std::vector<MemexportRange> g_memexport_ranges;
+uint32_t g_memexport_logged = 0;
+}  // namespace
+
+void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::graphics::Shader& vs,
+                       const rex::graphics::Shader* ps) {
+  namespace rg = rex::graphics;
+  std::lock_guard lock(g_memexport_mutex);
+  for (const rg::Shader* sh : {&vs, ps}) {
+    if (!sh || !sh->memexport_eM_written()) continue;
+    const uint32_t base_const = sh->type() == xenos::ShaderType::kVertex
+                                    ? regs.Get<reg::SQ_VS_CONST>().base
+                                    : regs.Get<reg::SQ_PS_CONST>().base;
+    for (uint32_t c : sh->memexport_stream_constants()) {
+      const xenos::xe_gpu_memexport_stream_t st = regs.GetMemExportStream(base_const + c);
+      if (st.const_0x1 != 1 || st.const_0x4b0 != 0x4B0 || st.const_0x96 != 0x96 ||
+          !st.index_count)
+        continue;
+      const rg::FormatInfo* fi = rg::FormatInfo::Get(xenos::TextureFormat(st.format));
+      const uint32_t bytes = st.index_count * std::max(1u, fi->bits_per_pixel >> 3);
+      const MemexportRange r{uint32_t(st.base_address) << 2, bytes, uint32_t(st.format),
+                             uint32_t(st.index_count), vs.ucode_data_hash(),
+                             ps ? ps->ucode_data_hash() : 0};
+      bool known = false;
+      for (const MemexportRange& k : g_memexport_ranges)
+        known |= k.base == r.base && k.bytes == r.bytes;
+      if (known) continue;
+      if (g_memexport_ranges.size() >= 64) g_memexport_ranges.erase(g_memexport_ranges.begin());
+      g_memexport_ranges.push_back(r);
+      if (g_memexport_logged++ < 24)
+        REXLOG_INFO("ReXNative memexport: {} shader {:016X} writes {:08X}..{:08X} ({} x {}, "
+                    "{} bytes){}", sh->type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
+                    sh->ucode_data_hash(), r.base, r.base + r.bytes, r.count, fi->name, r.bytes,
+                    ps && sh == &vs ? " (with a pixel shader)" : "");
+    }
+  }
+}
+
+bool MemexportRangeOf(uint32_t address, uint32_t* base, uint32_t* bytes) {
+  std::lock_guard lock(g_memexport_mutex);
+  for (const MemexportRange& r : g_memexport_ranges)
+    if (address >= r.base && address < r.base + r.bytes) {
+      *base = r.base;
+      *bytes = r.bytes;
+      return true;
+    }
+  return false;
+}
 
 namespace xenos = rex::graphics::xenos;
 namespace reg = rex::graphics::reg;
@@ -175,6 +245,39 @@ constexpr rex::graphics::Register kBlendControlRegs[4] = {
     XE_GPU_REG_RB_BLENDCONTROL3};
 
 // ---- draw_util ports (host render targets, no resolution scale) ----
+
+// draw_util::AddMemExportRanges (the SDK does not export it): the ranges a shader's memexport
+// stream constants name, an existing range grown when a stream has the same base.
+void AppendMemExportRanges(const RegisterFile& regs, const Shader& shader,
+                           std::vector<rex::graphics::draw_util::MemExportRange>& out) {
+  if (!shader.memexport_eM_written()) return;  // eA writes, but no real exports
+  const uint32_t base = shader.type() == xenos::ShaderType::kVertex
+                            ? regs.Get<reg::SQ_VS_CONST>().base
+                            : regs.Get<reg::SQ_PS_CONST>().base;
+  for (uint32_t constant : shader.memexport_stream_constants()) {
+    const xenos::xe_gpu_memexport_stream_t stream = regs.GetMemExportStream(base + constant);
+    // Constants not set up when the export is not on the control flow path taken (the hardware
+    // validates the upper bits of eA).
+    if (stream.const_0x1 != 0x1 || stream.const_0x4b0 != 0x4B0 || stream.const_0x96 != 0x96 ||
+        !stream.index_count)
+      continue;
+    const rex::graphics::FormatInfo& info =
+        *rex::graphics::FormatInfo::Get(xenos::TextureFormat(stream.format));
+    if (info.type != rex::graphics::FormatType::kResolvable) {
+      REXNATIVE_WARN_ONCE("ReXNative memexport: unsupported format {}", info.name);
+      continue;
+    }
+    const uint32_t size = stream.index_count * (info.bits_per_pixel >> 3);
+    bool reused = false;
+    for (auto& range : out)
+      if (range.base_address_dwords == stream.base_address) {
+        range.size_bytes = std::max(range.size_bytes, size);
+        reused = true;
+        break;
+      }
+    if (!reused) out.emplace_back(uint32_t(stream.base_address), size);
+  }
+}
 
 bool IsRasterizationPotentiallyDone(const RegisterFile& regs, bool primitive_polygonal) {
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
@@ -714,6 +817,47 @@ struct DrawRenderer::Impl {
   uint32_t shared_mapped_chunks = 0;
   std::unique_ptr<std::atomic<uint64_t>[]> valid;
   void* invalidation_handle = nullptr;
+  // Memexport: pages a memexport draw writes, one bit per page, set in guest order by
+  // RequestMemexport (Prepare). RequestRange copies nothing into them, so guest memory older than
+  // the export never overwrites what the GPU wrote; a guest write that faults on one clears its
+  // bit (InvalidationThunk) and the page is copied again as usual. The readback writes guest
+  // memory through the physical membase, which no watch sees.
+  std::unique_ptr<std::atomic<uint64_t>[]> gpu_written;
+  std::atomic<bool> gpu_written_any{false};
+  uint8_t* guest_physical = nullptr;  // membase, written by the memexport readback
+  bool memexport_on = REXCVAR_GET(rexnative_memexport);
+  bool memexport_readback = REXCVAR_GET(rexnative_memexport_readback);
+  bool memexport_draw_logged = false, memexport_flush_logged = false;
+  // Prepare: the draw after a memexport draw starts a copy segment, so its copies are not
+  // recorded ahead of the export.
+  bool segment_after_memexport = false;
+  // Destination ranges (draw_util::AddMemExportRanges): RequestMemexport's (guest thread with
+  // the render thread) and Draw's (render thread).
+  std::vector<rex::graphics::draw_util::MemExportRange> prep_memexport_ranges,
+      draw_memexport_ranges;
+  // Readback batch (render thread). Each range's bytes before the batch's first export to it are
+  // copied to memexport_before at `offset` (SnapshotMemexport); FlushMemexport copies the ranges
+  // again into memexport_after, submits the frame so far, waits for it and writes the bytes that
+  // differ into guest memory, as Xenia Canary's readback does per draw: the ranges are larger
+  // than what the shaders write, and the rest may have been written by the CPU meanwhile.
+  struct MemexportPending {
+    uint32_t start, size, offset;
+  };
+  std::vector<MemexportPending> memexport_pending;
+  uint32_t memexport_used = 0, memexport_capacity = 0;  // bytes of each readback buffer
+  ComPtr<ID3D12Resource> memexport_before, memexport_after;
+  enum MemexportFlush : uint32_t { kFlushTextures, kFlushFull, kFlushSwap, kFlushReasons };
+  // Indexed memexport draws: shared memory is a UAV for them and cannot be their index buffer
+  // too, so their indices are copied here first (like the Xenos backend's scratch buffer).
+  ComPtr<ID3D12Resource> memexport_indices;
+  uint32_t memexport_indices_size = 0;
+  D3D12_RESOURCE_STATES memexport_indices_state = D3D12_RESOURCE_STATE_COMMON;
+  std::vector<std::pair<uint64_t, ComPtr<ID3D12Resource>>> memexport_retired;  // (fence, buffer)
+  // Summed over --rexnative_memexport's summary window (MemexportFrame).
+  struct MemexportCounters {
+    uint64_t frames = 0, draws = 0, flushes = 0, flush_by[kFlushReasons] = {};
+    uint64_t bytes = 0, changed = 0, wait_ns = 0, wait_max_ns = 0;
+  } mx;
   // Without the render thread: the copies of the draw being recorded. With it, Prepare
   // (guest thread) writes into the batch's vector instead: this one is the render thread's.
   std::vector<VertexCopy> copies;
@@ -1144,6 +1288,16 @@ struct DrawRenderer::Impl {
                          xenos::ShaderType type);
   // Copies go to the end of `out`.
   bool RequestVertices(const DrawState& s, const DxbcShader& vs, std::vector<VertexCopy>& out);
+  // Memexport (draws whose shaders write guest memory through the shared memory UAV).
+  bool RequestMemexport(const DrawState& s, const DxbcShader& vs, const DxbcShader* ps,
+                        std::vector<VertexCopy>& out);
+  void MarkGpuWritten(uint32_t start, uint32_t length);
+  bool TexturesReadMemexport(const RegisterFile& regs, uint32_t used_textures) const;
+  void SnapshotMemexport(CommandStream* list);
+  bool CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes, bool wide,
+                            D3D12_INDEX_BUFFER_VIEW* out);
+  void FlushMemexport(MemexportFlush why);
+  void MemexportFrame(uint64_t completed_fence);
   void Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep, std::vector<VertexCopy>* out,
                std::vector<AuditRange>* audit);
   // A triangle fan as a host triangle list (v1, v2, v0), (v2, v3, v0)... like the plugin's
@@ -1248,6 +1402,7 @@ struct DrawRenderer::Impl {
     const uint32_t frame = self->watch_frame.load(std::memory_order_relaxed);
     for (uint32_t p = first; p <= last; ++p) {
       const uint64_t bit = 1ull << (p & 63);
+      self->gpu_written[p >> 6].fetch_and(~bit, std::memory_order_relaxed);
       std::atomic<uint64_t>& valid_word = self->valid[p >> 6];
       const bool was_valid = valid_word.fetch_and(~bit, std::memory_order_relaxed) & bit;
       if (self->trace.file)
@@ -1461,6 +1616,7 @@ bool DrawRenderer::Impl::Initialize() {
     return false;
   }
   membase = memory->physical_membase();
+  guest_physical = memory->physical_membase();
   vertex_upload.SetDevice(device);
   threaded = REXCVAR_GET(rexnative_render_thread);
   // kMax_N_1 is log2(N) + 1.
@@ -1497,6 +1653,7 @@ bool DrawRenderer::Impl::Initialize() {
   // Zeroed: make_unique value-initializes, and std::atomic's default constructor value-initializes
   // its value (C++20).
   valid = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
+  gpu_written = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
   hot = std::make_unique<std::atomic<uint64_t>[]>(kPageCount / 64);
   armed_frame = std::make_unique<std::atomic<uint32_t>[]>(kPageCount);
   write_frame = std::make_unique<std::atomic<uint32_t>[]>(kPageCount);
@@ -1723,7 +1880,17 @@ bool DrawRenderer::Impl::RequestRange(uint32_t start, uint32_t length, bool watc
   };
   if (exact) {
     ++pd.unwatched;
-    return copy(start, length);
+    if (!gpu_written_any.load(std::memory_order_relaxed)) return copy(start, length);
+    // Around the pages a memexport draw wrote.
+    const uint32_t end = start + length;
+    uint32_t from = start;
+    for (uint32_t p = start >> kPageShift; p <= (end - 1) >> kPageShift; ++p) {
+      if (!(gpu_written[p >> 6].load(std::memory_order_relaxed) & (1ull << (p & 63)))) continue;
+      const uint32_t lo = std::max(start, p << kPageShift);
+      if (lo > from && !copy(from, lo - from)) return false;
+      from = std::min(end, (p + 1) << kPageShift);
+    }
+    return from >= end || copy(from, end - from);
   }
   ++pd.ranges;
   const uint32_t first = start >> kPageShift, last = (start + length - 1) >> kPageShift;
@@ -1754,8 +1921,9 @@ bool DrawRenderer::Impl::RequestRange(uint32_t start, uint32_t length, bool watc
     // visible.
     const uint64_t pending_bits = pending[w].load(std::memory_order_acquire);
     const uint64_t hot_bits = hot[w].load(std::memory_order_relaxed);
-    uint64_t work =
-        (~valid[w].load(std::memory_order_relaxed) | hot_bits | pending_bits) & (~0ull << (p & 63));
+    // Pages a memexport draw wrote are never copied (gpu_written).
+    uint64_t work = (~valid[w].load(std::memory_order_relaxed) | hot_bits | pending_bits) &
+                    ~gpu_written[w].load(std::memory_order_relaxed) & (~0ull << (p & 63));
     if (w == last >> 6) work &= ~0ull >> (63 - (last & 63));
     if (!work) {
       p = (w + 1) << 6;
@@ -1795,7 +1963,8 @@ bool DrawRenderer::Impl::RequestRange(uint32_t start, uint32_t length, bool watc
     while (run_end <= last) {
       const uint32_t rw = run_end >> 6;
       if ((valid[rw].load(std::memory_order_relaxed) | hot[rw].load(std::memory_order_relaxed) |
-           pending[rw].load(std::memory_order_relaxed)) &
+           pending[rw].load(std::memory_order_relaxed) |
+           gpu_written[rw].load(std::memory_order_relaxed)) &
           (1ull << (run_end & 63)))
         break;
       ++run_end;
@@ -2713,6 +2882,243 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
   return RequestRange(s.index_address, index_bytes, true, out);
 }
 
+// A memexport draw's destination ranges into `out` like its vertex ranges (what the shaders do
+// not write keeps the guest's bytes), then marked as the GPU's (gpu_written).
+bool DrawRenderer::Impl::RequestMemexport(const DrawState& s, const DxbcShader& vs,
+                                          const DxbcShader* ps, std::vector<VertexCopy>& out) {
+  if (!memexport_on) return true;
+  const bool vertex = vs.memexport_eM_written() != 0;
+  const bool pixel = ps && ps->memexport_eM_written() != 0;
+  if (!vertex && !pixel) return true;
+  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
+  auto& ranges = prep_memexport_ranges;
+  ranges.clear();
+  if (vertex) AppendMemExportRanges(regs, vs, ranges);
+  if (pixel) AppendMemExportRanges(regs, *ps, ranges);
+  for (const auto& range : ranges) {
+    const uint32_t start = range.base_address_dwords << 2, size = range.size_bytes;
+    if (!size) continue;
+    // RequestRange gives memory only to the pages it copies; the shaders may write any of them.
+    if (!InSharedMemory(start, size) || !MapShared(start, size) ||
+        !RequestRange(start, size, true, out))
+      return false;
+    MarkGpuWritten(start, size);
+  }
+  if (preparing) segment_after_memexport = true;
+  return true;
+}
+
+void DrawRenderer::Impl::MarkGpuWritten(uint32_t start, uint32_t length) {
+  const uint32_t first = start >> kPageShift, last = (start + length - 1) >> kPageShift;
+  SetPageBits(gpu_written.get(), first, last + 1, true);
+  gpu_written_any.store(true, std::memory_order_relaxed);
+  // A hot page is hashed by each request instead of watched: it is watched again, so that a guest
+  // write to it still ends the GPU's ownership.
+  const uint32_t frame = watch_frame.load(std::memory_order_relaxed);
+  for (uint32_t w = first >> 6; w <= last >> 6; ++w) {
+    uint64_t bits = hot[w].load(std::memory_order_relaxed) & PageMask(w, first, last);
+    if (!bits) continue;
+    hot[w].fetch_and(~bits, std::memory_order_relaxed);
+    pending[w].fetch_or(bits, std::memory_order_relaxed);
+    while (bits) {
+      const uint32_t p = (w << 6) + uint32_t(std::countr_zero(bits));
+      bits &= bits - 1;
+      quick_rewrites[p].store(0, std::memory_order_relaxed);
+      armed_frame[p].store(frame, std::memory_order_relaxed);
+      QueueArm(p, p + 1, 0);
+    }
+  }
+}
+
+// Whether a texture the draw fetches lies over a range of the pending memexport readback (the
+// texture cache loads textures from guest memory).
+bool DrawRenderer::Impl::TexturesReadMemexport(const RegisterFile& regs,
+                                               uint32_t used_textures) const {
+  while (used_textures) {
+    const uint32_t i = uint32_t(std::countr_zero(used_textures));
+    used_textures &= used_textures - 1;
+    TextureKey key;
+    if (!TextureKeyFromFetch(&regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + i * 6], &key)) continue;
+    uint32_t base_bytes, mips_bytes;
+    GetGuestExtents(key, &base_bytes, &mips_bytes);
+    const uint32_t base = key.base_page << 12, mips = key.mip_page << 12;
+    for (const MemexportPending& p : memexport_pending) {
+      const uint32_t end = p.start + p.size;
+      if ((base_bytes && base < end && p.start < base + base_bytes) ||
+          (mips_bytes && mips < end && p.start < mips + mips_bytes))
+        return true;
+    }
+  }
+  return false;
+}
+
+// Readback: the bytes of the draw's ranges (draw_memexport_ranges) before the batch's first
+// export to each, which FlushMemexport compares with.
+void DrawRenderer::Impl::SnapshotMemexport(CommandStream* list) {
+  auto covered = [&](uint32_t start, uint32_t size) {
+    for (const MemexportPending& p : memexport_pending)
+      if (p.start <= start && start + size <= p.start + p.size) return true;
+    return false;
+  };
+  uint64_t need = 0;
+  for (const auto& range : draw_memexport_ranges)
+    if (!covered(range.base_address_dwords << 2, range.size_bytes)) need += range.size_bytes;
+  if (!need) return;
+  if (memexport_used + need > memexport_capacity) {
+    FlushMemexport(kFlushFull);  // the GPU is done with the buffers after it
+    if (need > memexport_capacity) {
+      memexport_before.Reset();
+      memexport_after.Reset();
+      memexport_capacity = 0;
+      const uint64_t size = std::max<uint64_t>(16u << 20, std::bit_ceil(need));
+      if (size > kSharedMemorySize ||
+          !CreateBuffer(device, D3D12_HEAP_TYPE_READBACK, size, D3D12_RESOURCE_STATE_COPY_DEST,
+                        "memexport snapshot", &memexport_before) ||
+          !CreateBuffer(device, D3D12_HEAP_TYPE_READBACK, size, D3D12_RESOURCE_STATE_COPY_DEST,
+                        "memexport readback", &memexport_after)) {
+        REXLOG_WARN("ReXNative memexport: no readback buffers for {} bytes; readback off", need);
+        memexport_before.Reset();
+        memexport_after.Reset();
+        memexport_readback = false;
+        return;
+      }
+      memexport_capacity = uint32_t(size);
+    }
+  }
+  TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  for (const auto& range : draw_memexport_ranges) {
+    const uint32_t start = range.base_address_dwords << 2, size = range.size_bytes;
+    if (!size || covered(start, size)) continue;
+    list->CopyBufferRegion(memexport_before.Get(), memexport_used, shared.Get(), start, size);
+    memexport_pending.push_back({start, size, memexport_used});
+    memexport_used += size;
+  }
+}
+
+bool DrawRenderer::Impl::CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes,
+                                              bool wide, D3D12_INDEX_BUFFER_VIEW* out) {
+  if (!InSharedMemory(start, bytes)) return false;
+  if (bytes > memexport_indices_size) {
+    // The frame's earlier draws may still read the old one.
+    if (memexport_indices)
+      memexport_retired.emplace_back(r.frame_fence(), std::move(memexport_indices));
+    memexport_indices_size = 0;
+    const uint32_t size = std::max(64u << 10, std::bit_ceil(bytes));
+    if (!CreateBuffer(device, D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_COMMON,
+                      "memexport indices", &memexport_indices))
+      return false;
+    memexport_indices_size = size;
+    memexport_indices_state = D3D12_RESOURCE_STATE_COMMON;
+  }
+  TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  D3D12_RESOURCE_BARRIER b;
+  if (memexport_indices_state != D3D12_RESOURCE_STATE_COPY_DEST) {
+    b = TransitionBarrier(memexport_indices.Get(), memexport_indices_state,
+                          D3D12_RESOURCE_STATE_COPY_DEST);
+    list->ResourceBarrier(1, &b);
+  }
+  list->CopyBufferRegion(memexport_indices.Get(), 0, shared.Get(), start, bytes);
+  b = TransitionBarrier(memexport_indices.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_INDEX_BUFFER);
+  list->ResourceBarrier(1, &b);
+  memexport_indices_state = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+  out->BufferLocation = memexport_indices->GetGPUVirtualAddress();
+  out->SizeInBytes = bytes;
+  out->Format = wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
+  return true;
+}
+
+// The readback of the batch: the ranges after its draws into memexport_after, the frame so far
+// submitted and waited for (NativeRenderer::SubmitAndWait), and the bytes that differ from the
+// snapshot written into guest memory. Textures over them load again at their next use.
+void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
+  if (memexport_pending.empty()) return;
+  CommandStream* list = r.command_list();
+  SyncListFrame();
+  TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  uint64_t bytes = 0;
+  for (const MemexportPending& p : memexport_pending) {
+    list->CopyBufferRegion(memexport_after.Get(), p.offset, shared.Get(), p.start, p.size);
+    bytes += p.size;
+  }
+  uint64_t wait_ns = 0;
+  const bool submitted = r.SubmitAndWait(&wait_ns);
+  uint64_t changed = 0;
+  uint8_t *before = nullptr, *after = nullptr;
+  const D3D12_RANGE read = {0, memexport_used};
+  if (submitted &&
+      SUCCEEDED(memexport_before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
+      SUCCEEDED(memexport_after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
+    for (const MemexportPending& p : memexport_pending) {
+      // Per byte (exports of 8 and 16 bit formats), 8 bytes at a time where nothing changed.
+      const uint8_t* b = before + p.offset;
+      const uint8_t* a = after + p.offset;
+      uint8_t* g = guest_physical + p.start;
+      uint32_t lo = p.size, hi = 0, i = 0;
+      for (; i + 8 <= p.size; i += 8) {
+        uint64_t x, y;
+        std::memcpy(&x, b + i, 8);
+        std::memcpy(&y, a + i, 8);
+        if (x == y) continue;
+        for (uint32_t j = i; j < i + 8; ++j)
+          if (a[j] != b[j]) {
+            g[j] = a[j];
+            ++changed;
+          }
+        lo = std::min(lo, i);
+        hi = i + 8;
+      }
+      for (; i < p.size; ++i)
+        if (a[i] != b[i]) {
+          g[i] = a[i];
+          ++changed;
+          lo = std::min(lo, i);
+          hi = i + 1;
+        }
+      if (lo < hi) r.textures().InvalidateWritten(p.start + lo, hi - lo);
+    }
+  } else if (submitted) {
+    REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
+  }
+  const D3D12_RANGE none = {0, 0};
+  if (before) memexport_before->Unmap(0, &none);
+  if (after) memexport_after->Unmap(0, &none);
+  static constexpr const char* kWhy[kFlushReasons] = {"a texture read", "buffers full", "Swap"};
+  if (submitted && !memexport_flush_logged) {
+    memexport_flush_logged = true;
+    REXLOG_INFO("ReXNative memexport: first readback (at {}): {} ranges, {} bytes copied back, {} "
+                "bytes changed, {} us waiting for the GPU",
+                kWhy[why], memexport_pending.size(), bytes, changed, wait_ns / 1000);
+  }
+  ++mx.flushes;
+  ++mx.flush_by[why];
+  mx.bytes += bytes;
+  mx.changed += changed;
+  mx.wait_ns += wait_ns;
+  mx.wait_max_ns = std::max(mx.wait_max_ns, wait_ns);
+  memexport_pending.clear();
+  memexport_used = 0;
+}
+
+// Once per frame (DrawRenderer::EndFrame): index buffers retired by growth, and every 150 frames
+// with memexport draws a summary.
+void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
+  while (!memexport_retired.empty() && memexport_retired.front().first <= completed_fence)
+    memexport_retired.erase(memexport_retired.begin());
+  if (++mx.frames < 150) return;
+  if (mx.draws) {
+    REXLOG_INFO("ReXNative memexport: {} frames: {} draws, {} readbacks ({} before a texture "
+                "read, {} buffers full, {} at the Swap), {:.2f} MB copied back, {:.1f} KB "
+                "changed, waits {:.0f} us on average, {:.0f} us at most",
+                mx.frames, mx.draws, mx.flushes, mx.flush_by[kFlushTextures],
+                mx.flush_by[kFlushFull], mx.flush_by[kFlushSwap], double(mx.bytes) / (1 << 20),
+                double(mx.changed) / 1024,
+                mx.flushes ? double(mx.wait_ns) / 1000.0 / double(mx.flushes) : 0.0,
+                double(mx.wait_max_ns) / 1000.0);
+  }
+  mx = {};
+}
+
 void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep,
                                  std::vector<VertexCopy>* out, std::vector<AuditRange>* audit) {
   prep->captured = r.textures().MarkCapture();
@@ -2731,12 +3137,15 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
   const bool indexed_ok = !s.indexed || s.index_address;
   // Straight into the batch: copies made before a failed range still go out (their pages
   // are marked valid already).
+  // After a memexport draw this draw's copies are not recorded ahead of it (copy segments).
+  const bool after_memexport = std::exchange(segment_after_memexport, false);
   preparing = true;
   segment_conflict = false;
   draw_reads.clear();
-  prep->upload_ok = indexed_ok && RequestVertices(s, *prep->vs, *out);
+  prep->upload_ok = indexed_ok && RequestVertices(s, *prep->vs, *out) &&
+                    RequestMemexport(s, *prep->vs, prep->ps, *out);
   preparing = false;
-  if (segment_conflict || segment_exact.size() >= kSegmentExactLimit) {
+  if (segment_conflict || after_memexport || segment_exact.size() >= kSegmentExactLimit) {
     NewSegment();
     prep->copy_segment = true;
   }
@@ -2796,6 +3205,7 @@ void DrawRenderer::Impl::SyncListFrame() {
   list_frame = r.frame_index();
   ResetListState();
   shared_state = D3D12_RESOURCE_STATE_COMMON;
+  memexport_indices_state = D3D12_RESOURCE_STATE_COMMON;
   for (CachedCbv* cb : Cbvs()) cb->Reset();
   // The motion vector pass reads the previous frame's constants where that frame uploaded them.
   constant_upload.set_keep_previous_frame(r.upscaler() != nullptr);
@@ -3528,10 +3938,23 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     return;
   }
   if (!mods.pixel_shader_used) ps = nullptr;
-  if (vs->memexport_eM_written() || (ps && ps->memexport_eM_written())) {
-    REXNATIVE_WARN_ONCE("ReXNative draw: memexport unsupported (draw skipped)");
-    ++stats.unsupported;
-    return;
+  // Memexport: the shaders write guest memory, through shared memory as a UAV.
+  const bool memexport = vs->memexport_eM_written() || (ps && ps->memexport_eM_written());
+  if (memexport) {
+    NoteMemexportDraw(regs, *vs, ps);
+    if (!memexport_on) {
+      REXNATIVE_WARN_ONCE("ReXNative draw: memexport draws skipped (--rexnative_memexport=false)");
+      ++stats.unsupported;
+      return;
+    }
+    if (!memexport_draw_logged) {
+      memexport_draw_logged = true;
+      REXLOG_INFO("ReXNative memexport: running memexport draws (first: vertex shader {:016X}{}), "
+                  "readback {}",
+                  vs->ucode_data_hash(),
+                  ps && ps->memexport_eM_written() ? ", exporting pixel shader" : "",
+                  memexport_readback ? "on" : "off");
+    }
   }
   const bool tess = xenos::IsMajorModeExplicit(initiator.major_mode, initiator.prim_type) &&
                     regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
@@ -3625,7 +4048,9 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   uint32_t rt_mask = 0;
   for (uint32_t i = 0; i < 4; ++i)
     if ((color_mask >> (4 * i)) & 0xF) rt_mask |= 1u << i;
-  if (!rt_mask && !depth_used) {
+  // A memexport draw writes memory without any target too (its vertex shader alone when
+  // rasterization is off): it runs with none bound.
+  if (!rt_mask && !depth_used && !memexport) {
     ++stats.skipped;  // nothing to write or test, so an occlusion query does not count it
     return;
   }
@@ -3636,7 +4061,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);
   profile::Mark(profile::kSetup);
   BoundTargets targets;
-  if (!r.render_targets().Bind(list, SurfaceRegsFromRegisters(s.regs), rt_mask, depth_used, height,
+  if ((rt_mask || depth_used) &&
+      !r.render_targets().Bind(list, SurfaceRegsFromRegisters(s.regs), rt_mask, depth_used, height,
                                &targets)) {
     REXNATIVE_WARN_ONCE("ReXNative draw: RenderTargets::Bind failed (surface {:08X})",
                    regs[XE_GPU_REG_RB_SURFACE_INFO]);
@@ -3701,6 +4127,10 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   // Textures and samplers (bindless descriptor indices, b4).
   const uint32_t used_textures = vs->GetUsedTextureMaskAfterTranslation() |
                                  (ps ? ps->GetUsedTextureMaskAfterTranslation() : 0);
+  // The texture cache loads textures from guest memory: what the batch's memexport draws wrote
+  // goes there before a texture over it is bound.
+  if (!memexport_pending.empty() && used_textures && TexturesReadMemexport(regs, used_textures))
+    FlushMemexport(kFlushTextures);
   uint32_t desc_vs[64], desc_ps[64];
   uint8_t signs[32] = {};
   const TextureBindContext bind = {s,
@@ -3719,6 +4149,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   DxbcShaderTranslator::SystemConstants sys;
   FillSystemConstants(s, regs, prim, polygonal, index_endian, vp, used_textures, signs, targets,
                       sys);
+  // The shaders' exports, and their vertex fetches, go through the shared memory UAV.
+  if (memexport) sys.flags |= DxbcShaderTranslator::kSysFlag_SharedMemoryIsUAV;
   profile::Mark(profile::kSysConst);
 
   // Float constants packed by the shaders' maps (UpdateBindings), compared and staged in place.
@@ -3773,7 +4205,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const bool fan = prim == xenos::PrimitiveType::kTriangleFan;
   if (!prep) {
     upload_fence = r.frame_fence();
-    if (!RequestVertices(s, *vs, copies)) {
+    if (!RequestVertices(s, *vs, copies) || !RequestMemexport(s, *vs, ps, copies)) {
       // The copies made before the failed range go out: their pages are marked valid already.
       FlushCopies(list);
       ++stats.failed;
@@ -3781,6 +4213,21 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     }
   }
   FlushCopies(list);
+  // Memexport: the readback's snapshot of the destinations, the indices out of shared memory, and
+  // shared memory as a UAV.
+  D3D12_INDEX_BUFFER_VIEW memexport_ibv = {};
+  if (memexport) {
+    draw_memexport_ranges.clear();
+    AppendMemExportRanges(regs, *vs, draw_memexport_ranges);
+    if (ps) AppendMemExportRanges(regs, *ps, draw_memexport_ranges);
+    if (memexport_readback) SnapshotMemexport(list);
+    if (s.indexed && !fan &&
+        !CopyMemexportIndices(list, s.index_address, index_bytes, s.index_32bit, &memexport_ibv)) {
+      ++stats.failed;
+      return;
+    }
+    TransitionShared(list, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  }
   profile::Mark(profile::kVertices);
 
   // Fixed-function state, in the targets' host pixels. The pixel position PsParamGen gives
@@ -3914,6 +4361,9 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     list->IASetIndexBuffer(&ibv);
     bound_ibv = ibv;
     draw_count = f.count;
+  } else if (s.indexed && memexport) {
+    list->IASetIndexBuffer(&memexport_ibv);
+    bound_ibv = memexport_ibv;
   } else if (s.indexed) {
     // The whole shared memory buffer is the index buffer and the draw starts at the guest
     // address, so consecutive draws only rebind it when the index format changes.
@@ -3939,7 +4389,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   };
   OcclusionQueries* const occlusion = r.occlusion();
   const uint32_t pair =
-      occlusion && occlusion->counting() ? occlusion->Acquire() : OcclusionQueries::kNoPair;
+      occlusion && occlusion->counting() && (rt_mask || depth_used) ? occlusion->Acquire()
+                                                                    : OcclusionQueries::kNoPair;
   if (pair == OcclusionQueries::kNoPair) {
     issue();
   } else {
@@ -3971,6 +4422,14 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
           : 1.0f;
     occlusion->EndCoverage(list, pair, coverage, guest_per_host);
     if (draw_log) std::fprintf(draw_log, "  occ pair=%u cov=%u\n", pair, uint32_t(coverage));
+  }
+  if (memexport) {
+    // The next memexport draw sees this one's writes (leaving the UAV state orders the rest).
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    b.UAV.pResource = shared.Get();
+    list->ResourceBarrier(1, &b);
+    ++mx.draws;
   }
   ++stats.draws;
   ++diag.draws;
@@ -4139,12 +4598,17 @@ void DrawRenderer::BeforeSubmit() {
   m.coherency_inflight.push_back(std::move(job));
 }
 
+void DrawRenderer::FlushMemexport() { impl_->FlushMemexport(Impl::kFlushSwap); }
+
 void DrawRenderer::InvalidateListState(ListBreak why) {
   impl_->ResetListState();
   // Recording goes on in a new list, and the submitted one left shared memory in the common
   // state once it completed.
   const bool submit = why == ListBreak::kSubmit;
-  if (submit) impl_->shared_state = D3D12_RESOURCE_STATE_COMMON;
+  if (submit) {
+    impl_->shared_state = D3D12_RESOURCE_STATE_COMMON;
+    impl_->memexport_indices_state = D3D12_RESOURCE_STATE_COMMON;
+  }
   if (impl_->draw_log)
     std::fprintf(impl_->draw_log, "%s (after draw %u)\n", submit ? "submit" : "resolve",
                  impl_->frame_draws);
@@ -4220,6 +4684,7 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
   impl_->Prewarm();
   impl_->store.Flush();
   impl_->frame_draws = 0;
+  impl_->MemexportFrame(completed_fence);
   impl_->WriteSnapshots(completed_fence);
   if (profile::On() && ++impl_->diag.frames >= 300) {
     Impl::Diag& d = impl_->diag;

@@ -1,5 +1,6 @@
 // ReXNative renderer: texture cache (see textures.h).
 #include "textures.h"
+#include "memexport.h"
 
 #include "clock.h"
 #include "profile.h"
@@ -336,6 +337,26 @@ std::pair<uint32_t, uint32_t> TextureCache::Invalidate(uint32_t start, uint32_t 
   }
   if (any) change_epoch_.fetch_add(1, std::memory_order_acq_rel);
   return {lo, hi - lo};
+}
+
+void TextureCache::InvalidateWritten(uint32_t start, uint32_t length) {
+  uint32_t end;
+  if (!ClampRange(start, length, &end)) return;
+  bool any = false;
+  {
+    std::lock_guard<std::mutex> lock(watch_mutex_);
+    for (uint32_t b = start >> kWatchBucketShift; b <= (end - 1) >> kWatchBucketShift; ++b) {
+      for (const Watch& w : watch_buckets_[b]) {
+        if (w.start < end && start < w.end) {
+          // Not stale for any draw (Invalidate's write_mark): every Get uploads the new data.
+          w.texture->write_mark.store(0, std::memory_order_relaxed);
+          w.texture->dirty.store(true, std::memory_order_release);
+          any = true;
+        }
+      }
+    }
+  }
+  if (any) change_epoch_.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void TextureCache::OnResolved(uint32_t guest_physical) {
@@ -884,6 +905,19 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
   profile::Count(same_fetch ? profile::kGetMissChanged : profile::kGetMissFetch);
   TextureKey key;
   if (!TextureKeyFromFetch(fetch_dwords, &key)) return false;
+#ifndef REXNATIVE_TEXTURES_OFFLINE
+  {
+    uint32_t mbase, mbytes;
+    static uint32_t logged = 0;
+    if (logged < 16 && MemexportRangeOf(key.base_page << 12, &mbase, &mbytes)) {
+      ++logged;
+      REXLOG_INFO("ReXNative memexport: texture {}x{} {} at {:08X} reads memory a "
+                  "memexport draw writes ({:08X}, {} bytes)", key.width, key.height,
+                  rex::graphics::FormatInfo::Get(key.format)->name, key.base_page << 12, mbase,
+                  mbytes);
+    }
+  }
+#endif
   auto it = textures_.find(key);
   Texture* t;
   if (it != textures_.end()) {

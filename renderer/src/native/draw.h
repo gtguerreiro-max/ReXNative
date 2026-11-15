@@ -24,11 +24,19 @@
 //   - textures from TextureCache (TextureMod), samplers from the sampler bindings (port of
 //     D3D12TextureCache::GetSamplerParameters/WriteSampler), bindless heaps;
 //   - render targets from RenderTargets::Bind (RTResolve); viewport, scissor, blend factor
-//     and stencil reference (port of draw_util::GetHostViewportInfo / GetScissor).
+//     and stencil reference (port of draw_util::GetHostViewportInfo / GetScissor);
+//   - memexport (shaders that write guest memory, --rexnative_memexport): shared memory is a UAV
+//     for the draw (kSysFlag_SharedMemoryIsUAV), which runs without targets when rasterization
+//     is off (a vertex shader alone); its destination ranges are uploaded first and their pages
+//     belong to the GPU until the CPU writes them (no copy overwrites them). With
+//     --rexnative_memexport_readback, the bytes the draws changed are written back into guest
+//     memory, compared with a snapshot taken before the first export, before a draw binds a
+//     texture over them and at the Swap (a submission and a wait for the GPU; Xenia Canary's
+//     snapshot and diff, batched).
 //
-// Not handled (counted in Stats::unsupported and dropped): memexport, tessellation, line loops
-// and other primitive types needing converted indices, and primitive reset with a 16-bit index
-// other than 0xFFFF.
+// Not handled (counted in Stats::unsupported and dropped): tessellation, line loops and other
+// primitive types needing converted indices, and primitive reset with a 16-bit index other than
+// 0xFFFF; memexport draws with --rexnative_memexport=false.
 //
 // Threading: the renderer's On* calls only (one guest thread). With the render thread
 // (renderer.h, --rexnative_render_thread) the work is split: Prepare and EndFramePrepare run
@@ -182,6 +190,10 @@ class DrawRenderer {
   void AddPrepareCounters(const PrepareCounters& c);
   // Render thread, the last thing recorded into a frame's command list.
   void BeforeSubmit();
+  // Render thread, at the Swap before anything else is recorded: the memexport readback of the
+  // frame's last memexport draws (submits the frame so far and waits for it; nothing to do
+  // without any).
+  void FlushMemexport();
 
   // Why the next draw must set everything on the command list again. A new frame's list is
   // detected without InvalidateListState.
