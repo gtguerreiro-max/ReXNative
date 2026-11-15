@@ -139,6 +139,10 @@ struct RenderTarget {
   D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
   D3D12_CPU_DESCRIPTOR_HANDLE view{};  // RTV or DSV
   uint32_t view_index = 0;
+  // R8G8B8A8 color targets (resource R8G8B8A8_TYPELESS): an R8G8B8A8_UNORM_SRGB RTV too, for the
+  // draws that blend into a k_8_8_8_8_GAMMA surface (draw.cpp, kGammaBlendFormat).
+  D3D12_CPU_DESCRIPTOR_HANDLE srgb_view{};
+  uint32_t srgb_view_index = UINT32_MAX;
   uint64_t last_frame = 0;  // frame of the last use, for eviction
   uint64_t fill_seq = 0;    // EDRAM fills up to this sequence are applied (SyncEdram)
   // Clears not recorded yet, oldest first (RenderTargets::Clear).

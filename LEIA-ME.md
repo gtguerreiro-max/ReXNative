@@ -60,7 +60,7 @@ falhas e confirmam.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | a origem do renderer: o jogo todo ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **compilado do ReXNative**: joga-se (menus, níveis, HUD), como com a cópia feita à mão ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **compilado do ReXNative**: ecrãs de título, HUD, a intro e o seu vídeo, a primeira missão com o cenário (o hang da GPU vinha de argumentos de draw que o LTCG muda de sítio, agora rearrumados; o vídeo é um bitmap do Scaleform desenhado com DrawIndexedVerticesUP, intercetado desde 2026-11-15, num render target com gama; o cenário estático está em command buffers gravados, reproduzidos desde 2026-11-15) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **compilado do ReXNative**: ecrãs de título, HUD, a intro e o seu vídeo, a primeira missão com o cenário (o hang da GPU vinha de argumentos de draw que o LTCG muda de sítio, agora rearrumados; o vídeo é um bitmap do Scaleform desenhado com DrawIndexedVerticesUP, intercetado desde 2026-11-15, num render target com gama; o cenário estático está em command buffers gravados, reproduzidos desde 2026-11-15); joga-se no Steam Deck com o Proton, aos seus 30 FPS |
 
 From Dust e Iron Brigade já compilam o renderer a partir deste repositório (`rexnative_add()` e
 um `game_layer.h` gerado), sem cópia própria: testados num PC, cada um desenha o que a sua cópia
@@ -155,7 +155,8 @@ Arrancar um jogo para cada experiência custa minutos (logos, intro, menus). Em 
   captura RenderDoc do frame seguinte, e o `scripts\rdoc.ps1` interroga-a com o jogo fechado:
   `actions` (cada draw, o número de índices e os targets), `history -X -Y` (pixel history: que
   draws tocaram num píxel e o que falhou), `inputs -Event` (as texturas de um draw em PNG),
-  `save`.
+  `save`, `buffer -Offset -Size` (bytes da cópia da memória do jogo que o renderer tem, para
+  comparar com a do jogo).
 
 O cenário estático de Iron Brigade (2026-11-15): a pixel history não mostrou nenhum draw do
 G-buffer num edifício cuja profundidade lá estava; a malha só era desenhada nos passos de sombra
@@ -188,8 +189,10 @@ Melhorar aos poucos:
    um deles: o Scaleform desenha a imagem descodificada com DrawIndexedVerticesUP (vértices e
    índices inline, que nenhum hook via; a ferramenta encontra agora o BeginIndexedVertices ao
    lado do DrawVerticesUP), num render target `k_8_8_8_8_GAMMA` que o renderer escrevia linear,
-   com metade do brilho (agora na gama da consola, `--rexnative_gamma_targets`). Falta: um jogo
-   cuja imagem precise de memexport, e evitar a espera quando nada no CPU precisa do resultado.
+   com metade do brilho (agora na gama da consola, `--rexnative_gamma_targets`; um draw com
+   blending sobre um destes alvos usa uma vista sRGB, para misturar em cor linear como a
+   consola). Falta: um jogo cuja imagem precise de memexport, e evitar a espera quando nada no
+   CPU precisa do resultado.
 9. ~~Command buffers gravados (RunCommandBuffer).~~ Feito (2026-11-15). Iron Brigade grava os
    draws de G-buffer do cenário estático num segundo device e corre-os em cada frame com pacotes
    INDIRECT_BUFFER, que nenhum hook via, por isso esse cenário ficava com os dados dos passos

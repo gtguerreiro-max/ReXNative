@@ -21,6 +21,7 @@ namespace {
 namespace xenos = rex::graphics::xenos;
 
 constexpr uint32_t kMaxViews = 256;     // RTVs and DSVs each; PGR4 uses ~20 surfaces per frame
+constexpr uint32_t kMaxRtvs = 2 * kMaxViews;  // R8G8B8A8 targets have an sRGB RTV as well
 constexpr uint32_t kNullRtvs = 2;       // null RTVs for 1 and more samples, at the heap's start
 constexpr uint32_t kEdramTiles = 2048;  // 10 MiB of 80x16-sample tiles
 constexpr uint32_t kMaxHeight = 2048;
@@ -200,7 +201,7 @@ bool RenderTargets::Initialize(ID3D12Device* device) {
   device_ = device;
   D3D12_DESCRIPTOR_HEAP_DESC hd = {};
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  hd.NumDescriptors = kMaxViews + kNullRtvs;
+  hd.NumDescriptors = kMaxRtvs + kNullRtvs;
   if (Failed(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)),
              "RT CreateDescriptorHeap(RTV)"))
     return false;
@@ -212,10 +213,8 @@ bool RenderTargets::Initialize(ID3D12Device* device) {
   rtv_stride_ = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   dsv_stride_ = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
   rtv_start_ = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-  for (uint32_t i = kMaxViews; i-- > 0;) {
-    free_rtv_.push_back(kNullRtvs + i);
-    free_dsv_.push_back(i);
-  }
+  for (uint32_t i = kMaxRtvs; i-- > 0;) free_rtv_.push_back(kNullRtvs + i);
+  for (uint32_t i = kMaxViews; i-- > 0;) free_dsv_.push_back(i);
   // Null RTVs fill the gaps below the highest bound color target (D3D12 needs a descriptor in
   // every slot of OMSetRenderTargets; the sample count of a null view must match the others).
   for (uint32_t i = 0; i < kNullRtvs; ++i) {
@@ -286,8 +285,12 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
   // A view of its own: the old one may be in calls the command stream has not made yet, which
   // read it then.
   const uint32_t view_index = AllocView(rt->depth);
-  if (view_index == UINT32_MAX) {
+  const bool srgb = rt->resource_format == DXGI_FORMAT_R8G8B8A8_TYPELESS;
+  const uint32_t srgb_view_index = srgb ? AllocView(false) : UINT32_MAX;
+  if (view_index == UINT32_MAX || (srgb && srgb_view_index == UINT32_MAX)) {
     REXLOG_ERROR("ReXNative RT: out of {} views", rt->depth ? "depth" : "color");
+    if (view_index != UINT32_MAX) (rt->depth ? free_dsv_ : free_rtv_).push_back(view_index);
+    if (srgb_view_index != UINT32_MAX) free_rtv_.push_back(srgb_view_index);
     return false;
   }
   ComPtr<ID3D12Resource> res;
@@ -297,6 +300,7 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
     REXLOG_ERROR("ReXNative RT: CreateCommittedResource {}x{} fmt {} x{} failed: {:08X}", d.Width,
                  d.Height, int(d.Format), rt->samples, uint32_t(hr));
     (rt->depth ? free_dsv_ : free_rtv_).push_back(view_index);
+    if (srgb_view_index != UINT32_MAX) free_rtv_.push_back(srgb_view_index);
     return false;
   }
   if (log_)
@@ -304,6 +308,7 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
                  rt->depth ? "depth" : "color", rt->edram_base, rt->pitch, rt->samples,
                  int(rt->view_format), uint32_t(d.Width), d.Height, rt->resource ? " (grown)" : "");
   Retire(std::move(rt->resource), std::exchange(rt->view_index, view_index), rt->depth);
+  Retire(nullptr, std::exchange(rt->srgb_view_index, srgb_view_index), false);
   rt->resource = std::move(res);
   rt->state = initial;
   rt->width = std::max(1u, rt->pitch);
@@ -325,6 +330,13 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
     rt->view = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
     rt->view.ptr += size_t(rt->view_index) * rtv_stride_;
     device_->CreateRenderTargetView(rt->resource.Get(), &v, rt->view);
+    rt->srgb_view = {};
+    if (srgb) {
+      v.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+      rt->srgb_view = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+      rt->srgb_view.ptr += size_t(rt->srgb_view_index) * rtv_stride_;
+      device_->CreateRenderTargetView(rt->resource.Get(), &v, rt->srgb_view);
+    }
   }
   return true;
 }
@@ -360,6 +372,8 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
       return nullptr;
     }
     resource = srv = view;
+    // Typeless, for the sRGB RTV next to the UNORM one (RenderTarget::srgb_view).
+    if (view == DXGI_FORMAT_R8G8B8A8_UNORM) resource = DXGI_FORMAT_R8G8B8A8_TYPELESS;
     wide = Is64bpp(guest_format);
   }
   if (pitch == 0) return nullptr;
@@ -781,6 +795,7 @@ void RenderTargets::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t co
                      rt->depth ? "depth" : "color", rt->edram_base, rt->pitch, rt->samples,
                      (unsigned long long)rt->last_frame);
       Retire(std::move(rt->resource), rt->view_index, rt->depth);
+      Retire(nullptr, rt->srgb_view_index, false);
       it = targets_.erase(it);
       for (GetMemo& m : get_memo_) m = {};
     } else {

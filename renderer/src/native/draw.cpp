@@ -241,6 +241,9 @@ constexpr D3D12_RESOURCE_STATES kSharedReadState = D3D12_RESOURCE_STATE_NON_PIXE
 
 using enum rex::graphics::Register;  // XE_GPU_REG_* (clang-cl, C++20)
 
+// The RTV format of a draw that blends into a k_8_8_8_8_GAMMA target (BuildPipelineKey).
+constexpr DXGI_FORMAT kGammaBlendFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
 // reg::RB_COLOR_INFO / RB_BLENDCONTROL::rt_register_indices live in the plugin DLL (not exported).
 constexpr rex::graphics::Register kColorInfoRegs[4] = {
     XE_GPU_REG_RB_COLOR_INFO, XE_GPU_REG_RB_COLOR1_INFO, XE_GPU_REG_RB_COLOR2_INFO,
@@ -1302,7 +1305,8 @@ struct DrawRenderer::Impl {
   void FillSystemConstants(const DrawState& s, const RegisterFile& regs, xenos::PrimitiveType prim,
                            bool polygonal, xenos::Endian index_endian, const ViewportInfo& vp,
                            uint32_t used_textures, const uint8_t* signs,
-                           const BoundTargets& targets, DxbcShaderTranslator::SystemConstants& sys);
+                           const BoundTargets& targets, const PipelineKey& key,
+                           DxbcShaderTranslator::SystemConstants& sys);
   DxbcShader* LoadShader(ShaderMemo* table, ShaderMemo*& last, const ShaderRef& ref,
                          xenos::ShaderType type);
   DxbcShader* LoadReplayedShader(const ShaderRef& ref, xenos::ShaderType type);
@@ -2048,8 +2052,19 @@ void DrawRenderer::Impl::WatchThread() {
                                                   true, false);
       for (uint32_t q = first; q < end; ++q) {
         if (PageHash(q) == copy_hash[q].load(std::memory_order_relaxed)) continue;
-        // Written between its copy and the arm: the next request copies it again.
+        // Written between its copy and the arm: the next request copies it again. A page a
+        // memexport draw claimed (gpu_written) is the guest's again, as a fault would have made
+        // it: that write never faults, and requests skip the GPU's pages, so the GPU would keep
+        // the bytes from before it for good (Iron Brigade fills memory its level loading's
+        // memexport draws wrote with vertex buffers; their meshes came out as huge triangles).
         SetPageBits(valid.get(), q, q + 1, false);
+        const uint64_t bit = 1ull << (q & 63);
+        if (gpu_written[q >> 6].fetch_and(~bit, std::memory_order_relaxed) & bit) {
+          REXNATIVE_LOG_FIRST(8, INFO,
+                              "ReXNative memexport: page {:05X} written by the guest before its "
+                              "watch was armed: the guest's again",
+                              q);
+        }
         ++changed;
       }
       SetPageBits(pending.get(), first, end, false);
@@ -3395,6 +3410,17 @@ PipelineKey DrawRenderer::Impl::BuildPipelineKey(
     key.depth_bias = 0;
     key.slope_scaled_depth_bias = 0;
   }
+  // Blending into a gamma target: the console's render backend converts the destination from
+  // its PWL gamma to linear, blends there and converts back. Through the target's sRGB view the
+  // host does the same with the sRGB curve (close to the PWL one); blended in gamma space
+  // instead, additive light and particles came out far too bright (Iron Brigade's purple glows
+  // and fire haze, as with the Xenos plugin's RTV path; its ROV path blends in linear).
+  if (REXCVAR_GET(rexnative_gamma_targets))
+    for (uint32_t i = 0; i < key.num_rts; ++i)
+      if (key.rt[i].blend && targets.color[i] && targets.color[i]->srgb_view.ptr &&
+          regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
+              xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
+        key.rtv[i] = kGammaBlendFormat;
   return key;
 }
 
@@ -3796,7 +3822,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
                                              xenos::PrimitiveType prim, bool polygonal,
                                              xenos::Endian index_endian, const ViewportInfo& vp,
                                              uint32_t used_textures, const uint8_t* signs,
-                                             const BoundTargets& targets,
+                                             const BoundTargets& targets, const PipelineKey& key,
                                              DxbcShaderTranslator::SystemConstants& sys) {
   std::memset(&sys, 0, sizeof(sys));
   auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
@@ -3819,14 +3845,16 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
           ? colorcontrol.alpha_func
           : xenos::CompareFunction::kAlways;
   flags |= uint32_t(alpha_func) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
-  // Gamma render targets are R8G8B8A8_UNORM here (render_targets.cpp): the pixel shader
-  // converts its color to the guest's PWL gamma before the write, the plugin's 8-bit RTV path
-  // (blending then happens in gamma space, the RTV path's approximation). Iron Brigade's
-  // Scaleform draws its intro video into one: without this, half as bright as on the console.
+  // Gamma render targets are R8G8B8A8 here (render_targets.cpp). Without blending the pixel
+  // shader converts its color to the guest's PWL gamma before the write, the bytes the EDRAM
+  // would hold (Iron Brigade's Scaleform draws its intro video into one: without this, half as
+  // bright as on the console). A draw that blends goes through the target's sRGB view instead
+  // (BuildPipelineKey, kGammaBlendFormat) and writes linear color.
   if (REXCVAR_GET(rexnative_gamma_targets))
     for (uint32_t i = 0; i < 4; ++i)
-      if (targets.color[i] && regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
-                                  xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
+      if (targets.color[i] && key.rtv[i] != kGammaBlendFormat &&
+          regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
+              xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
         flags |= DxbcShaderTranslator::kSysFlag_ConvertColor0ToGamma << i;
   sys.flags = flags;
   sys.tessellation_factor_range_min = regs.Get<float>(XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
@@ -4239,7 +4267,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
 
   DxbcShaderTranslator::SystemConstants sys;
   FillSystemConstants(s, regs, prim, polygonal, index_endian, vp, used_textures, signs, targets,
-                      sys);
+                      key, sys);
   // The shaders' exports, and their vertex fetches, go through the shared memory UAV.
   if (memexport) sys.flags |= DxbcShaderTranslator::kSysFlag_SharedMemoryIsUAV;
   profile::Mark(profile::kSysConst);
@@ -4417,10 +4445,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   if (motion) {
     rt_count = DxbcShaderTranslator::kMotionVectorRenderTarget + 1;
     for (uint32_t i = 0; i < DxbcShaderTranslator::kMotionVectorRenderTarget; ++i)
-      rtv[i] = targets.rtv[i];
+      rtv[i] = i < key.num_rts && key.rtv[i] == kGammaBlendFormat ? targets.color[i]->srgb_view
+                                                                  : targets.rtv[i];
     rtv[DxbcShaderTranslator::kMotionVectorRenderTarget] = r.upscaler()->MotionTarget(list);
   } else {
-    for (uint32_t i = 0; i < key.num_rts; ++i) rtv[i] = targets.rtv[i];
+    for (uint32_t i = 0; i < key.num_rts; ++i)
+      rtv[i] = key.rtv[i] == kGammaBlendFormat ? targets.color[i]->srgb_view : targets.rtv[i];
   }
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
   if (key.dsv != DXGI_FORMAT_UNKNOWN) dsv = targets.dsv;

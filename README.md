@@ -67,7 +67,7 @@ gaps and cross-check.
 |---|---|---|
 | Project Gotham Racing 4 | D3D9 2.0.6132 | the renderer's origin: the whole game ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) |
 | From Dust | D3D9 2.0.20353 | **built from ReXNative**: plays (menus, levels, HUD), as with its hand-made copy ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, the intro and its video, the first mission with its scenery (its GPU hang came from draw arguments its LTCG build moves, now remapped; the video is a Scaleform bitmap drawn with DrawIndexedVerticesUP, hooked since 2026-11-15, into a gamma render target; the static scenery is in recorded command buffers, replayed since 2026-11-15) |
+| Iron Brigade | D3D9LTCG 2.0.20353 | **built from ReXNative**: title screens, HUD, the intro and its video, the first mission with its scenery (its GPU hang came from draw arguments its LTCG build moves, now remapped; the video is a Scaleform bitmap drawn with DrawIndexedVerticesUP, hooked since 2026-11-15, into a gamma render target; the static scenery is in recorded command buffers, replayed since 2026-11-15); plays on the Steam Deck under Proton at its 30 FPS |
 
 From Dust and Iron Brigade now build their renderer from this repository (`rexnative_add()`
 and a generated `game_layer.h`), with no copy of their own: tested on a PC, each draws what its
@@ -160,7 +160,9 @@ Starting a game for every experiment costs minutes (logos, intro, menus). Instea
 - With `start -RenderDoc` (RenderDoc's folder in `REXNATIVE_RENDERDOC`), `capture` takes a
   RenderDoc capture of the next frame, and `scripts\rdoc.ps1` queries it with the game closed:
   `actions` (every draw, its index count and targets), `history -X -Y` (pixel history: which
-  draws touched a pixel and what failed), `inputs -Event` (a draw's textures as PNG), `save`.
+  draws touched a pixel and what failed), `inputs -Event` (a draw's textures as PNG), `save`,
+  `buffer -Offset -Size` (bytes of the renderer's copy of guest memory, to compare with the
+  game's).
 
 Iron Brigade's static scenery (2026-11-15): the pixel history showed no G-buffer draw on a
 building whose depth was there; its mesh was drawn only in the shadow and depth passes, and the
@@ -208,8 +210,9 @@ Improving it a little at a time:
    decoded frame with DrawIndexedVerticesUP (inline vertices and indices, which no hook saw;
    the tool now finds BeginIndexedVertices next to DrawVerticesUP), into a `k_8_8_8_8_GAMMA`
    target the renderer wrote linear, half as bright (now in the console's gamma,
-   `--rexnative_gamma_targets`). Still to do: a game whose picture needs memexport, and avoiding
-   the wait when nothing on the CPU needs it.
+   `--rexnative_gamma_targets`; a draw that blends into one goes through an sRGB view, so it
+   blends in linear color as the console does). Still to do: a game whose picture needs
+   memexport, and avoiding the wait when nothing on the CPU needs it.
 9. ~~Recorded command buffers (RunCommandBuffer).~~ Done (2026-11-15). Iron Brigade records
    its static scenery's G-buffer draws on a second device and runs them each frame through
    INDIRECT_BUFFER packets, which no hook saw, so that scenery showed the previous passes' data

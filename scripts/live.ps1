@@ -74,7 +74,10 @@ public static class RexLiveWin {
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
     public static void Key(byte vk, bool down) {
-        keybd_event(vk, (byte)MapVirtualKey(vk, 0), down ? 0u : 2u, UIntPtr.Zero);
+        // Arrows, Home/End/PageUp/PageDown, Insert/Delete: extended keys. Without the flag they
+        // arrive as the numeric keypad's (a game's right stick on the arrows never moves).
+        bool ext = (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E;
+        keybd_event(vk, (byte)MapVirtualKey(vk, 0), (down ? 0u : 2u) | (ext ? 1u : 0u), UIntPtr.Zero);
     }
 }
 '@

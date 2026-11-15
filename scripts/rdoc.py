@@ -133,6 +133,23 @@ def main():
                         controller.SaveTexture(s, path)
                         f.write("  saved %s\n" % path)
                         saved += 1
+        elif cmd == "buffer":
+            # Bytes of a buffer as they are after `event` (0: the last action): resource id
+            # `texture`, or the largest buffer (the renderer's copy of guest physical memory, so
+            # `offset` is a physical address there), into buffer-<offset>.bin.
+            event = job.get("event") or last_event()
+            controller.SetFrameEvent(event, True)
+            buffers = controller.GetBuffers()
+            rid = job.get("texture") or 0
+            buf = (next(b for b in buffers if int(b.resourceId) == rid) if rid else
+                   max(buffers, key=lambda b: b.length))
+            offset, size = int(job["offset"], 16), int(job["size"], 16)
+            data = controller.GetBufferData(buf.resourceId, offset, size)
+            path = os.path.join(out, "buffer-%08X.bin" % offset)
+            open(path, "wb").write(bytes(data))
+            with open(os.path.join(out, "buffer.txt"), "w") as f:
+                f.write("%s buffer %d (%d bytes) at %08X, %d bytes after event %d\n" % (
+                    path, int(buf.resourceId), buf.length, offset, len(data), event))
         else:
             raise RuntimeError("unknown cmd " + cmd)
     finally:
