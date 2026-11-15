@@ -86,11 +86,13 @@ def main():
                     failed = [n for n in flags if getattr(m, n, False)]
                     pre = tuple(m.preMod.col.floatValue[:4])
                     post = tuple(m.postMod.col.floatValue[:4])
+                    out = tuple(m.shaderOut.col.floatValue[:4])  # the pixel shader's color
                     f.write("%d %s prim %d pass=%s %s pre=(%.3g %.3g %.3g %.3g) "
-                            "post=(%.3g %.3g %.3g %.3g) depth %.6g->%.6g stencil %d->%d\n" % (
+                            "post=(%.3g %.3g %.3g %.3g) shader=(%.3g %.3g %.3g %.3g) "
+                            "depth %.6g->%.6g stencil %d->%d\n" % (
                                 m.eventId, names.get(m.eventId, "?"), m.primitiveID, m.Passed(),
-                                ",".join(failed), *pre, *post, m.preMod.depth, m.postMod.depth,
-                                m.preMod.stencil, m.postMod.stencil))
+                                ",".join(failed), *pre, *post, *out, m.preMod.depth,
+                                m.postMod.depth, m.preMod.stencil, m.postMod.stencil))
         elif cmd == "save":
             event = job.get("event") or last_event()
             rid = job.get("texture") or 0
@@ -117,6 +119,13 @@ def main():
                     f.write("%s shader %s\n" % (stage, int(state.GetShader(stage))))
                 f.write("outputs: %s\n" % "; ".join(
                     describe(o) for o in list(action.outputs) + [action.depthOut] if o != null))
+                for i, b in enumerate(state.GetColorBlends()[:4]):
+                    if not b.enabled and i:
+                        continue
+                    f.write("blend %d: enabled=%d color %s * %s %s alpha %s * %s %s mask %X\n" % (
+                        i, b.enabled, b.colorBlend.source, b.colorBlend.destination,
+                        b.colorBlend.operation, b.alphaBlend.source, b.alphaBlend.destination,
+                        b.alphaBlend.operation, b.writeMask))
                 saved = 0
                 for u in state.GetReadOnlyResources(rd.ShaderStage.Pixel, True):
                     rid = u.descriptor.resource
@@ -133,6 +142,68 @@ def main():
                         controller.SaveTexture(s, path)
                         f.write("  saved %s\n" % path)
                         saved += 1
+        elif cmd == "mesh":
+            # The vertex shader's output positions of the draw at `event` (up to 64 vertices):
+            # clip x y z w and the pixel they land on in the viewport, into mesh-e<event>.txt.
+            import struct
+            event = job["event"]
+            controller.SetFrameEvent(event, True)
+            vp = controller.GetPipelineState().GetViewport(0)
+            mesh = controller.GetPostVSData(0, 0, rd.MeshDataStage.VSOut)
+            with open(os.path.join(out, "mesh-e%d.txt" % event), "w") as f:
+                f.write("%d %s: %d vertices, stride %d, viewport %g,%g %gx%g\n" % (
+                    event, next(a for a in actions if a.eventId == event).GetName(sfile),
+                    mesh.numIndices, mesh.vertexByteStride, vp.x, vp.y, vp.width, vp.height))
+                n = min(mesh.numIndices, 64)
+                if mesh.vertexResourceId != null and n:
+                    data = controller.GetBufferData(mesh.vertexResourceId, mesh.vertexByteOffset,
+                                                    mesh.vertexByteStride * n)
+                    for i in range(n):
+                        x, y, z, w = struct.unpack_from("<4f", data, i * mesh.vertexByteStride)
+                        sx = vp.x + (x / w * 0.5 + 0.5) * vp.width if w else float("nan")
+                        sy = vp.y + (0.5 - y / w * 0.5) * vp.height if w else float("nan")
+                        rest = struct.unpack_from("<%df" % (mesh.vertexByteStride // 4 - 4), data,
+                                                  i * mesh.vertexByteStride + 16)
+                        f.write("%d clip %.4g %.4g %.4g %.4g pixel %.1f %.1f | %s\n" % (
+                            i, x, y, z, w, sx, sy, " ".join("%.4g" % v for v in rest)))
+        elif cmd == "disasm":
+            # The vertex and pixel shaders of the draw at `event`, disassembled (DXBC), into
+            # disasm-e<event>-vs.txt / -ps.txt.
+            event = job["event"]
+            controller.SetFrameEvent(event, True)
+            state = controller.GetPipelineState()
+            pipe = state.GetGraphicsPipelineObject()
+            targets = controller.GetDisassemblyTargets(True)
+            for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Pixel, "ps")):
+                refl = state.GetShaderReflection(stage)
+                if refl is None:
+                    continue
+                text = controller.DisassembleShader(pipe, refl, targets[0])
+                open(os.path.join(out, "disasm-e%d-%s.txt" % (event, tag)), "w").write(text)
+        elif cmd == "cbuffers":
+            # The constant buffers bound to the draw at `event`'s shaders, as float4s (up to 64
+            # each), into cbuffers-e<event>.txt.
+            import struct
+            event = job["event"]
+            controller.SetFrameEvent(event, True)
+            state = controller.GetPipelineState()
+            with open(os.path.join(out, "cbuffers-e%d.txt" % event), "w") as f:
+                for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Pixel, "ps")):
+                    refl = state.GetShaderReflection(stage)
+                    if refl is None:
+                        continue
+                    for i, cb in enumerate(refl.constantBlocks):
+                        bind = state.GetConstantBlock(stage, i, 0).descriptor
+                        size = min(bind.byteSize or 1024, 1024)
+                        if bind.resource == null:
+                            f.write("%s cb%d %s: unbound\n" % (tag, i, cb.name))
+                            continue
+                        data = controller.GetBufferData(bind.resource, bind.byteOffset, size)
+                        f.write("%s cb%d %s (register %d, %d bytes)\n" % (
+                            tag, i, cb.name, cb.fixedBindNumber, len(data)))
+                        for k in range(len(data) // 16):
+                            f.write("  [%d] %s\n" % (k, " ".join(
+                                "%.6g" % v for v in struct.unpack_from("<4f", data, k * 16))))
         elif cmd == "buffer":
             # Bytes of a buffer as they are after `event` (0: the last action): resource id
             # `texture`, or the largest buffer (the renderer's copy of guest physical memory, so

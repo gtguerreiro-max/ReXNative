@@ -156,7 +156,8 @@ Arrancar um jogo para cada experiência custa minutos (logos, intro, menus). Em 
   `actions` (cada draw, o número de índices e os targets), `history -X -Y` (pixel history: que
   draws tocaram num píxel e o que falhou), `inputs -Event` (as texturas de um draw em PNG),
   `save`, `buffer -Offset -Size` (bytes da cópia da memória do jogo que o renderer tem, para
-  comparar com a do jogo).
+  comparar com a do jogo), `mesh`, `disasm`, `cbuffers -Event` (a saída do vertex shader, as
+  shaders e as constantes de um draw: comparáveis com uma captura do plugin Xenos).
 
 O cenário estático de Iron Brigade (2026-11-15): a pixel history não mostrou nenhum draw do
 G-buffer num edifício cuja profundidade lá estava; a malha só era desenhada nos passos de sombra
@@ -193,6 +194,11 @@ Melhorar aos poucos:
    blending sobre um destes alvos usa uma vista sRGB, para misturar em cor linear como a
    consola). Falta: um jogo cuja imagem precise de memexport, e evitar a espera quando nada no
    CPU precisa do resultado.
+
+   Aliasing da EDRAM entre MSAA: uma superfície de profundidade 4x (ou 2x) sobre uma 1x na
+   mesma base fica com a profundidade dela (cada amostra é um pixel da 1x), como as partículas
+   a meia resolução de Iron Brigade precisam para ficarem escondidas pelo cenário
+   (`RenderTargets::AliasDepth`).
 9. ~~Command buffers gravados (RunCommandBuffer).~~ Feito (2026-11-15). Iron Brigade grava os
    draws de G-buffer do cenário estático num segundo device e corre-os em cada frame com pacotes
    INDIRECT_BUFFER, que nenhum hook via, por isso esse cenário ficava com os dados dos passos

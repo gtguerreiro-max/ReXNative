@@ -473,6 +473,8 @@ bool RenderTargets::Bind(CommandStream* list, const SurfaceRegs& regs, uint32_t 
     if (!rt) return false;
     Transition(list, rt, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     if (rt->pending_count) Flush(list, rt);
+    if (rt->edram_samples > 1 && AliasDepth(list, rt)) out->list_state_lost = true;
+    rt->depth_seq = ++depth_seq_;
     out->depth = rt;
     out->dsv = rt->view;
     out->scale = rt->scale;
@@ -598,6 +600,7 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
       v.depth = std::clamp(p.depth, 0.0f, 1.0f);
       v.stencil = p.stencil;
       Defer(list, rt, v, p.rects);
+      if (df & D3D12_CLEAR_FLAG_DEPTH) rt->depth_seq = ++depth_seq_;
       if (!fills_.empty()) DropFills(*rt, edram_rows(*rt));
     }
   }
@@ -772,6 +775,171 @@ void RenderTargets::SyncEdram(CommandStream* list, RenderTarget* rt) {
                    f.base, f.pitch, f.color[3], g.base, g.pitch, rt->samples, rects[0].top,
                    rects[nr - 1].bottom);
   }
+}
+
+namespace {
+
+// RenderTargets::AliasDepth: a full-screen triangle whose pixel shader runs once per sample of
+// the MSAA target and writes the depth the 1x source holds for that sample.
+constexpr char kAliasDepthHlsl[] = R"(
+cbuffer AliasDepth : register(b0) {
+  float2 dst_to_guest;  // host pixel of the target -> its guest pixel
+  float2 src_scale;     // guest pixel of the source -> host pixel
+  uint2 step;           // source pixels per target pixel: (2, 2) for 4x, (1, 2) for 2x
+  uint2 pad;
+};
+#ifdef SOURCE_MS
+Texture2DMS<float> source : register(t0);
+#else
+Texture2D<float> source : register(t0);
+#endif
+float4 vs(uint id : SV_VertexID) : SV_Position {
+  float2 uv = float2((id << 1) & 2, id & 2);
+  return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+float ps(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Depth {
+  uint2 g = uint2(pos.xy * dst_to_guest);
+  uint2 sub = step.x > 1 ? uint2(s & 1, s >> 1) : uint2(0, s);
+  uint2 h = uint2((float2(g * step + min(sub, step - 1)) + 0.5) * src_scale);
+#ifdef SOURCE_MS
+  return source.Load(h, 0);
+#else
+  return source.Load(int3(h, 0));
+#endif
+}
+)";
+
+constexpr uint32_t kAliasHeapSize = 64;  // SRVs used in turn; a few copies a frame at most
+
+}  // namespace
+
+bool RenderTargets::InitAliasDepth() {
+  if (alias_init_) return alias_ok_;
+  alias_init_ = true;
+  const pD3DCompile compile = D3DCompiler();
+  if (!compile) return false;
+  ComPtr<ID3DBlob> err;
+  const D3D_SHADER_MACRO ms[] = {{"SOURCE_MS", "1"}, {nullptr, nullptr}};
+  if (FAILED(compile(kAliasDepthHlsl, sizeof(kAliasDepthHlsl) - 1, "alias_depth", nullptr,
+                     nullptr, "vs", "vs_5_1", 0, 0, &alias_vs_, &err)) ||
+      FAILED(compile(kAliasDepthHlsl, sizeof(kAliasDepthHlsl) - 1, "alias_depth", nullptr,
+                     nullptr, "ps", "ps_5_1", 0, 0, &alias_ps_[0], &err)) ||
+      FAILED(compile(kAliasDepthHlsl, sizeof(kAliasDepthHlsl) - 1, "alias_depth", ms, nullptr,
+                     "ps", "ps_5_1", 0, 0, &alias_ps_[1], &err))) {
+    REXLOG_ERROR("ReXNative RT: depth alias shader: {}",
+                 err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+    return false;
+  }
+  D3D12_DESCRIPTOR_RANGE range = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
+  D3D12_ROOT_PARAMETER params[2] = {};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[0].Constants = {0, 0, 8};
+  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[1].DescriptorTable = {1, &range};
+  params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  D3D12_ROOT_SIGNATURE_DESC rs = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+  ComPtr<ID3DBlob> blob;
+  if (Failed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err),
+             "RT depth alias root signature serialize") ||
+      Failed(device_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                          IID_PPV_ARGS(&alias_rs_)),
+             "RT depth alias root signature"))
+    return false;
+  D3D12_DESCRIPTOR_HEAP_DESC hd = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kAliasHeapSize,
+                                   D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+  if (Failed(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&alias_heap_)),
+             "RT depth alias heap"))
+    return false;
+  alias_srv_stride_ =
+      device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  alias_ok_ = true;
+  return true;
+}
+
+bool RenderTargets::AliasDepth(CommandStream* list, RenderTarget* rt) {
+  const uint32_t step_x = rt->edram_samples >= 4 ? 2 : 1, step_y = 2;
+  // The 1x depth target at the same base whose pixels are rt's samples, written since rt was.
+  RenderTarget* src = nullptr;
+  for (const auto& [key, a] : targets_) {
+    if (!a->depth || a.get() == rt || a->edram_base != rt->edram_base || a->edram_samples != 1 ||
+        a->pitch != rt->pitch * step_x || a->view_format != rt->view_format ||
+        a->depth_seq <= rt->depth_seq || (src && a->depth_seq <= src->depth_seq))
+      continue;
+    src = a.get();
+  }
+  if (!src || !InitAliasDepth()) return false;
+  const bool source_ms = src->samples > 1;
+  const uint32_t pso_key = uint32_t(rt->view_format) << 8 | rt->samples << 1 | source_ms;
+  ComPtr<ID3D12PipelineState>& pso = alias_pso_[pso_key];
+  if (!pso) {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+    d.pRootSignature = alias_rs_.Get();
+    d.VS = {alias_vs_->GetBufferPointer(), alias_vs_->GetBufferSize()};
+    d.PS = {alias_ps_[source_ms]->GetBufferPointer(), alias_ps_[source_ms]->GetBufferSize()};
+    d.SampleMask = UINT_MAX;
+    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    d.DepthStencilState.DepthEnable = TRUE;
+    d.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    d.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    d.DSVFormat = rt->view_format;
+    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    d.SampleDesc.Count = rt->samples;
+    if (Failed(device_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)),
+               "RT depth alias pipeline")) {
+      alias_pso_.erase(pso_key);
+      return false;
+    }
+  }
+  // The source's depth plane, readable by the pixel shader.
+  Transition(list, src, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+  sd.Format = src->srv_format;
+  sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  if (source_ms) {
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+  } else {
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Texture2D.MipLevels = 1;
+  }
+  const uint32_t slot = alias_heap_next_++ % kAliasHeapSize;
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = alias_heap_->GetCPUDescriptorHandleForHeapStart();
+  cpu.ptr += size_t(slot) * alias_srv_stride_;
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu = alias_heap_->GetGPUDescriptorHandleForHeapStart();
+  gpu.ptr += uint64_t(slot) * alias_srv_stride_;
+  device_->CreateShaderResourceView(src->resource.Get(), &sd, cpu);
+
+  const D3D12_RESOURCE_DESC desc = rt->resource->GetDesc();
+  struct Constants {
+    float dst_to_guest[2], src_scale[2];
+    uint32_t step[2], pad[2];
+  };
+  const Constants c = {{1.0f / rt->scale.factor(0), 1.0f / rt->scale.factor(1)},
+                       {src->scale.factor(0), src->scale.factor(1)},
+                       {step_x, step_y},
+                       {0, 0}};
+  ID3D12DescriptorHeap* heap = alias_heap_.Get();
+  list->SetDescriptorHeaps(1, &heap);
+  list->SetGraphicsRootSignature(alias_rs_.Get());
+  list->Call([c](CommandStream::List* l) { l->SetGraphicsRoot32BitConstants(0, 8, &c, 0); });
+  list->SetGraphicsRootDescriptorTable(1, gpu);
+  list->SetPipelineState(pso.Get());
+  list->OMSetRenderTargets(0, nullptr, FALSE, &rt->view);
+  const D3D12_VIEWPORT vp = {0.0f, 0.0f, float(desc.Width), float(desc.Height), 0.0f, 1.0f};
+  const D3D12_RECT sc = {0, 0, LONG(desc.Width), LONG(desc.Height)};
+  list->RSSetViewports(1, &vp);
+  list->RSSetScissorRects(1, &sc);
+  list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  list->DrawInstanced(3, 1, 0, 0);
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative RT: depth of the 1x surface at base {} pitch {} copied into the "
+                      "{}x MSAA surface over it (pitch {}): EDRAM aliasing",
+                      src->edram_base, src->pitch, rt->edram_samples, rt->pitch);
+  if (log_)
+    std::fprintf(log_, "rt depth alias: base %u pitch %u -> pitch %u x%u\n", src->edram_base,
+                 src->pitch, rt->pitch, rt->edram_samples);
+  return true;
 }
 
 void RenderTargets::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t completed_fence) {

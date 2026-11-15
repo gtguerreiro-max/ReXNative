@@ -162,7 +162,8 @@ Starting a game for every experiment costs minutes (logos, intro, menus). Instea
   `actions` (every draw, its index count and targets), `history -X -Y` (pixel history: which
   draws touched a pixel and what failed), `inputs -Event` (a draw's textures as PNG), `save`,
   `buffer -Offset -Size` (bytes of the renderer's copy of guest memory, to compare with the
-  game's).
+  game's), `mesh`, `disasm`, `cbuffers -Event` (a draw's vertex shader output, shaders and
+  constants: comparable with a capture of the Xenos plugin).
 
 Iron Brigade's static scenery (2026-11-15): the pixel history showed no G-buffer draw on a
 building whose depth was there; its mesh was drawn only in the shadow and depth passes, and the
@@ -213,6 +214,10 @@ Improving it a little at a time:
    `--rexnative_gamma_targets`; a draw that blends into one goes through an sRGB view, so it
    blends in linear color as the console does). Still to do: a game whose picture needs
    memexport, and avoiding the wait when nothing on the CPU needs it.
+
+   EDRAM aliasing across MSAA: a 4x (or 2x) depth surface over a 1x one at the same base takes
+   its depth (each sample is a pixel of the 1x surface), as Iron Brigade's half-resolution
+   particles need to be hidden by the scenery (`RenderTargets::AliasDepth`).
 9. ~~Recorded command buffers (RunCommandBuffer).~~ Done (2026-11-15). Iron Brigade records
    its static scenery's G-buffer draws on a second device and runs them each frame through
    INDIRECT_BUFFER packets, which no hook saw, so that scenery showed the previous passes' data

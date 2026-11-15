@@ -11,7 +11,9 @@
 // sit at color base 224 over depth base 0. Every surface use starts with a Clear/ClearF of
 // that surface (BeginTiling's ClearF for the scene), a Resolve with clear flags on the same
 // surface, or a full-screen draw that overwrites its color, so surfaces at the same base are
-// separate host targets and rendered data never moves between them. Cleared values do: the
+// separate host targets and rendered data never moves between them, but for depth taken into
+// an MSAA surface over a 1x one (AliasDepth: Iron Brigade's half-resolution particles). Cleared
+// values do: the
 // post chain's first 1x pass writes RGB only and keeps the alpha EndTiling's resolve clears
 // left in the EDRAM (the motion blur mask: every tile is rendered at the base, so the 1x
 // surface's rows 0-479 hold the last tile's clear, alpha 0, and rows 480-719 the first
@@ -145,6 +147,8 @@ struct RenderTarget {
   uint32_t srgb_view_index = UINT32_MAX;
   uint64_t last_frame = 0;  // frame of the last use, for eviction
   uint64_t fill_seq = 0;    // EDRAM fills up to this sequence are applied (SyncEdram)
+  // Depth targets: when their depth last changed (bound, cleared, copied in; AliasDepth).
+  uint64_t depth_seq = 0;
   // Clears not recorded yet, oldest first (RenderTargets::Clear).
   std::array<PendingClear, kMaxPendingClears> pending{};
   uint32_t pending_count = 0;
@@ -160,6 +164,9 @@ struct BoundTargets {
   uint32_t samples = 1;
   uint32_t width = 0, height = 0;  // smallest bound target (the draw's maximum extent)
   RenderScale scale;               // of every bound target (they are one surface's)
+  // Bind recorded calls of its own (RenderTargets::AliasDepth): the caller's cached list state
+  // (pipeline, root signature, heaps, targets, viewport) is gone.
+  bool list_state_lost = false;
 };
 
 // Decoded Clear / ClearF arguments.
@@ -285,6 +292,24 @@ class RenderTargets {
   // Clears color target `rt` to the EDRAM fills recorded over its tiles since its last use
   // (after its pending clears, which are older).
   void SyncEdram(CommandStream* list, RenderTarget* rt);
+
+  // EDRAM aliasing across MSAA. A guest MSAA surface holds its samples where a 1x surface of
+  // the same base holds pixels: with 4x MSAA at pitch P, sample (sx, sy) of pixel (x, y) is the
+  // 1x pitch-2P surface's pixel (2x + sx, 2y + sy) (2x MSAA: pitch P, pixel (x, 2y + s)).
+  // Iron Brigade draws its particles at half resolution with 4x MSAA over the depth of its
+  // full-resolution 1x scene that way, so that the scene hides them. Here every surface is a
+  // target of its own: when depth target `rt` is bound and such a 1x depth target changed
+  // since `rt` did, its depth is copied into `rt`'s samples (stencil is left). Returns whether
+  // it recorded calls.
+  bool AliasDepth(CommandStream* list, RenderTarget* rt);
+  bool InitAliasDepth();
+  ComPtr<ID3D12RootSignature> alias_rs_;
+  std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> alias_pso_;
+  ComPtr<ID3DBlob> alias_vs_, alias_ps_[2];  // [source MSAA on the host]
+  ComPtr<ID3D12DescriptorHeap> alias_heap_;
+  uint32_t alias_heap_next_ = 0, alias_srv_stride_ = 0;
+  bool alias_init_ = false, alias_ok_ = false;
+  uint64_t depth_seq_ = 0;
 
   // Adds `v` over `rects` (guest pixels; none: all of the target) to rt's pending clears.
   void Defer(CommandStream* list, RenderTarget* rt, const ClearValue& v,

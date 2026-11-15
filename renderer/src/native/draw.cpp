@@ -4188,6 +4188,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     ++stats.failed;
     return;
   }
+  if (targets.list_state_lost) ResetListState();
   profile::Mark(profile::kRtBind);
 
   // Translations.
