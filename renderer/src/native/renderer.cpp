@@ -489,6 +489,8 @@ bool NativeRenderer::Initialize() {
   SwitchUpscaler(Upscaler::Requested());
   textures_ = std::make_unique<TextureCache>(device_->device(), rex::system::kernel_memory());
   textures_->SetResolvedLookup([this](uint32_t a) { return resolver_->Find(a); });
+  textures_->SetResolvedContaining(
+      [this](uint32_t a, uint32_t* row) { return resolver_->FindContaining(a, row); });
   textures_->SetCaptureOrder(REXCVAR_GET(rexnative_texture_capture_order));
   resolver_->SetChangedCallback([this](uint32_t a) { textures_->OnResolved(a); });
   draw_ = std::make_unique<DrawRenderer>(*this);

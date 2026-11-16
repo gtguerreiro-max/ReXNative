@@ -317,9 +317,11 @@ Melhorar aos poucos:
     por frame); Halo: Combat Evolved Anniversary, a partir da imagem do disco (TU 2), chega ao
     menu da campanha e mostra a cena de abertura (algumas superfícies escuras ou às riscas);
     Spelunky (TU 1) chega aos menus, sem texto em nenhum dos renderers; Brothers - A Tale of Two
-    Sons chega ao menu e desenha a cena, escura demais (o tone mapping do Unreal Engine 3 lê a
-    cena 7e3 como bits 10:10:10:2, que o ReXNative agora converte: RenderTargets::AliasColor; a
-    cadeia de luminância ainda não está certa). Mudanças no renderer por trás disto: só se segue
+    Sons (Unreal Engine 3) mostra o menu e a abertura como o renderer de origem: o pós-processamento
+    lê a EDRAM da cena 7e3 como bits 10:10:10:2 e 8:8:8:8 (o RenderTargets::AliasColor converte-os
+    entre alvos) e a tabela de cor é uma textura de 16 fatias que um só resolve de 16x512
+    escreveu, uma fatia a cada 32 linhas (Resolver::FindContaining: uma fatia ou nível dentro de
+    uma imagem resolvida copia-se das suas linhas; antes só a primeira fatia vinha). Mudanças no renderer por trás disto: só se segue
     o device que apresenta (o Halo desenha em dois devices a partir de dois threads, que se
     atropelavam na fila do renderer); o BeginIndexedVertices procura-se depois do BeginVertices
     quando falta o DrawVerticesUP (os 68 draws de pós-processamento por frame do Brothers não

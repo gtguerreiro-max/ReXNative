@@ -52,6 +52,10 @@ namespace rexnative {
 
 // Returns the image last resolved to a guest physical address (Resolver::Find), or nullptr.
 using ResolvedLookup = std::function<const ResolvedImage*(uint32_t guest_physical)>;
+// The resolved image holding an address past its base, and the row it starts at
+// (Resolver::FindContaining).
+using ResolvedContaining =
+    std::function<const ResolvedImage*(uint32_t guest_physical, uint32_t* row)>;
 
 // One texture of the cache bound through one resource: the slot's generation goes up when the
 // texture is evicted (its slot is reused) and when the resource it binds changes (a resolved
@@ -114,6 +118,7 @@ class TextureCache {
   TextureCache& operator=(const TextureCache&) = delete;
 
   void SetResolvedLookup(ResolvedLookup lookup) { resolved_lookup_ = std::move(lookup); }
+  void SetResolvedContaining(ResolvedContaining f) { resolved_containing_ = std::move(f); }
   void SetEvictCallback(EvictCallback callback) { evict_callback_ = std::move(callback); }
   // The resolver's Find result for this guest physical address may have changed
   // (Resolver::SetChangedCallback): textures with a subresource there recheck it at their next
@@ -321,6 +326,10 @@ class TextureCache {
   void* invalidation_handle_ = nullptr;
   bool unaligned_bc_supported_ = false;
   ResolvedLookup resolved_lookup_;
+  ResolvedContaining resolved_containing_;
+  // An image for a subresource at `address`: the one resolved there, or one holding it from
+  // *row (0 for the former).
+  const ResolvedImage* ResolvedAt(uint32_t address, uint32_t* row) const;
   // Direct-mapped memo of the last Get per fetch-dword hash: a hit (same 6 dwords, texture
   // unchanged) skips the key decode, the map lookup and the SRV desc build. An eviction clears
   // the entries of the textures it destroys. 1,024 entries: with 64, the race missed ~1,600

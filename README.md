@@ -327,10 +327,12 @@ Improving it a little at a time:
     its start-up. Added the same day: Orcs Must Die! plays its first level (TU 1, 30 FPS, 500
     draws a frame); Halo: Combat Evolved Anniversary, from its disc image (TU 2), reaches its
     campaign menu and plays the opening cutscene (some surfaces dark or striped); Spelunky (TU 1)
-    reaches its menus, with no text in either renderer; Brothers - A Tale of Two Sons reaches
-    its menu and draws its scene, too dark (its Unreal Engine 3 tone mapping reads the 7e3 scene
-    as 10:10:10:2 bits, which ReXNative now converts: RenderTargets::AliasColor; its luminance
-    chain is not right yet). Renderer changes behind them: only the device that presents is
+    reaches its menus, with no text in either renderer; Brothers - A Tale of Two Sons (Unreal
+    Engine 3) plays its menu and opening as the stock renderer draws them: its post processing
+    reads the 7e3 scene's EDRAM as 10:10:10:2 and 8:8:8:8 bits (RenderTargets::AliasColor
+    converts them between targets), and its colour grading table is a stacked texture of 16
+    slices that one 16x512 resolve wrote, a slice every 32 rows (Resolver::FindContaining: a
+    slice or level inside a resolved image is copied from its rows; only the first slice was). Renderer changes behind them: only the device that presents is
     followed (Halo draws on two devices from two threads, which raced in the renderer's queue);
     BeginIndexedVertices is looked for after BeginVertices when DrawVerticesUP is missing
     (Brothers' 68 post-process draws a frame were unseen).

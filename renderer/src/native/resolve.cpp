@@ -923,6 +923,24 @@ const ResolvedImage* Resolver::Find(uint32_t guest_phys_base) const {
   return &it->second.current->view;
 }
 
+const ResolvedImage* Resolver::FindContaining(uint32_t address, uint32_t* row) const {
+  for (const auto& [base, dest] : destinations_) {
+    if (!dest.current || address <= base) continue;
+    const ResolvedImage& v = dest.current->view;
+    if (!v.extent_bytes || !v.pitch_blocks || !v.bytes_per_texel || address - base >= v.extent_bytes)
+      continue;
+    const uint32_t delta = address - base;
+    // Tiled: a row of 32x32 tiles is contiguous, pitch (32-aligned) x 32 texels.
+    const uint32_t rows = v.tiled ? 32u : 1u;
+    const uint32_t block = ((v.pitch_blocks + rows - 1) & ~(rows - 1)) * rows * v.bytes_per_texel;
+    if (delta % block) continue;
+    *row = delta / block * rows;
+    if (*row >= v.height) continue;
+    return &v;
+  }
+  return nullptr;
+}
+
 void Resolver::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t completed_fence) {
   frame_ = frame;
   frame_fence_ = frame_fence;
@@ -1176,6 +1194,10 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   img->view.width = std::max(img->view.width, uint32_t(dx) + w);
   img->view.height = std::max(img->view.height, uint32_t(dy) + h);
   img->view.seq = ++seq_;
+  img->view.extent_bytes = p.dest_extent_bytes;
+  img->view.pitch_blocks = p.dest_pitch_blocks;
+  img->view.bytes_per_texel = DestBytesPerTexel(p.dest_format);
+  img->view.tiled = p.dest_tiled;
   dest.current = img;
   if (&dest == &own_) return true;
   if (changed_) changed_(p.dest_base);

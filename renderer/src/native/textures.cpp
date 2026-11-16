@@ -778,6 +778,12 @@ ID3D12Resource* TextureCache::ResolvedSource(const Texture& t, const ResolvedIma
   return nullptr;  // incompatible view of the destination: keep the memory copy
 }
 
+const ResolvedImage* TextureCache::ResolvedAt(uint32_t address, uint32_t* row) const {
+  *row = 0;
+  if (const ResolvedImage* image = resolved_lookup_(address)) return image;
+  return resolved_containing_ ? resolved_containing_(address, row) : nullptr;
+}
+
 bool TextureCache::ResolvesCoverAll(const Texture& t) const {
   const TextureKey& key = t.key;
   if (!resolved_lookup_ || key.is_3d()) return false;
@@ -785,16 +791,17 @@ bool TextureCache::ResolvesCoverAll(const Texture& t) const {
   bool all = true;
   ForEachResolveAddress(key, t.layout, [&](size_t index, uint32_t address) {
     if (!all) return;
-    const ResolvedImage* image = resolved_lookup_(address);
+    uint32_t row;
+    const ResolvedImage* image = ResolvedAt(address, &row);
     ID3D12Resource* source = image ? ResolvedSource(t, *image) : nullptr;
-    if (!source) {
+    if (!source || (row && image->scale > 1)) {
       all = false;
       return;
     }
     const D3D12_RESOURCE_DESC sd = source->GetDesc();
     const uint32_t level = uint32_t(index % key.mip_levels());
     all = sd.Width >= std::max(key.width >> level, 1u) &&
-          sd.Height >= std::max(key.height >> level, 1u);
+          sd.Height >= row + std::max(key.height >> level, 1u);
     ++covered;
   });
   return all && covered == t.resolved_seq.size();
@@ -847,7 +854,8 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
   }
   bool any = false;
   ForEachResolveAddress(key, t.layout, [&](size_t index, uint32_t address) {
-    const ResolvedImage* image = resolved_lookup_(address);
+    uint32_t row;
+    const ResolvedImage* image = ResolvedAt(address, &row);
     if (!image) return;
     if (image->seq == t.resolved_seq[index]) {
       any = true;
@@ -855,6 +863,7 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
     }
     ID3D12Resource* source = ResolvedSource(t, *image);
     if (!source) return;
+    if (image->scale > 1 && row) return;  // a scaled image's rows: not seen
     if (image->scale > 1) {
       // This port: a scaled image into a guest-sized subresource (a mip level, a cube face):
       // a plain copy would take its top-left part. Not seen in PGR4's screen-sized resolves.
@@ -864,10 +873,11 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
       return;
     }
     D3D12_RESOURCE_DESC sd = source->GetDesc();
-    D3D12_BOX box = {0, 0, 0, 0, 0, 1};
+    D3D12_BOX box = {0, row, 0, 0, 0, 1};
     const uint32_t level = uint32_t(index % key.mip_levels());
     box.right = std::min<uint32_t>(uint32_t(sd.Width), std::max(key.width >> level, 1u));
-    box.bottom = std::min<uint32_t>(sd.Height, std::max(key.height >> level, 1u));
+    box.bottom = std::min<uint32_t>(sd.Height, row + std::max(key.height >> level, 1u));
+    if (box.bottom <= box.top) return;
     Transition(t, list, D3D12_RESOURCE_STATE_COPY_DEST);
     D3D12_TEXTURE_COPY_LOCATION dst = {};
     dst.pResource = t.resource.Get();

@@ -65,6 +65,10 @@ struct ResolvedImage {
   // size and state as `texture`; nullptr otherwise.
   ID3D12Resource* linear = nullptr;
   uint64_t seq = 0;  // increases with every write (global resolve counter)
+  // The guest layout the image stands for (Resolver::FindContaining): its memory from guest_base
+  // for extent_bytes, tiled or not, rows of pitch_blocks texels of bytes_per_texel.
+  uint32_t extent_bytes = 0, pitch_blocks = 0, bytes_per_texel = 0;
+  bool tiled = false;
   // This port: host texels per guest texel (--rexnative_resolution_scale for the screen-sized
   // surfaces' resolves); the textures are width x height times it.
   uint32_t scale = 1;
@@ -140,6 +144,11 @@ class Resolver {
   const ResolvedImage* ResolveCopy(CommandStream* list, const ResolveParams& p);
 
   // The last resolve into this guest physical address, or nullptr.
+  // The image whose guest memory holds `address` at the start of a row of its 32x32 tiles
+  // (tiled) or of a row (linear), other than at its base: *row is that row. A stacked texture's
+  // slices (Brothers - A Tale of Two Sons' colour grading table, 16 slices of 16x16 resolved as
+  // one 16x512 image, a slice every 32 rows) and levels kept in one resolved image start there.
+  const ResolvedImage* FindContaining(uint32_t address, uint32_t* row) const;
   const ResolvedImage* Find(uint32_t guest_phys_base) const;
   // Called with a guest physical address whenever its Find result may change (an image is
   // resolved into, created, replaced or erased), so a cache can recheck only the textures
