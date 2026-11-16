@@ -123,8 +123,10 @@ class NativeRenderer {
   void OnQueryIssue(const uint8_t* base, const HookArgs& args);
   void OnQueryGetData(uint8_t* base, const HookArgs& args);
   // A Swap while the Xenos plugin draws (Live() is null): the renderer switch takes the game
-  // back.
+  // back, or the automatic hand-over when the game's draw calls are back.
   void OnSwapSuspended();
+  // A draw call while the Xenos plugin draws (the hooks, on the presenting device).
+  static void NoteSuspendedDraw() { suspended_draws_.fetch_add(1, std::memory_order_relaxed); }
 
   // For modules.
   D3D12Device& device() { return *device_; }
@@ -244,6 +246,16 @@ class NativeRenderer {
   bool HandOverRequested();
   void HandOver(uint8_t* base, uint32_t device);
   void TakeBack();
+  // rexnative.auto_handover = N: N Swaps in a row whose frames had at most one draw call (the
+  // game drew the rest with code inlined past the hooks) hand the game over; two Swaps in a row
+  // with more than kAutoTakeBackDraws take it back (OnSwapSuspended). F9 turns it off for the
+  // rest of the run.
+  bool AutoHandOverDue();
+  static constexpr uint32_t kAutoTakeBackDraws = 16;
+  uint32_t frame_draw_calls_ = 0;  // OnDraw calls since the last Swap (guest thread)
+  uint32_t idle_swaps_ = 0, busy_swaps_ = 0;
+  bool auto_handed_over_ = false, auto_off_ = false;
+  static inline std::atomic<uint32_t> suspended_draws_{0};
   // Upscaler switch. bind_upscaler (F7) switches the scene between MSAA and the upscaler,
   // requested on the UI thread and taken at the start of the next frame. The upscaler is created
   // at its first use and kept after.

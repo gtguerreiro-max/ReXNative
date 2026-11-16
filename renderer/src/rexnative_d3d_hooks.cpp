@@ -1437,7 +1437,15 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     RunOriginal<kId, Body<kId, kOriginal>>(c, b);
   };
   if (!r) {
-    OnCall<kId>(ctx, base, run);
+    if constexpr (kClass == kNatDraw) {
+      // The outermost draw call only, as the renderer counts them (rexnative.auto_handover).
+      if (!other_device && t_native_depth == 0) nat::NativeRenderer::NoteSuspendedDraw();
+      ++t_native_depth;
+      OnCall<kId>(ctx, base, run);
+      --t_native_depth;
+    } else {
+      OnCall<kId>(ctx, base, run);
+    }
     // `track && entry_r3`: exactly when `run` called AfterCall, which EndCommandBuffer pairs.
     if constexpr (kId == kFnRunCommandBuffer)
       if (track && entry_r3) AfterRunCommandBuffer(base, entry_r3, entry_r4, nullptr);

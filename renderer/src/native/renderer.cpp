@@ -75,6 +75,11 @@ REXCVAR_DEFINE_INT32(rexnative_menu_fps, 60, "ReXNative",
                      "This port: the front end's frame rate while the player is not driving "
                      "(menus, garage, pause): the menus' cursor repeats once per frame, too fast "
                      "at the display's 240 Hz; 0: no limit");
+REXCVAR_DEFINE_INT32(rexnative_auto_handover, 0, "ReXNative",
+                     "After this many frames in a row with no draw call the native renderer "
+                     "sees (screens drawn by code the game inlined past the hooked D3D "
+                     "functions: Orcs Must Die!'s title and menus), ReXGlue's renderer draws, "
+                     "as after F9, until the game's draw calls come back; 0: off");
 REXCVAR_DEFINE_STRING(rexnative_csv, "", "ReXNative",
                       "Per-frame CSV of the native path: counts and CPU time per hook class");
 REXCVAR_DEFINE_INT32(rexnative_width, 1280, "ReXNative", "Debug window width");
@@ -885,7 +890,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   s.hook_max_ns = std::max({q.hook_max_ns, TicksToNs(q.hook_max_ticks), t1 - t0 - wait});
   s.track_calls = profile::g.track_calls;
   s.pad = rex_xam_take_frame_pad();
-  const bool hand_over = s.call.hand_over = HandOverRequested();
+  const bool hand_over = s.call.hand_over = HandOverRequested() || AutoHandOverDue();
   std::memcpy(s.ticks, profile::g.ticks, sizeof(s.ticks));
   for (uint64_t& t : profile::g.ticks) t = 0;
   profile::g.track_calls = 0;
@@ -913,6 +918,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
 // Hook entry points.
 
 void NativeRenderer::OnDraw(const uint8_t* base, const HookArgs& args) {
+  ++frame_draw_calls_;
   if (queue_) return QueueDraw(base, args);
   if (g_failed) [[unlikely]]
     return;
@@ -974,7 +980,7 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   SwapCall swap;
   Presenter::ReadSwap(base, args, &swap);
   stats_.pad = rex_xam_take_frame_pad();
-  swap.hand_over = HandOverRequested();
+  swap.hand_over = HandOverRequested() || AutoHandOverDue();
   ExecuteSwap(swap);
   // stats_ is the next frame's from here.
   stats_.pace_wait_ns = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
@@ -1002,14 +1008,54 @@ void NativeRenderer::OnQueryGetData(uint8_t* base, const HookArgs& args) {
 }
 
 void NativeRenderer::OnSwapSuspended() {
-  if (SwitchRequested()) TakeBack();
+  const uint32_t draws = suspended_draws_.exchange(0, std::memory_order_relaxed);
+  if (SwitchRequested()) {
+    auto_handed_over_ = false;
+    auto_off_ = true;  // F9 decides from here on (HandOverRequested)
+    return TakeBack();
+  }
+  if (!auto_handed_over_) return;
+  // The game's draw calls are back (its level after the menus): two frames of them in a row.
+  // More than a few: the screens handed over can reach a hooked draw call or two that the
+  // native renderer did not count as one (Orcs Must Die!'s title, 2 a frame, went back and
+  // forth every second with `> 1`).
+  busy_swaps_ = draws > kAutoTakeBackDraws ? busy_swaps_ + 1 : 0;
+  if (busy_swaps_ < 2) return;
+  busy_swaps_ = 0;
+  auto_handed_over_ = false;
+  REXLOG_INFO("ReXNative: {} draw calls in a frame again: native draws (rexnative.auto_handover)",
+              draws);
+  TakeBack();
 }
 
 // ---------------------------------------------------------------------------------------------
 // Renderer switch (primary mode)
 
+bool NativeRenderer::AutoHandOverDue() {
+  const uint32_t draws = std::exchange(frame_draw_calls_, 0);
+  const int32_t frames = REXCVAR_GET(rexnative_auto_handover);
+  if (frames <= 0 || !primary_ || auto_off_) return false;
+  idle_swaps_ = draws <= 1 ? idle_swaps_ + 1 : 0;
+  if (idle_swaps_ < uint32_t(frames)) return false;
+  idle_swaps_ = 0;
+  if (FrameHeight() != kGameFrameHeight) {
+    auto_off_ = true;
+    REXLOG_WARN("ReXNative: rexnative.auto_handover off: the Xenos plugin draws only the game's "
+                "{}-row frame, not this {}-row one (frame_height.h)",
+                kGameFrameHeight, FrameHeight());
+    return false;
+  }
+  auto_handed_over_ = true;
+  REXLOG_INFO("ReXNative: {} frames without a draw call the native renderer sees: the Xenos "
+              "plugin draws until they come back (rexnative.auto_handover)",
+              frames);
+  return true;
+}
+
 bool NativeRenderer::HandOverRequested() {
   if (!SwitchRequested()) return false;
+  // F9 decides from here on: the automatic hand-over stays off for the rest of the run.
+  auto_off_ = true;
   if (FrameHeight() == kGameFrameHeight) return true;
   REXLOG_WARN(
       "ReXNative: renderer switch: the Xenos plugin draws only the game's {}-row frame, not "
