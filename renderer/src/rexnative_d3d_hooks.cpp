@@ -176,19 +176,13 @@ constexpr FnId kFnRunCommandBuffer = FnIdOf(game::kFnRunCommandBuffer);
 
 // Skippable entry points: void, and nothing in the caller depends on their result.
 enum Skip : uint32_t { kSkipDraw = 1, kSkipClear = 2, kSkipResolve = 4 };
+// Not a switch: the functions a game lacks all have the id kFnCount, which would repeat a case.
 constexpr uint32_t SkipClassOf(FnId id) {
-  switch (id) {
-    case kFnDrawIndexed:
-    case kFnDrawVertices:
-    case kFnDrawVerticesUP:
-      return kSkipDraw;
-    case kFnClear:
-      return kSkipClear;
-    case kFnResolve:
-      return kSkipResolve;
-    default:
-      return 0;
-  }
+  if (id == kFnCount) return 0;
+  if (id == kFnDrawIndexed || id == kFnDrawVertices || id == kFnDrawVerticesUP) return kSkipDraw;
+  if (id == kFnClear) return kSkipClear;
+  if (id == kFnResolve) return kSkipResolve;
+  return 0;
 }
 
 // The game's time step: the time between two frames' begins, which the Swap hook returns at

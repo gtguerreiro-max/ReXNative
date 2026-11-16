@@ -144,15 +144,23 @@ def cmd_prepare(a):
         else:
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)
+    failed = []
     for s in sources:
         st = prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
                              title_update=a.title_update)
         if a.project and st.get('ok'):
-            _project_chain(a, s, os.path.join(a.work, st['name']), rexglue, refs)
+            # One game's failed build or run does not stop the others: it is reported at the end.
+            try:
+                _project_chain(a, s, os.path.join(a.work, st['name']), rexglue, refs)
+            except SystemExit as e:
+                print('%s: %s' % (st['name'], e), file=sys.stderr)
+                failed.append(st['name'])
     text = prepare.survey(a.work)
     with open(os.path.join(a.work, 'survey.md'), 'w', encoding='utf-8', newline='\n') as f:
         f.write(text)
     print(text)
+    if failed:
+        sys.exit('not built or not run: ' + ', '.join(failed))
 
 
 def _project_chain(a, source, work, rexglue, refs):
