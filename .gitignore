@@ -8,3 +8,5 @@ results/
 references/
 # Research notes (links to third-party projects, some leak-adjacent): local only.
 docs/research/
+# scripts/build-sdk.ps1's default build tree (the SDK, its install, FidelityFX).
+build/
