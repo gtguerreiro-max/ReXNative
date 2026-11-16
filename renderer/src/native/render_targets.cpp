@@ -693,6 +693,7 @@ void RenderTargets::Flush(CommandStream* list, RenderTarget* rt) {
     }
     Record(list, rt, first.value, rects, n);
   }
+  if (!rt->depth && rt->pending_count) NoteColorWrite(rt);
   if (log_)
     std::fprintf(log_, "rt pending clears of %s base %u pitch %u x%u: %u recorded in %u calls\n",
                  rt->depth ? "depth" : "color", rt->edram_base, rt->pitch, rt->samples,
@@ -840,9 +841,10 @@ float ps(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Depth {
 
 constexpr uint32_t kAliasHeapSize = 64;  // SRVs used in turn; a few copies a frame at most
 
-// AliasColor's pixel shaders, from the 7e3 conversions of ReXGlue's xenos.cc (Float32To7e3,
-// Float7e3To32): ENCODE_7E3 writes a 2_10_10_10_FLOAT surface's channels as the 10-bit 7e3
-// values the EDRAM holds, as 10-bit unorms (the 2-bit alpha as it is); DECODE_7E3 the other way.
+// AliasColor's pixel shaders: the source pixel as the 32-bit word the EDRAM holds (SRC_KIND),
+// that word as the target's format (DST_KIND). Kinds: 0 8_8_8_8 (red in bits 0-7), 1 2_10_10_10
+// (red in bits 0-9, alpha 30-31), 2 2_10_10_10_FLOAT (7e3 channels, ReXGlue's xenos.cc
+// Float32To7e3 / Float7e3To32).
 constexpr char kAliasColorHlsl[] = R"(
 cbuffer AliasColor : register(b0) {
   float2 dst_to_guest;  // host pixel of the target -> its guest pixel
@@ -876,6 +878,7 @@ float F7e3To32(uint v) {
   }
   return asfloat(uint(e + 124) << 23 | uint(m) << 16);
 }
+uint Unorm(float v, float m) { return uint(round(saturate(v) * m)); }
 float4 ps(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
   uint2 h = uint2((float2(uint2(pos.xy * dst_to_guest)) + 0.5) * src_scale);
 #ifdef SOURCE_MS
@@ -883,19 +886,37 @@ float4 ps(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
 #else
   float4 c = source.Load(int3(h, 0));
 #endif
-#ifdef DECODE_7E3
-  uint3 bits = uint3(round(saturate(c.rgb) * 1023.0));
-  return float4(F7e3To32(bits.r), F7e3To32(bits.g), F7e3To32(bits.b), c.a);
+#if SRC_KIND == 0
+  uint w = Unorm(c.r, 255.0) | Unorm(c.g, 255.0) << 8 | Unorm(c.b, 255.0) << 16 |
+           Unorm(c.a, 255.0) << 24;
+#elif SRC_KIND == 1
+  uint w = Unorm(c.r, 1023.0) | Unorm(c.g, 1023.0) << 10 | Unorm(c.b, 1023.0) << 20 |
+           Unorm(c.a, 3.0) << 30;
 #else
-  return float4(float3(F32To7e3(c.r), F32To7e3(c.g), F32To7e3(c.b)) / 1023.0, c.a);
+  uint w = F32To7e3(c.r) | F32To7e3(c.g) << 10 | F32To7e3(c.b) << 20 | Unorm(c.a, 3.0) << 30;
+#endif
+#if DST_KIND == 0
+  return float4(w & 0xFFu, (w >> 8) & 0xFFu, (w >> 16) & 0xFFu, w >> 24) / 255.0;
+#elif DST_KIND == 1
+  return float4(float3(w & 0x3FFu, (w >> 10) & 0x3FFu, (w >> 20) & 0x3FFu) / 1023.0,
+                float(w >> 30) / 3.0);
+#else
+  return float4(F7e3To32(w), F7e3To32(w >> 10), F7e3To32(w >> 20), float(w >> 30) / 3.0);
 #endif
 }
 )";
 
-// Guest color formats (xenos::ColorRenderTargetFormat) sharing EDRAM bits: 2_10_10_10_FLOAT and
-// its _AS_16_16_16_16 variant (7e3), 2_10_10_10 and its _AS_10_10_10_10 variant.
-bool Is7e3(uint32_t f) { return f == 3 || f == 12; }
-bool Is10Bits(uint32_t f) { return f == 2 || f == 10; }
+// The 32-bit guest color formats (xenos::ColorRenderTargetFormat) AliasColor converts between:
+// 0 8_8_8_8 and its _GAMMA variant, 1 2_10_10_10 and its _AS_10_10_10_10 variant, 2
+// 2_10_10_10_FLOAT (7e3) and its _AS_16_16_16_16 variant; -1 the others.
+int AliasKind(uint32_t f) {
+  switch (f) {
+    case 0: case 1: return 0;
+    case 2: case 10: return 1;
+    case 3: case 12: return 2;
+    default: return -1;
+  }
+}
 
 }  // namespace
 
@@ -1034,18 +1055,21 @@ bool RenderTargets::InitAliasColor() {
   if (!InitAliasDepth()) return false;  // its root signature, vertex shader and SRV heap
   const pD3DCompile compile = D3DCompiler();
   if (!compile) return false;
-  for (int decode = 0; decode < 2; ++decode) {
-    for (int ms = 0; ms < 2; ++ms) {
-      D3D_SHADER_MACRO m[3] = {};
-      int n = 0;
-      if (decode) m[n++] = {"DECODE_7E3", "1"};
-      if (ms) m[n++] = {"SOURCE_MS", "1"};
-      ComPtr<ID3DBlob> err;
-      if (FAILED(compile(kAliasColorHlsl, sizeof(kAliasColorHlsl) - 1, "alias_color", m,
-                         nullptr, "ps", "ps_5_1", 0, 0, &alias_color_ps_[decode][ms], &err))) {
-        REXLOG_ERROR("ReXNative RT: color alias shader: {}",
-                     err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
-        return false;
+  static const char* const kKinds[3] = {"0", "1", "2"};
+  for (int from = 0; from < 3; ++from) {
+    for (int to = 0; to < 3; ++to) {
+      if (from == to) continue;
+      for (int ms = 0; ms < 2; ++ms) {
+        D3D_SHADER_MACRO m[4] = {{"SRC_KIND", kKinds[from]}, {"DST_KIND", kKinds[to]}};
+        if (ms) m[2] = {"SOURCE_MS", "1"};
+        ComPtr<ID3DBlob> err;
+        if (FAILED(compile(kAliasColorHlsl, sizeof(kAliasColorHlsl) - 1, "alias_color", m,
+                           nullptr, "ps", "ps_5_1", 0, 0, &alias_color_ps_[from][to][ms],
+                           &err))) {
+          REXLOG_ERROR("ReXNative RT: color alias shader: {}",
+                       err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+          return false;
+        }
       }
     }
   }
@@ -1058,25 +1082,20 @@ bool RenderTargets::AliasColor(CommandStream* list, RenderTarget* rt) {
   if (owner == color_owner_.end()) return false;
   RenderTarget* src = owner->second;
   if (src == rt || src->color_seq <= rt->color_seq || src->samples != rt->samples) return false;
-  int decode;
-  if (Is7e3(src->guest_format) && Is10Bits(rt->guest_format)) {
-    decode = 0;
-  } else if (Is10Bits(src->guest_format) && Is7e3(rt->guest_format)) {
-    decode = 1;
-  } else {
-    return false;  // a format pair not handled: separate targets, as before
-  }
+  const int from = AliasKind(src->guest_format), to = AliasKind(rt->guest_format);
+  // A format pair not handled (64-bit formats, float targets): separate targets, as before.
+  if (from < 0 || to < 0 || from == to) return false;
   if (!InitAliasColor()) return false;
   if (src->pending_count) Flush(list, src);
   const bool source_ms = src->samples > 1;
-  const uint32_t pso_key = uint32_t(rt->view_format) << 8 | rt->samples << 2 | decode << 1 |
-                           uint32_t(source_ms);
+  const uint32_t pso_key = uint32_t(rt->view_format) << 16 | rt->samples << 8 | from << 4 |
+                           to << 1 | uint32_t(source_ms);
   ComPtr<ID3D12PipelineState>& pso = alias_color_pso_[pso_key];
   if (!pso) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
     d.pRootSignature = alias_rs_.Get();
     d.VS = {alias_vs_->GetBufferPointer(), alias_vs_->GetBufferSize()};
-    ID3DBlob* ps = alias_color_ps_[decode][source_ms].Get();
+    ID3DBlob* ps = alias_color_ps_[from][to][source_ms].Get();
     d.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
     d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     d.SampleMask = UINT_MAX;
@@ -1134,9 +1153,8 @@ bool RenderTargets::AliasColor(CommandStream* list, RenderTarget* rt) {
   NoteColorWrite(rt);
   REXNATIVE_LOG_FIRST(4, INFO,
                       "ReXNative RT: color at base {} pitch {} read as guest format {} after "
-                      "format {}: EDRAM bits converted ({})",
-                      rt->edram_base, rt->pitch, rt->guest_format, src->guest_format,
-                      decode ? "10:10:10:2 to 7e3" : "7e3 to 10:10:10:2");
+                      "format {}: EDRAM bits converted",
+                      rt->edram_base, rt->pitch, rt->guest_format, src->guest_format);
   if (log_)
     std::fprintf(log_, "rt color alias: base %u pitch %u format %u -> %u\n", rt->edram_base,
                  rt->pitch, src->guest_format, rt->guest_format);

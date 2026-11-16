@@ -329,11 +329,12 @@ class RenderTargets {
   // at the same base, pitch and MSAA takes the same EDRAM bits, which separate host targets
   // (keyed by host format) do not share. Unreal Engine 3 (Brothers - A Tale of Two Sons)
   // renders its scene in 2_10_10_10_FLOAT (7e3, an R16G16B16A16_FLOAT target here) and resolves
-  // that EDRAM as 2_10_10_10_AS_10_10_10_10 to read the 7e3 bits in its tone mapping shader:
-  // the R10G10B10A2 target it got was another, empty, and the screen black. When color target
-  // `rt` is bound or read and the last target written at its base is another of a format pair
-  // handled here (7e3 to 10:10:10:2 bits and back), that one's pixels are converted into `rt`.
-  // Returns whether it recorded calls.
+  // that EDRAM as 2_10_10_10_AS_10_10_10_10 and as 8_8_8_8, to read the 7e3 bits in its post
+  // processing: the targets it got were others, empty, and the screen black. When color target
+  // `rt` is bound or read and the last target written at its base is another of the 32-bit
+  // formats handled here (8_8_8_8, 2_10_10_10, 2_10_10_10_FLOAT and their variants), that one's
+  // pixels are converted into `rt` through the 32-bit word the EDRAM holds. Returns whether it
+  // recorded calls.
   bool AliasColor(CommandStream* list, RenderTarget* rt);
   bool InitAliasColor();
   // The color target last written at each EDRAM base, pitch and MSAA (AliasColor).
@@ -350,7 +351,8 @@ class RenderTargets {
   }
   RenderTarget* last_owner_ = nullptr;
   std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> alias_color_pso_;
-  ComPtr<ID3DBlob> alias_color_ps_[2][2];  // [decode (10:10:10:2 bits to 7e3)][source MSAA]
+  // [source kind][target kind][source MSAA]; kinds: 0 8_8_8_8, 1 2_10_10_10, 2 7e3.
+  ComPtr<ID3DBlob> alias_color_ps_[3][3][2];
   bool alias_color_init_ = false, alias_color_ok_ = false;
   uint64_t color_seq_ = 0;
   ComPtr<ID3D12RootSignature> alias_rs_;
