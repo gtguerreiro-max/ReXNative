@@ -42,6 +42,7 @@ param(
     [switch]$Pulse,
     [switch]$Force,
     [switch]$RenderDoc,
+    [switch]$Plain,
     [string]$RenderDocDir = $env:REXNATIVE_RENDERDOC
 )
 $ErrorActionPreference = 'Stop'
@@ -201,10 +202,14 @@ switch ($Command) {
         $live = Join-Path $Dir 'live'
         foreach ($d in 'cap', 'trace', 'shots', 'rdoc') { New-Item -ItemType Directory -Force (Join-Path $live $d) | Out-Null }
         Set-Content -Path (Join-Path $live 'cap\draw-debug.txt') -Value '0' -Encoding ascii
+        # -Plain: a game without ReXNative (a stock ReXGlue build, which refuses settings it
+        # does not know): the window and the keyboard only.
+        $native = if ($Plain) { @() } else {
+            @("--rexnative_capture_dir=$live\cap", "--rexnative_d3d_control=$live\control.txt",
+              "--rexnative_d3d_trace_dir=$live\trace") }
         $args = @('--log_file=live\live.log', '--mnk_mode=true', '--fullscreen=false',
-                  '--window_width=1280', '--window_height=720',
-                  "--rexnative_capture_dir=$live\cap", "--rexnative_d3d_control=$live\control.txt",
-                  "--rexnative_d3d_trace_dir=$live\trace") + ($Extra -split ' ' | Where-Object { $_ })
+                  '--window_width=1280', '--window_height=720') + $native +
+                ($Extra -split ' ' | Where-Object { $_ })
         if ($RenderDoc) {
             $rdcmd = Join-Path $RenderDocDir 'renderdoccmd.exe'
             if (-not $RenderDocDir -or -not (Test-Path $rdcmd)) { throw 'RenderDoc not found: -RenderDocDir or REXNATIVE_RENDERDOC' }
@@ -323,7 +328,13 @@ switch ($Command) {
         } else { "not running (last: $($s.exe))" }
     }
     'stop' {
-        if ($s) { Stop-Process -Id $s.pid -Force -ErrorAction SilentlyContinue; Remove-Item $statePath -ErrorAction SilentlyContinue }
+        if ($s) {
+            # Its exit can take seconds (the D3D12 device's teardown): waited for, so that a
+            # rebuild can replace the executable right after.
+            $p = Get-Process -Id $s.pid -ErrorAction SilentlyContinue
+            if ($p) { Stop-Process -Id $s.pid -Force -ErrorAction SilentlyContinue; $p.WaitForExit(20000) | Out-Null }
+            Remove-Item $statePath -ErrorAction SilentlyContinue
+        }
         'stopped'
     }
     default { throw "unknown command '$Command' (start, keys, shot, debug, snap, drawlog, control, trace, capture, log, status, stop)" }

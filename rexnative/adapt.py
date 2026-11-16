@@ -314,7 +314,11 @@ def adapt(target, refs, overrides=None, log=print):
                      'display_aspect': '16.0 / 9.0',
                      'cmdbuf': 0},
         'devices': {
-            'follow_swap_device_only': False,
+            # Only the device that presents (Swap's): a game with one device is the same, and
+            # one that draws on others too (Iron Brigade while loading; Halo: Combat Evolved
+            # Anniversary, two engines drawing on two devices from two threads at once, whose
+            # draws then raced in the renderer's queue and crashed it) draws only that one.
+            'follow_swap_device_only': True,
             'configure_at_first_device': funcs['CreateDevice']['address'] is None,
         },
         'overrides': {},
@@ -406,6 +410,12 @@ def indexed_up(T, funcs):
         return
     up, dv = funcs['DrawVerticesUP']['address'], funcs['DrawVertices']['address']
     space = funcs['MakeSpace']['address']
+    lower = 'DrawVerticesUP'
+    if not up:
+        # Without DrawVerticesUP (Brothers - A Tale of Two Sons: an LTCG D3D whose linker left
+        # it out), the range starts after BeginVertices, which comes before it. Brothers' 68 draws
+        # a frame from BeginIndexedVertices (82977248: its post-process passes) were unseen.
+        up, lower = funcs.get('BeginVertices', {}).get('address'), 'BeginVertices'
     if not (up and dv and space and up < dv):
         return
     between = [f for f in T.starts if up < f < dv]
@@ -419,7 +429,7 @@ def indexed_up(T, funcs):
         inner = {c for c in callees(y) if c in between and c != y}
         if len(inner) == 1 and next(iter(inner)) in makes_space:
             found.append((next(iter(inner)), y))
-    where = 'between DrawVerticesUP %08X and DrawVertices %08X' % (up, dv)
+    where = 'between %s %08X and DrawVertices %08X' % (lower, up, dv)
     if len(found) == 1:
         x, y = found[0]
         detail = '%s: %08X calls only %08X, which calls MakeSpace' % (where, y, x)

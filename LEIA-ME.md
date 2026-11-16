@@ -313,6 +313,17 @@ Melhorar aos poucos:
     EDRAM); Perfect Dark chega aos níveis (TU 3) mas desenha-os partidos (triângulos esticados,
     um corte a meio do ecrã; o renderer original não arranca, por isso não há com que
     comparar); 3D Ultra Minigolf passa do arranque.
+    Juntaram-se no mesmo dia: Orcs Must Die! joga-se no primeiro nível (TU 1, 30 FPS, 500 draws
+    por frame); Halo: Combat Evolved Anniversary, a partir da imagem do disco (TU 2), chega ao
+    menu da campanha e mostra a cena de abertura (algumas superfícies escuras ou às riscas);
+    Spelunky (TU 1) chega aos menus, sem texto em nenhum dos renderers; Brothers - A Tale of Two
+    Sons chega ao menu e desenha a cena, escura demais (o tone mapping do Unreal Engine 3 lê a
+    cena 7e3 como bits 10:10:10:2, que o ReXNative agora converte: RenderTargets::AliasColor; a
+    cadeia de luminância ainda não está certa). Mudanças no renderer por trás disto: só se segue
+    o device que apresenta (o Halo desenha em dois devices a partir de dois threads, que se
+    atropelavam na fila do renderer); o BeginIndexedVertices procura-se depois do BeginVertices
+    quando falta o DrawVerticesUP (os 68 draws de pós-processamento por frame do Brothers não
+    se viam).
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

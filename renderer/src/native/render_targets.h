@@ -152,6 +152,8 @@ struct RenderTarget {
   uint64_t fill_seq = 0;    // EDRAM fills up to this sequence are applied (SyncEdram)
   // Depth targets: when their depth last changed (bound, cleared, copied in; AliasDepth).
   uint64_t depth_seq = 0;
+  // Color targets: when their color last changed (bound, copied in; AliasColor).
+  uint64_t color_seq = 0;
   // Clears not recorded yet, oldest first (RenderTargets::Clear).
   std::array<PendingClear, kMaxPendingClears> pending{};
   uint32_t pending_count = 0;
@@ -323,6 +325,34 @@ class RenderTargets {
   // it recorded calls.
   bool AliasDepth(CommandStream* list, RenderTarget* rt);
   bool InitAliasDepth();
+  // EDRAM aliasing across color formats: a surface written in one format and read in another
+  // at the same base, pitch and MSAA takes the same EDRAM bits, which separate host targets
+  // (keyed by host format) do not share. Unreal Engine 3 (Brothers - A Tale of Two Sons)
+  // renders its scene in 2_10_10_10_FLOAT (7e3, an R16G16B16A16_FLOAT target here) and resolves
+  // that EDRAM as 2_10_10_10_AS_10_10_10_10 to read the 7e3 bits in its tone mapping shader:
+  // the R10G10B10A2 target it got was another, empty, and the screen black. When color target
+  // `rt` is bound or read and the last target written at its base is another of a format pair
+  // handled here (7e3 to 10:10:10:2 bits and back), that one's pixels are converted into `rt`.
+  // Returns whether it recorded calls.
+  bool AliasColor(CommandStream* list, RenderTarget* rt);
+  bool InitAliasColor();
+  // The color target last written at each EDRAM base, pitch and MSAA (AliasColor).
+  std::unordered_map<uint64_t, RenderTarget*> color_owner_;
+  static uint64_t OwnerKey(const RenderTarget& rt) {
+    return uint64_t(rt.edram_base) | uint64_t(rt.pitch) << 20 | uint64_t(rt.edram_samples) << 40;
+  }
+  void NoteColorWrite(RenderTarget* rt) {
+    rt->color_seq = ++color_seq_;
+    if (last_owner_ != rt) {  // most draws bind the target the previous one did
+      color_owner_[OwnerKey(*rt)] = rt;
+      last_owner_ = rt;
+    }
+  }
+  RenderTarget* last_owner_ = nullptr;
+  std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> alias_color_pso_;
+  ComPtr<ID3DBlob> alias_color_ps_[2][2];  // [decode (10:10:10:2 bits to 7e3)][source MSAA]
+  bool alias_color_init_ = false, alias_color_ok_ = false;
+  uint64_t color_seq_ = 0;
   ComPtr<ID3D12RootSignature> alias_rs_;
   std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> alias_pso_;
   ComPtr<ID3DBlob> alias_vs_, alias_ps_[2];  // [source MSAA on the host]

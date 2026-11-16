@@ -324,7 +324,16 @@ Improving it a little at a time:
     host targets are as wide as the tiles reach, not the EDRAM pitch); Perfect Dark reaches its
     levels (TU 3) but draws them broken (stretched triangles, a seam across the screen; the stock
     renderer does not start, so there is nothing to compare with); 3D Ultra Minigolf runs past
-    its start-up.
+    its start-up. Added the same day: Orcs Must Die! plays its first level (TU 1, 30 FPS, 500
+    draws a frame); Halo: Combat Evolved Anniversary, from its disc image (TU 2), reaches its
+    campaign menu and plays the opening cutscene (some surfaces dark or striped); Spelunky (TU 1)
+    reaches its menus, with no text in either renderer; Brothers - A Tale of Two Sons reaches
+    its menu and draws its scene, too dark (its Unreal Engine 3 tone mapping reads the 7e3 scene
+    as 10:10:10:2 bits, which ReXNative now converts: RenderTargets::AliasColor; its luminance
+    chain is not right yet). Renderer changes behind them: only the device that presents is
+    followed (Halo draws on two devices from two threads, which raced in the renderer's queue);
+    BeginIndexedVertices is looked for after BeginVertices when DrawVerticesUP is missing
+    (Brothers' 68 post-process draws a frame were unseen).
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

@@ -3,9 +3,9 @@
     python scripts/snaps.py <capture dir> [--frame N] [--rows 720] [--out grid.png]
 
 Each snapshot is snap-f<frame>-d<draw>-<target>.bin with a .txt holding
-"width height row_bytes dxgi_format". RGBA8 targets (DXGI 28) become one PNG each, next to the
-.bin, and one grid of all of them in draw order; other formats (depth, float) are listed only.
-Needs Pillow.
+"width height row_bytes dxgi_format". RGBA8 targets (DXGI 27-29) and RGBA16F ones (DXGI 10: the 7e3 and float
+targets, clamped to 0-1) become one PNG each, next to the .bin, and one grid of all of them in
+draw order; other formats (depth) are listed only. Needs Pillow, and numpy for RGBA16F.
 """
 import argparse
 import glob
@@ -14,7 +14,8 @@ import re
 
 from PIL import Image, ImageDraw
 
-RGBA8 = (28, 29)  # R8G8B8A8_UNORM, _SRGB
+RGBA8 = {27, 28, 29}  # R8G8B8A8 typeless, unorm, unorm sRGB
+RGBA16F = 10  # R16G16B16A16_FLOAT
 
 
 def main():
@@ -35,13 +36,20 @@ def main():
     tiles = []
     for f, draw, target, txt in sorted(x for x in found if x[0] == frame):
         w, h, row_bytes, fmt = map(int, open(txt).read().split())
-        if fmt not in RGBA8:
+        if fmt not in RGBA8 and fmt != RGBA16F:
             print('%s: format %d, not converted' % (os.path.basename(txt), fmt))
             continue
         rows = min(h, a.rows)
         data = open(txt[:-4] + '.bin', 'rb').read()
-        img = Image.frombuffer('RGBA', (w, rows), data[:row_bytes * rows], 'raw', 'RGBA',
-                               row_bytes, 1).convert('RGB')
+        if fmt == RGBA16F:
+            import numpy as np
+            px = np.frombuffer(data[:row_bytes * rows], dtype='<f2').reshape(rows, row_bytes // 2)
+            px = px[:, :w * 4].reshape(rows, w, 4)[:, :, :3].astype(np.float32)
+            px = np.nan_to_num(px, nan=1.0, posinf=1.0, neginf=0.0)
+            img = Image.fromarray((np.clip(px, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8), 'RGB')
+        else:
+            img = Image.frombuffer('RGBA', (w, rows), data[:row_bytes * rows], 'raw', 'RGBA',
+                                   row_bytes, 1).convert('RGB')
         png = txt[:-4] + '.png'
         img.save(png)
         print(png)
