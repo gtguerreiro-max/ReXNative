@@ -245,7 +245,8 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
                 text = f.read()
             labels = sorted(set(int(a, 16) for a in UNDECLARED_LABEL.findall(text)))
             if labels:
-                raise LabelsMissing(labels)
+                sites = [(f, int(n), int(a, 16)) for f, n, a in UNDECLARED_LABEL_AT.findall(text)]
+                raise LabelsMissing(labels, sites)
             imports = sorted(set(UNDEFINED_IMPORT.findall(text)))
             if imports and write_import_stubs(work, imports):
                 log('%s: %d imports the runtime lacks, as stubs: %s' % (
@@ -306,12 +307,52 @@ def write_import_stubs(work, names):
 # A branch codegen made a goto to a label of another function (code the compiler shares between
 # functions, such as a common epilogue): the target becomes a function of its own.
 UNDECLARED_LABEL = re.compile(r"use of undeclared label 'loc_([0-9A-F]{8})'")
+UNDECLARED_LABEL_AT = re.compile(
+    r"^(\S.*?\.cpp)\((\d+),\d+\): error: use of undeclared label 'loc_([0-9A-F]{8})'", re.M)
+DEFINE_FUNC = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\)')
 
 
 class LabelsMissing(Exception):
-    def __init__(self, labels):
+    def __init__(self, labels, sites=()):
         super().__init__('undeclared labels: ' + ' '.join('%08X' % a for a in labels))
         self.labels = labels
+        self.sites = list(sites)  # (generated file, line, label)
+
+
+def _function_at_line(path, line):
+    """The guest function whose DEFINE_REX_FUNC holds line `line` of a generated file."""
+    found = None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for n, text in enumerate(f, 1):
+            if n > line:
+                break
+            m = DEFINE_FUNC.match(text)
+            if m:
+                found = int(m.group(1), 16)
+    return found
+
+
+def _merge_split_functions(work, hints, sites, log, name):
+    """A branch to a label that is already a function: a hint split one function in two (a loop
+    whose body codegen reported apart, Perfect Dark's 82450488 and 8245049C). The two become one
+    again: the hints inside the span go and the first start gets the span's size."""
+    from . import listing
+    tree = listing.load(os.path.join(work, 'generated', 'default'))
+    merged = []
+    for path, line, label in sites:
+        f = _function_at_line(path, line)
+        if f is None or f not in tree.funcs or label not in tree.funcs:
+            continue
+        ends = [max(a for a, _ in tree.funcs[x]) + 4 for x in (f, label) if tree.funcs[x]]
+        start, end = min(f, label), max(ends)
+        for h in [h for h in hints if start < h < end]:
+            del hints[h]
+        hints[start] = max(hints.get(start, 0), end - start)
+        merged.append((start, end))
+    if merged:
+        log('%s: %d functions split by a hint joined again: %s' % (
+            name, len(merged), ' '.join('%08X-%08X' % m for m in sorted(set(merged))[:8])))
+    return bool(merged)
 
 
 def build_fixing(work, rexglue, build_args, jobs=0, rounds=10, log=print):
@@ -325,10 +366,13 @@ def build_fixing(work, rexglue, build_args, jobs=0, rounds=10, log=print):
         except LabelsMissing as e:
             hints = prepare._hints(work)
             new = [a for a in e.labels if a not in hints]
-            if not new:
+            split = [s for s in e.sites if s[2] in hints]
+            joined = _merge_split_functions(work, hints, split, log, name) if split else False
+            if not new and not joined:
                 raise SystemExit('%s: %s, already hints' % (name, e))
-            log('%s: %d branch targets in other functions become functions: %s' % (
-                name, len(new), ' '.join('%08X' % a for a in new[:12])))
+            if new:
+                log('%s: %d branch targets in other functions become functions: %s' % (
+                    name, len(new), ' '.join('%08X' % a for a in new[:12])))
             for a in new:
                 hints[a] = 0
             _write_hints(work, hints)

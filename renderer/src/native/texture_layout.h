@@ -64,6 +64,8 @@ enum class TextureConversion : uint8_t {
   kR5G5B6ToB5G6R5WithRBGASwizzle,  // k_6_5_5: host swizzle R,B,G,G restores the order
   kDepthUnorm24ToFloat32,          // k_24_8: R32_FLOAT = unorm24(d >> 8)
   kDepthFloat24ToFloat32,          // k_24_8_FLOAT: R32_FLOAT = float20e4(d >> 8)
+  kR5G5B5A1ToB5G5R5A1,             // k_1_5_5_5: swap the 5-bit R and B fields
+  kR4G4B4A4ToB4G4R4A4,             // k_4_4_4_4: swap the 4-bit R and B fields
 };
 
 struct HostFormat {

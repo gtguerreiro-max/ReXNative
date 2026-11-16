@@ -46,38 +46,48 @@ def import_thunks(generated):
     return out
 
 
-def save_restore_helpers(word, code0, code1):
+def save_restore_helpers(word, code0, code1, primary=True):
     """The XDK's register save / restore helpers (__savegprlr_14, __restgprlr_14, __savefpr_14,
     __restfpr_14, __savevmx_14/64, __restvmx_14/64), each from its first instruction to the blr
     that ends it, found by the patterns codegen uses (phase_register.cpp,
     detectSaveRestoreHelpers). Codegen turns a call into one (at any of its entries) into saves
     and restores of its own; made a function by a hint (.pdata points at them), the call stays a
     call, and with non_volatile_as_local the caller's f14-f31 / v14-v127 are not kept (Jet Set
-    Radio's garbage function pointers). Never candidates."""
+    Radio's garbage function pointers). Never candidates.
+
+    Codegen knows only the first of each kind (by address); a game with a second copy (Super
+    Meat Boy's __restgprlr at 82238600, reached by `b` at each of its entries) gets those as
+    unresolved calls. With primary=False the copies are returned instead: each of their entries
+    becomes a function (as locals, the caller's non-volatile registers need no restore)."""
     starts = []
     for a in range(code0, code1 - 4, 4):
         w = word(a)
         if w in (0xE9C1FF68, 0xF9C1FF68, 0xC9CCFF70, 0xD9CCFF70):  # ld/std r14 / lfd/stfd f14
-            starts.append(a)
+            starts.append((a, w))
         elif w in (0x3960FEE0, 0x3960FC00) and word(a + 4) in (
                 0x7DCB60CE, 0x7DCB61CE, 0x100B60CB, 0x100B61CB):  # li r11 + lvx/stvx(128)
-            starts.append(a)
+            starts.append((a, (w, word(a + 4))))
+    seen = set()
     out = []
-    for s in starts:
+    for s, kind in starts:
         e = s
         while e < code1 and word(e) != 0x4E800020:  # to the blr
             e += 4
-        out.append((s, e + 4))
+        first = kind not in seen
+        seen.add(kind)
+        if first == primary:
+            out.append((s, e + 4))
     return out
 
 
-def helper_ranges(generated, image_path):
+def helper_ranges(generated, image_path, primary=True):
     """save_restore_helpers for a generated tree and its image."""
     base, size, code0, code_size = bounds(generated)
     with open(image_path, 'rb') as f:
         img = f.read()
     return save_restore_helpers(
-        lambda a: int.from_bytes(img[a - base:a - base + 4], 'big'), code0, code0 + code_size)
+        lambda a: int.from_bytes(img[a - base:a - base + 4], 'big'), code0, code0 + code_size,
+        primary)
 
 
 def find(generated, image_path, known=(), gaps=True):
@@ -135,8 +145,11 @@ def find(generated, image_path, known=(), gaps=True):
         # getter), and one compiled for nothing costs nothing.
         if gaps or a in pointed or a in built or prologue:
             found.append(a)
+    # Every entry of a second copy of a helper (save_restore_helpers, primary=False).
+    for h0, h1 in save_restore_helpers(word, code0, code1, primary=False):
+        found += [a for a in range(h0, h1 - 4, 4)]
     known = set(known)
-    return [a for a in found if a not in known]
+    return sorted(set(a for a in found if a not in known))
 
 
 # The XDK compiler's jump table: a bound check, the table's address in two halves, the index times
@@ -151,7 +164,7 @@ _MTCTR = re.compile(r'^mtctr (r\d+)$')
 _MR = re.compile(r'^mr (r\d+),(r\d+)$')
 
 
-def jump_tables(generated, image_path, back=24):
+def jump_tables(generated, image_path, back=24, all_tables=False):
     """The jump tables codegen cut short: [(bctr address, index register, [targets])]. A table
     is read from the image with as many entries as its bound check allows (cmplwi rA,N; bgt:
     N + 1); it is cut short when one of its targets is not among the instructions codegen
@@ -221,7 +234,7 @@ def jump_tables(generated, image_path, back=24):
             targets = [word(table + 4 * k) for k in range(bound + 1)]
             if not all(code0 <= t < code0 + code_size for t in targets):
                 continue
-            if all(t in emitted for t in targets):
+            if not all_tables and all(t in emitted for t in targets):
                 continue
             out.append((addr, int(scale_src[1:]), targets))
     return out

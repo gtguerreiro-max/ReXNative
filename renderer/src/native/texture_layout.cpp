@@ -82,6 +82,15 @@ constexpr FormatEntry kFormats[] = {
     {TextureFormat::k_5_6_5,
      {DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_UNKNOWN, C::kR5G6B5ToB5G6R5,
       false, kRGBB}},
+    // Red and blue swapped on load, as Xenia's load shaders (r5g5b5a1_b5g5r5a1,
+    // r4g4b4a4_b4g4r4a4). Castlevania: Symphony of the Night's menu font is 4_4_4_4 and its
+    // game picture 1_5_5_5.
+    {TextureFormat::k_1_5_5_5,
+     {DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR5G5B5A1ToB5G5R5A1, false, kRGBA}},
+    {TextureFormat::k_4_4_4_4,
+     {DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR4G4B4A4ToB4G4R4A4, false, kRGBA}},
     {TextureFormat::k_6_5_5,
      {DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_UNKNOWN,
       C::kR5G5B6ToB5G6R5WithRBGASwizzle, false, kRBGG}},
@@ -186,6 +195,22 @@ void Convert(TextureConversion conversion, uint8_t* row, uint32_t bytes) {
         uint16_t v;
         std::memcpy(&v, row + i, 2);
         v = uint16_t((v & 0x001F) | ((v & 0x03E0) << 6) | ((v & 0xFC00) >> 5));
+        std::memcpy(row + i, &v, 2);
+      }
+      return;
+    case C::kR5G5B5A1ToB5G5R5A1:
+      for (uint32_t i = 0; i + 2 <= bytes; i += 2) {
+        uint16_t v;
+        std::memcpy(&v, row + i, 2);
+        v = uint16_t((v & 0x83E0) | ((v & 0x001F) << 10) | ((v >> 10) & 0x001F));
+        std::memcpy(row + i, &v, 2);
+      }
+      return;
+    case C::kR4G4B4A4ToB4G4R4A4:
+      for (uint32_t i = 0; i + 2 <= bytes; i += 2) {
+        uint16_t v;
+        std::memcpy(&v, row + i, 2);
+        v = uint16_t((v & 0xF0F0) | ((v & 0x000F) << 8) | ((v >> 8) & 0x000F));
         std::memcpy(row + i, &v, 2);
       }
       return;
