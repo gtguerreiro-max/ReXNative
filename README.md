@@ -269,11 +269,29 @@ Improving it a little at a time:
     given whole as `[[switch_tables]]` (Double Dragon Neon trapped on its cases 16 to 143);
     gotos to labels of other functions made functions (Minecraft); imports the runtime lacks
     made stubs (the Vision camera, `XUsbcam*`); one function per layer address (Perfect Dark,
-    Bionic Commando Rearmed). The app writes `crash.txt` (host stack; `build/<name>.map` names
-    the guest functions). First results on the PC (2026-11-15): Dungeons & Dragons: Chronicles of
-    Mystara plays (menus, chapter select, the first chapter, 60 FPS); Double Dragon Neon reaches
-    its title screen; Castlevania: Symphony of the Night its menu frame; Jet Set Radio stops in
-    its JPEG decoder (libjpeg) right after start-up, with the stock renderer too.
+    Bionic Commando Rearmed); and the addresses setjmp and longjmp are called at (the XDK CRT's,
+    found by how they save and load f14-f31 in the jmp_buf, and the incremental linker's thunks
+    to them), given to codegen (`setjmp.toml`) so those calls become the host's setjmp and
+    longjmp. Without them a longjmp is recompiled as a register restore and a return into the
+    wrong frame: all nine games have them, and the four that stopped at start-up (Jet Set
+    Radio's and Super Meat Boy's libjpeg error path, Minecraft, 3D Ultra Minigolf) stopped there.
+    Codegen takes several addresses with `sdk/patches/rexnative/0003` (Super Meat Boy calls
+    setjmp through two thunks). Games with XAPI fibers (Double Dragon Neon, Dungeons & Dragons:
+    Chronicles of Mystara) get their five fiber functions, found by shape (the current fiber at
+    +356 of the thread, ERROR_ALREADY_FIBER / ERROR_ALREADY_THREAD, SwitchToFiber's register
+    save, the start-up code CreateFiber points at), replaced by the SDK's host-fiber versions
+    (`[rexcrt]` in `crt.toml`): recompiled, SwitchToFiber's stack switch cannot work (Double
+    Dragon Neon's Play wrote into another fiber's stack). The app writes `crash.txt` (host stack;
+    `build/<name>.map` names the guest functions).
+
+    Results on the PC (2026-11-16): Dungeons & Dragons: Chronicles of Mystara plays (menus,
+    chapter select, the first chapter, 60 FPS); Super Meat Boy plays (menus, the world map, level
+    1-1); Jet Set Radio reaches its title screen and plays its story intro; Minecraft its menus
+    (a new world stays on its loading screen, the main thread busy); Double Dragon Neon its title
+    screen; Castlevania: Symphony of the Night
+    its menu, with its text (4_4_4_4 and 1_5_5_5 textures); Bionic Commando Rearmed its intro;
+    Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
+    so there is nothing to compare with); 3D Ultra Minigolf runs past its start-up.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.

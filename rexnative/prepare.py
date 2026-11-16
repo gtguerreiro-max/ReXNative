@@ -150,10 +150,11 @@ def _write_manifest(work, name):
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.10.1"',
              'game_root = "game-data"', '', '[entrypoint]', 'file_path = "game-data/default.xex"',
              'out_directory_path = "generated/default"']
-    # Jump tables codegen cut short, given whole ([[switch_tables]]), and the setjmp / longjmp
-    # the game calls (setjmp_address, longjmp_address), both from `rexnative project
-    # --find-functions` (functions.jump_tables, functions.setjmp_longjmp).
-    includes = [f for f in ('switch_tables.toml', 'setjmp.toml')
+    # Jump tables codegen cut short, given whole ([[switch_tables]]), the setjmp / longjmp the
+    # game calls (setjmp_address, longjmp_address) and its XAPI fiber functions ([rexcrt]), all
+    # from `rexnative project --find-functions` (functions.jump_tables, .setjmp_longjmp,
+    # .xapi_fibers).
+    includes = [f for f in ('switch_tables.toml', 'setjmp.toml', 'crt.toml')
                 if os.path.exists(os.path.join(work, f))]
     lines.append('includes = [%s]' % ', '.join('"%s"' % f for f in includes))
     lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]

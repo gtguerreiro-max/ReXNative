@@ -148,6 +148,37 @@ def find(generated, image_path, known=(), gaps=True):
     # Every entry of a second copy of a helper (save_restore_helpers, primary=False).
     for h0, h1 in save_restore_helpers(word, code0, code1, primary=False):
         found += [a for a in range(h0, h1 - 4, 4)]
+    # Code codegen folded into a function across other functions: a `b` tail call it followed
+    # (Double Dragon Neon's 823F5EE8, addi r3,r3,-4; b 823F5F00, took in 823F5F00, a getter
+    # also reached through a vtable, past 823F5EF0 and 823F5EF8). The first instruction after a
+    # gap holding another function's start is a function of its own, when it was reached by a
+    # `b` straight to it, nothing falls into it, and something points to it (a cut inside a real
+    # function would lose its non-volatile registers, locals here).
+    import bisect
+    starts = sorted(f for f in tree.funcs if code0 <= f < code1)
+    for f, insns in tree.funcs.items():
+        addrs = sorted(a for a, _ in insns)
+        for prev, cur in zip(addrs, addrs[1:]):
+            if (cur - prev <= 4 or cur in tree.funcs or cur not in pointed or
+                    not ends_flow(word(cur - 4))):
+                continue
+            w = word(prev)
+            if w >> 26 != 18 or w & 3 or (prev + (w & 0x3FFFFFC) - ((w & 0x2000000) << 1)) != cur:
+                continue
+            i = bisect.bisect_right(starts, prev)
+            if i < len(starts) and starts[i] < cur and not any(h0 <= cur < h1 for h0, h1 in helpers):
+                found.append(cur)
+    # Functions the SDK replaces ([rexcrt], crt.toml) have no generated code: their insides are
+    # not gaps.
+    crt = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(generated))), 'crt.toml')
+    if os.path.exists(crt):
+        with open(crt, encoding='utf-8') as fh:
+            replaced = [int(a, 16) for a in re.findall(r'= 0x([0-9A-Fa-f]{8})', fh.read())]
+        spans = []
+        for a in replaced:
+            i = bisect.bisect_right(starts, a)
+            spans.append((a, starts[i] if i < len(starts) else a + 4))
+        found = [a for a in found if not any(s0 <= a < s1 for s0, s1 in spans)]
     known = set(known)
     return sorted(set(a for a in found if a not in known))
 
@@ -310,3 +341,67 @@ def setjmp_longjmp(generated, image_path):
         return sorted(out)
 
     return called(54, 'setjmp'), called(50, 'longjmp'), notes
+
+
+_LIS_ANY = re.compile(r'^lis (r\d+),(-?\d+)$')
+_ADDI_ANY = re.compile(r'^addi (r\d+),(r\d+),(-?\d+)$')
+
+
+def xapi_fibers(generated):
+    """The game's XAPI fiber functions, {name: address} for ReXGlue's [rexcrt] table (the
+    SDK's host-fiber versions, kernel/crt/threading.cpp, replace them), or {} unless all five
+    are found: the host SwitchToFiber only knows fibers the host CreateFiber /
+    ConvertThreadToFiber made. Recompiled as code, SwitchToFiber saves the registers into the
+    current fiber and loads the next one's stack pointer and return address, which a
+    recompiled function cannot follow (Double Dragon Neon's Play wrote into another fiber's
+    stack). By shape, all reading the current thread (lwz rT,256(r13)) and its fiber (+356):
+    ConvertThreadToFiber sets ERROR_ALREADY_FIBER (li r3,1280), ConvertFiberToThread
+    ERROR_ALREADY_THREAD (li r3,1281), DeleteFiber compares the fiber with its argument (cmplw
+    ...,r3); SwitchToFiber's body starts lwz r4,256(r13); lwz r5,356(r4); mfcr; mflr (its
+    public entry may be a lone `b` to it); CreateFiber builds the address of the new fiber's
+    start-up code, the instructions right before that body."""
+    tree = listing.load(generated)
+    funcs = {f: [(a, t.strip()) for a, t in insns] for f, insns in tree.funcs.items() if insns}
+    body = None
+    for f, insns in funcs.items():
+        for i in range(len(insns) - 3):
+            if (re.match(r'lwz (r\d+),256\(r13\)$', insns[i][1]) and
+                    re.match(r'lwz r\d+,356\(%s\)$' % insns[i][1].split()[1].split(',')[0],
+                             insns[i + 1][1]) and
+                    insns[i + 2][1].startswith('mfcr') and insns[i + 3][1].startswith('mflr')):
+                body = insns[i][0]
+                break
+        if body:
+            break
+    if not body:
+        return {}
+    out = {}
+    for f, insns in funcs.items():
+        texts = [t for _, t in insns]
+        thread = {m.group(1) for m in (re.match(r'lwz (r\d+),256\(r13\)$', t) for t in texts) if m}
+        fiber = any(re.match(r'(lwz|stw) r\d+,356\((%s)\)$' % '|'.join(thread), t)
+                    for t in texts) if thread else False
+        if len(texts) == 1 and texts[0] == 'b 0x%08x' % body:
+            out['SwitchToFiber'] = f
+        if fiber and 'li r3,1280' in texts:
+            out['ConvertThreadToFiber'] = f
+        elif fiber and 'li r3,1281' in texts:
+            out['ConvertFiberToThread'] = f
+        elif fiber and any(re.match(r'cmplw cr\d,r\d+,r3$', t) for t in texts) and len(texts) < 64:
+            out['DeleteFiber'] = f
+        # CreateFiber: lis rX,hi ... addi rY,rX,lo with the address just before the body.
+        his = {}
+        for t in texts:
+            m = _LIS_ANY.match(t)
+            if m:
+                his[m.group(1)] = int(m.group(2))
+                continue
+            m = _ADDI_ANY.match(t)
+            if m and m.group(2) in his:
+                a = ((his[m.group(2)] << 16) + int(m.group(3))) & 0xFFFFFFFF
+                if body - 0x40 <= a < body and f != body:
+                    out['CreateFiber'] = f
+    out.setdefault('SwitchToFiber', body)
+    names = ('ConvertThreadToFiber', 'ConvertFiberToThread', 'CreateFiber', 'DeleteFiber',
+             'SwitchToFiber')
+    return {n: out[n] for n in names} if all(n in out for n in names) else {}

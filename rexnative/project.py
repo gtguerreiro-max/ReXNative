@@ -452,7 +452,13 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
     if jumps:
         log('%s: setjmp at %s, longjmp at %s' % (
             name, ' '.join('%08X' % a for a in setjmps), ' '.join('%08X' % a for a in longjmps)))
-    if new or bad or tables or jumps:
+    # XAPI fibers: the SDK's host-fiber versions in their place (functions.xapi_fibers).
+    fibers = functions.xapi_fibers(gen)
+    crt = write_crt(work, fibers)
+    if crt:
+        log('%s: XAPI fibers given to the SDK: %s' % (
+            name, ' '.join('%s %08X' % kv for kv in fibers.items())))
+    if new or bad or tables or jumps or crt:
         for a in new:
             hints[a] = 0
         _write_hints(work, hints)
@@ -473,6 +479,26 @@ def write_setjmp(work, setjmps, longjmps):
         "# host's setjmp / longjmp. Included by the manifest.",
         'setjmp_address = [%s]' % ', '.join('0x%08X' % a for a in setjmps),
         'longjmp_address = [%s]' % ', '.join('0x%08X' % a for a in longjmps), ''])
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            if f.read() == text:
+                return False
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    return True
+
+
+def write_crt(work, functions_found):
+    """Writes <work>/crt.toml (the manifest includes it): ReXGlue's [rexcrt] table, the game's
+    functions the SDK replaces with its own (kernel/crt: the XAPI fibers); True when it
+    changed."""
+    path = os.path.join(work, 'crt.toml')
+    if not functions_found:
+        return False
+    text = '\n'.join([
+        "# The game's XAPI functions the ReXGlue SDK replaces with its own (kernel/crt), found by",
+        '# ReXNative (rexnative project --find-functions). Included by the manifest.',
+        '[rexcrt]'] + ['%s = 0x%08X' % kv for kv in functions_found.items()] + [''])
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
             if f.read() == text:

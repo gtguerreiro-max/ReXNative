@@ -10,6 +10,7 @@
 #   scripts\live.ps1 snap "6160EBE04B693B5E 804E2F1E4E062B9A"   # targets after those shaders
 #   scripts\live.ps1 trace game           # push-buffer trace of the next frame (the tap)
 #   scripts\live.ps1 keys "0:hold:SPACE:150,3:hold:ENTER:150"
+#   scripts\live.ps1 click 535 403        # a left click at x,y of the window as `shot` saves it
 #   scripts\live.ps1 log "failed|removed" 20
 #   scripts\live.ps1 status | stop
 # With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir or
@@ -76,6 +77,13 @@ public static class RexLiveWin {
             keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
             SetForegroundWindow(h);
         }
+    }
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+    public static void Click(int x, int y) {
+        SetCursorPos(x, y); System.Threading.Thread.Sleep(60);
+        mouse_event(2, 0, 0, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(60);  // left down
+        mouse_event(4, 0, 0, 0, UIntPtr.Zero);  // left up
     }
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
@@ -213,6 +221,18 @@ switch ($Command) {
         if ($Route) { Send-Schedule $p $Route; 'route done' }
     }
     'keys' { Send-Schedule (Get-Game $s) $Arg }
+    'click' {
+        # A left click at x,y of the window as `shot` saves it (the runtime's ImGui dialogs, such
+        # as "Gamer profile not online", take the mouse and not the keys).
+        $p = Get-Game $s
+        $h = Get-Window $p
+        $r = New-Object RexLiveWin+RECT; [RexLiveWin]::GetWindowRect($h, [ref]$r) | Out-Null
+        Close-FirewallNotices
+        [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 150
+        if ([RexLiveWin]::GetForegroundWindow() -ne $h) { throw 'the game is not in front' }
+        [RexLiveWin]::Click($r.Left + [int]$Arg, $r.Top + [int]$Arg2)
+        "clicked $Arg,$Arg2"
+    }
     'shot' {
         $p = Get-Game $s
         $name = if ($Arg) { $Arg } else { (Get-Date).ToString('HHmmss') }

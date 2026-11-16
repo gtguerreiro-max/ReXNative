@@ -255,12 +255,31 @@ Melhorar aos poucos:
     inteiras como `[[switch_tables]]` (o Double Dragon Neon parava nos casos 16 a 143); gotos
     para labels de outras funções feitos funções (Minecraft); imports que o runtime não tem
     feitos stubs (a câmara Vision, `XUsbcam*`); uma função por endereço no layer (Perfect Dark,
-    Bionic Commando Rearmed). A app escreve `crash.txt` (pilha do anfitrião; o
-    `build/<nome>.map` dá os nomes das funções do jogo). Primeiros resultados no PC
-    (2026-11-15): Dungeons & Dragons: Chronicles of Mystara joga-se (menus, escolha de capítulo,
-    o primeiro capítulo, 60 FPS); Double Dragon Neon chega ao ecrã de título; Castlevania:
-    Symphony of the Night à moldura do menu; Jet Set Radio pára no descodificador de JPEG
-    (libjpeg) logo depois de arrancar, também com o renderer original.
+    Bionic Commando Rearmed); e os endereços onde se chama o setjmp e o longjmp (os da CRT do
+    XDK, encontrados pela forma como guardam e repõem f14-f31 no jmp_buf, e os thunks do linker
+    incremental para eles), dados ao codegen (`setjmp.toml`) para essas chamadas passarem a ser o
+    setjmp e o longjmp do anfitrião. Sem eles um longjmp é recompilado como uma reposição de
+    registos e um regresso para o frame errado: os nove jogos têm-nos, e os quatro que paravam
+    no arranque (o caminho de erro do libjpeg no Jet Set Radio e no Super Meat Boy, Minecraft,
+    3D Ultra Minigolf) paravam aí. O codegen aceita vários endereços com
+    `sdk/patches/rexnative/0003` (o Super Meat Boy chama o setjmp por dois thunks). Os jogos com
+    fibras do XAPI (Double Dragon Neon, Dungeons & Dragons: Chronicles of Mystara) têm as cinco
+    funções de fibras, encontradas pela forma (a fibra atual em +356 da thread,
+    ERROR_ALREADY_FIBER / ERROR_ALREADY_THREAD, o guardar de registos do SwitchToFiber, o código
+    de arranque para onde o CreateFiber aponta), trocadas pelas versões com fibras do anfitrião
+    do SDK (`[rexcrt]` no `crt.toml`): recompilada, a troca de pilha do SwitchToFiber não
+    funciona (o Play do Double Dragon Neon escrevia na pilha de outra fibra). A app escreve
+    `crash.txt` (pilha do anfitrião; o `build/<nome>.map` dá os nomes das funções do jogo).
+
+    Resultados no PC (2026-11-16): Dungeons & Dragons: Chronicles of Mystara joga-se (menus,
+    escolha de capítulo, o primeiro capítulo, 60 FPS); Super Meat Boy joga-se (menus, o mapa, o
+    nível 1-1); Jet Set Radio chega ao ecrã de título e mostra a introdução da história;
+    Minecraft aos menus (um mundo novo fica no ecrã de carregamento, com a thread principal
+    ocupada); Double Dragon Neon ao ecrã de título;
+    Castlevania: Symphony of the Night ao menu, com o texto (texturas 4_4_4_4 e 1_5_5_5); Bionic
+    Commando Rearmed à introdução; Perfect Dark ao ecrã de título (as texturas parecem riscadas;
+    o renderer original não arranca, por isso não há com que comparar); 3D Ultra Minigolf passa
+    do arranque.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.
