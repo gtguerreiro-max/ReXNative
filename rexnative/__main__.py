@@ -139,7 +139,7 @@ def cmd_prepare(a):
                 p = os.path.join(s, n)
                 if os.path.normcase(os.path.abspath(p)) == work:
                     continue
-                if n.lower().endswith(prepare.ARCHIVES) or os.path.isdir(p) or                         prepare.stfs.is_package(p):
+                if n.lower().endswith(prepare.ARCHIVES + prepare.IMAGES) or os.path.isdir(p) or                         prepare.stfs.is_package(p):
                     sources.append(p)
         else:
             sources.append(s)
@@ -210,6 +210,32 @@ def cmd_project(a):
         added = project.discover(a.work, rexglue, args, rounds=a.discover,
                                  seconds=a.discover_seconds)
         print('%d functions added to hints.txt' % len(added))
+
+
+def cmd_deck(a):
+    from . import deck
+    d = deck.Deck(a.host, a.key)
+    games = [deck.install(d, w) for w in a.work]
+    if a.steam and not deck.add_to_steam(d, games):
+        return
+    if a.try_seconds:
+        rows = []
+        for g in games:
+            r = deck.try_game(d, g, a.try_seconds)
+            if r:
+                rows.append('| %s | %s | %s | %s | %s |' % (
+                    r['title'], 'yes' if r['running'] else 'NO',
+                    ('%.1f ms (%.0f FPS), %.0f draws' % (r['frame_ms'], 1000.0 / r['frame_ms'],
+                                                         r['draws'])) if r['frame_ms'] else '-',
+                    '; '.join(f[-120:] for f in r['fatal']) or '%d errors' % r['errors'],
+                    ', '.join(os.path.basename(c) for c in r['captures']) or '-'))
+            else:
+                rows.append('| %s | not tried | - | - | - |' % g['title'])
+        report = os.path.join(os.path.dirname(games[0]['work']), 'deck-report.md')
+        with open(report, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('| Game | Running | Frame | Errors | Captures |\n|---|---|---|---|---|\n' +
+                    '\n'.join(rows) + '\n')
+        print(open(report, encoding='utf-8').read())
 
 
 def cmd_title_update(a):
@@ -317,6 +343,17 @@ def main(argv=None):
                             'and the one installed (nothing is downloaded)')
     s.add_argument('work', nargs='+', help="a game's folder, or prepare's --work")
     s.set_defaults(fn=cmd_title_update)
+    s = sub.add_parser('deck', parents=[lang_opt],
+                       help='copy built games to the Steam Deck, add them to Steam, try them')
+    s.add_argument('work', nargs='+', help="a game's folder in prepare's --work (built)")
+    s.add_argument('--host', help='deck@ADDRESS[:PORT] (or REXNATIVE_DECK)')
+    s.add_argument('--key', help='SSH key (or REXNATIVE_DECK_KEY)')
+    s.add_argument('--steam', action='store_true',
+                   help="add the games to Steam's library (closes Steam; Game Mode restarts it)")
+    s.add_argument('--try', dest='try_seconds', type=int, default=0, metavar='SECONDS',
+                   help='start each game from Steam, read its log and take a capture after '
+                        'SECONDS, then close it')
+    s.set_defaults(fn=cmd_deck)
     s = sub.add_parser('project', parents=[lang_opt],
                        help='a game `prepare` made -> a ReXGlue project with ReXNative that runs '
                             '(--build: built into build/, laid out in run/)')
