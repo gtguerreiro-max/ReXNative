@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -184,6 +185,26 @@ def _false_starts(text, hints):
     return bad
 
 
+def _function_table_base(work):
+    """Where the recompiled code's function table goes when a title update makes the image
+    smaller: codegen puts it right after the patched image, but the runtime loads the base XEX
+    first, at its own size, and that range must be free (Minecraft's TU 80: image 0x2720000, base
+    0x2B50000, "XEX image range 82000000-84B50000 is in use"). After the larger of the two then;
+    None when the update does not shrink the image (codegen's own choice stands)."""
+    data = os.path.join(work, 'game-data')
+    names = {n.lower(): n for n in os.listdir(data)} if os.path.isdir(data) else {}
+    if 'default.xex' not in names or 'default.xexp' not in names:
+        return None
+    try:
+        base, base_alloc = xex.image_span(os.path.join(data, names['default.xex']))
+        _, patched = xex.image_span(os.path.join(data, names['default.xexp']))
+    except (OSError, ValueError, struct.error):
+        return None
+    if base_alloc <= patched:
+        return None
+    return base + ((base_alloc + 0xFFFF) & ~0xFFFF)
+
+
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.11.0"',
@@ -197,6 +218,9 @@ def _write_manifest(work, name):
                 if os.path.exists(os.path.join(work, f))]
     lines.append('includes = [%s]' % ', '.join('"%s"' % f for f in includes))
     lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
+    table = _function_table_base(work)
+    if table:
+        lines.append('function_table_base = 0x%08X' % table)
     hints = _hints(work)
     if hints:
         lines.append('[entrypoint.functions]')

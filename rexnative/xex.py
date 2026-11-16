@@ -44,6 +44,34 @@ def read(path):
     return out
 
 
+FILE_FORMAT_INFO = 0x000003FF
+IMAGE_BASE_ADDRESS = 0x00010201
+
+
+def image_span(path):
+    """(base address, bytes the loader allocates) of an XEX, from its clear header: the image size
+    of its security info, or for an uncompressed one the file's data after the header if that is
+    larger (ReXGlue's XEXModule::Load, as Xenia's, allocates that much)."""
+    b = open(path, 'rb').read(1 << 20)
+    if b[:4] != b'XEX2':
+        raise ValueError('%s: not an XEX2 file' % path)
+    _, header_size, _, security, count = struct.unpack('>IIIII', b[4:0x18])
+    image_size = _be32(b, security + 4)
+    base = _be32(b, security + 0x110)
+    compression = None
+    for i in range(count):
+        key, val = struct.unpack('>II', b[0x18 + i * 8:0x20 + i * 8])
+        if key == IMAGE_BASE_ADDRESS:
+            base = val
+        elif key == FILE_FORMAT_INFO:
+            compression = struct.unpack('>H', b[val + 6:val + 8])[0]
+    alloc = image_size
+    if compression == 0:
+        import os
+        alloc = max(alloc, os.path.getsize(path) - header_size)
+    return base, alloc
+
+
 def d3d_library(info):
     """('D3D9' or 'D3D9LTCG', version) from the static libraries, or (None, None)."""
     for name in ('D3D9LTCG', 'D3D9'):
