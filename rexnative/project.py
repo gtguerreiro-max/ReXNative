@@ -10,7 +10,8 @@ Writes into the game's work folder (beside its manifest, generated/ and layer/):
   <name>.toml                                     the run folder's configuration (kept once there)
 With --build: configures and builds it (clang-cl, Ninja, the Visual Studio environment from
 scripts/vcenv.cmd) in build/, then lays out run/: the executable, the SDK's and ReXNative's DLLs,
-the configuration, and game/ (a junction to game-data/, which the app looks for beside it).
+the configuration, game/ (a junction to game-data/, which the app looks for beside it) and,
+with a title update installed (title_update.py), title-update/ (its files, mounted as update:).
 Nothing of the game goes anywhere else. The SDK paths default to $REXNATIVE_SDK_INSTALL,
 $REXNATIVE_SDK_SRC, $REXNATIVE_FIDELITYFX, $REXNATIVE_DLSS_SDK and $REXNATIVE_DLSS_NR.
 """
@@ -268,13 +269,18 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     toml = os.path.join(work, '%s.toml' % name)
     if os.path.exists(toml) and not os.path.exists(os.path.join(run, '%s.toml' % name)):
         shutil.copy2(toml, run)
-    game = os.path.join(run, 'game')
-    if not os.path.exists(game):
-        src = os.path.join(work, 'game-data')
+    # game/ -> game-data/; title-update/ -> the installed title update's files (title_update.py),
+    # which the app mounts as update: when it finds the folder beside it.
+    links = [('game', os.path.join(work, 'game-data')),
+             ('title-update', os.path.join(work, 'title-update', 'content'))]
+    for link, src in links:
+        dst = os.path.join(run, link)
+        if os.path.exists(dst) or not os.path.isdir(src):
+            continue
         if os.name == 'nt':
-            subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', game, src], capture_output=True)
+            subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', dst, src], capture_output=True)
         else:
-            os.symlink(src, game)
+            os.symlink(src, dst)
     log('%s: %s' % (name, os.path.join(run, '%s.exe' % name)))
     return os.path.join(run, '%s.exe' % name)
 

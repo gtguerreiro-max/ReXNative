@@ -22,7 +22,8 @@ def read(path):
         raise ValueError('%s: not an XEX2 file' % path)
     flags, _, _, _, count = struct.unpack('>IIIII', b[4:0x18])
     out = {'path': path, 'flags': flags, 'libs': {}, 'title_id': None, 'version': None,
-           'pe_name': None, 'patch': bool(flags & 0x10)}
+           'pe_name': None, 'patch': bool(flags & 0x10), 'media_id': None,
+           'base_version': None}
     for i in range(count):
         key, val = struct.unpack('>II', b[0x18 + i * 8:0x20 + i * 8])
         if key == STATIC_LIBRARIES:
@@ -32,8 +33,11 @@ def read(path):
                 ma, mi, bu, qfe = struct.unpack('>HHHH', b[o + 8:o + 16])
                 out['libs'][name] = '%d.%d.%d.%d' % (ma, mi, bu, qfe & 0xFF)
         elif key == EXECUTION_INFO:
-            _, ver, _, tid = struct.unpack('>IIII', b[val:val + 16])
+            # media id, version, base version, title id (a title update's version is the one it
+            # brings the game to, its base version the one it applies to).
+            mid, ver, base_ver, tid = struct.unpack('>IIII', b[val:val + 16])
             out['title_id'], out['version'] = '%08X' % tid, '%08X' % ver
+            out['media_id'], out['base_version'] = '%08X' % mid, '%08X' % base_ver
         elif key == ORIGINAL_PE_NAME:
             size = _be32(b, val)
             out['pe_name'] = b[val + 4:val + size].split(b'\0')[0].decode('ascii', 'replace')

@@ -145,7 +145,8 @@ def cmd_prepare(a):
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)
     for s in sources:
-        prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
+        prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
+                        title_update=a.title_update)
     text = prepare.survey(a.work)
     with open(os.path.join(a.work, 'survey.md'), 'w', encoding='utf-8', newline='\n') as f:
         f.write(text)
@@ -174,6 +175,30 @@ def cmd_project(a):
         added = project.discover(a.work, rexglue, args, rounds=a.discover,
                                  seconds=a.discover_seconds)
         print('%d functions added to hints.txt' % len(added))
+
+
+def cmd_title_update(a):
+    from . import title_update as tu, xex
+    works = []
+    for w in a.work:
+        if os.path.exists(tu.game_xex(w)):
+            works.append(w)
+        elif os.path.isdir(w):
+            works += [os.path.join(w, n) for n in sorted(os.listdir(w))
+                      if os.path.exists(tu.game_xex(os.path.join(w, n)))]
+    for w in works:
+        info = xex.read(tu.game_xex(w))
+        try:
+            ups = [u for u in tu.available(info['title_id'], info['media_id'])
+                   if not u['base_version'] or u['base_version'] == info['version']]
+        except OSError as e:
+            print('%s: XboxUnity did not answer (%s)' % (os.path.basename(w), e))
+            continue
+        cur = tu.installed(w)
+        print('%s: %s media %s version %s; installed: %s; listed: %s' % (
+            os.path.basename(w), info['title_id'], info['media_id'], info['version'],
+            ('TU %d' % cur['title_update']) if cur else 'none',
+            ', '.join('TU %d (%d KB)' % (u['version'], u['size']) for u in ups[:6]) or 'none'))
 
 
 def cmd_survey(a):
@@ -233,7 +258,16 @@ def main(argv=None):
     s.add_argument('--rexglue', help='rexglue.exe (default: $REXNATIVE_REXGLUE)')
     s.add_argument('--refs', help='references to use (default: every port in ports.json)')
     s.add_argument('--max-rounds', type=int, default=40, help='codegen rounds adding hints')
+    s.add_argument('--title-update', action='store_true',
+                   help='download the newest title update XboxUnity lists for each game and '
+                        'install it before codegen (the code is recompiled from the patched '
+                        'image); see `rexnative title-update`')
     s.set_defaults(fn=cmd_prepare)
+    s = sub.add_parser('title-update', parents=[lang_opt],
+                       help="the title updates XboxUnity lists for games in prepare's --work, "
+                            'and the one installed (nothing is downloaded)')
+    s.add_argument('work', nargs='+', help="a game's folder, or prepare's --work")
+    s.set_defaults(fn=cmd_title_update)
     s = sub.add_parser('project', parents=[lang_opt],
                        help='a game `prepare` made -> a ReXGlue project with ReXNative that runs '
                             '(--build: built into build/, laid out in run/)')

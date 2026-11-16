@@ -2,6 +2,7 @@
 updates, DLC). From FromDustRecomp's tools/stfs_extract.py, with the package's file names
 checked: a package is untrusted data and must not write outside the output directory.
 """
+import hashlib
 import os
 import struct
 
@@ -69,6 +70,75 @@ class Package:
         if idx < PER_LEVEL * PER_LEVEL:
             return block
         return block + self.bpht
+
+    def hash_table_block(self, idx, level):
+        """The block (from the data base) of the level-`level` hash table covering data block
+        `idx` (Xenia's StfsContainerDevice::BlockToHashBlockNumberSTFS)."""
+        step0 = PER_LEVEL + self.bpht
+        step1 = PER_LEVEL * PER_LEVEL + (PER_LEVEL + 1) * self.bpht
+        if level == 0:
+            return self.hash_block(idx)
+        if level == 1:
+            if idx < PER_LEVEL * PER_LEVEL:
+                return step0
+            return (idx // (PER_LEVEL * PER_LEVEL)) * step1 + self.bpht
+        return step1
+
+    def verify(self):
+        """Problems found checking the package against itself (an empty list: whole): the
+        content id (the header's digest at 0x32C) is the SHA-1 of the header from 0x344 to its
+        end at a 4 KB boundary, which holds the top hash table's hash (volume descriptor); each
+        data block's SHA-1 is in its level-0 hash table, each table's in the level above, the
+        top's in the header. A read-only (distribution) package keeps one copy of each table."""
+        problems = []
+        self.f.seek(0)
+        hdr = self.f.read(self.data_base)
+        content_id = hdr[0x32C:0x340]
+        if hashlib.sha1(hdr[0x344:self.data_base]).digest() != content_id:
+            problems.append('header: its SHA-1 is not the content id')
+        vd = hdr[0x379:0x379 + 0x24]
+        top_hash = vd[8:0x1C]
+        allocated = struct.unpack('>I', vd[0x1C:0x20])[0]
+        if not self.read_only:
+            problems.append('not a read-only package: its hash tables are not checked')
+            return problems
+
+        def table(block):
+            self.f.seek(self.data_base + block * BLOCK)
+            return self.f.read(BLOCK)
+
+        def entry(tbl, i):
+            return tbl[i * 0x18:i * 0x18 + 0x14]
+
+        cache = {}
+
+        def cached(block):
+            if block not in cache:
+                cache[block] = table(block)
+            return cache[block]
+
+        for idx in range(allocated):
+            data = self.read_block(idx)
+            if hashlib.sha1(data).digest() != entry(cached(self.hash_table_block(idx, 0)), idx % PER_LEVEL):
+                problems.append('data block %d: hash mismatch' % idx)
+                if len(problems) > 8:
+                    return problems
+        top_level = 0 if allocated <= PER_LEVEL else 1 if allocated <= PER_LEVEL * PER_LEVEL else 2
+        for level in range(1, top_level + 1):
+            span = PER_LEVEL ** level  # data blocks one table of the level below covers
+            for first in range(0, allocated, span):
+                below = cached(self.hash_table_block(first, level - 1))
+                above = cached(self.hash_table_block(first, level))
+                if hashlib.sha1(below).digest() != entry(above, (first // span) % PER_LEVEL):
+                    problems.append('level-%d hash table for block %d: hash mismatch' % (
+                        level - 1, first))
+        if allocated and hashlib.sha1(cached(self.hash_table_block(0, top_level))).digest() != top_hash:
+            problems.append('top hash table: not the header\'s hash')
+        return problems
+
+    def content_id(self):
+        self.f.seek(0x32C)
+        return self.f.read(0x14).hex().upper()
 
     def read_block(self, idx):
         self.f.seek(self.data_base + self.backing_block(idx) * BLOCK)

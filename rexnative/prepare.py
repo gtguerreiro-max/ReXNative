@@ -212,7 +212,8 @@ def codegen(work, name, rexglue, max_rounds, log):
     raise RuntimeError('codegen still failing after %d rounds' % max_rounds)
 
 
-def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=40):
+def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=40,
+            title_update=False):
     name = slug(source)
     work = os.path.join(work_root, name)
     os.makedirs(work, exist_ok=True)
@@ -228,6 +229,12 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
     log('== %s' % name)
     try:
         status['steps']['extract'] = stage_game(source, work, log)
+        # The newest title update, before codegen (title_update.py): codegen recompiles the
+        # patched image.
+        if title_update:
+            from . import title_update as tu
+            status['steps']['title_update'] = tu.update(work, log)
+            save()
         info = xex.read(os.path.join(work, 'game-data', 'default.xex'))
         lib, ver = xex.d3d_library(info)
         status['xex'] = {'title_id': info['title_id'], 'version': info['version'],
