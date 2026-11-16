@@ -289,14 +289,20 @@ def add_to_steam(deck, games, log=print):
     script = '''
 export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
 masked=
+desktop=
 restore() {
   if [ -n "$masked" ]; then
     systemctl --user unmask --runtime steam-launcher.service >/dev/null 2>&1
     systemctl --user start steam-launcher.service >/dev/null 2>&1
+  elif [ -n "$desktop" ]; then
+    # The desktop session starts Steam only at login: started again here, in the session's
+    # environment (the user manager has its display).
+    systemd-run --user --quiet --collect steam -silent >/dev/null 2>&1
   fi
 }
 trap restore EXIT
 if pgrep -x steam >/dev/null; then
+  systemctl --user is-active --quiet gamescope-session.target 2>/dev/null || desktop=1
   pid=$(pgrep -o -x steam)
   age=$(( $(date +%%s) - $(stat -c %%Y /proc/$pid) ))
   [ "$age" -lt 70 ] && sleep $(( 70 - age ))
