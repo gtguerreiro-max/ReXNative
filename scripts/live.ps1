@@ -70,6 +70,12 @@ public static class RexLiveWin {
         bool att = other != 0 && other != me && AttachThreadInput(me, other, true);
         ShowWindow(h, 9); BringWindowToTop(h); SetForegroundWindow(h);
         if (att) AttachThreadInput(me, other, false);
+        if (GetForegroundWindow() != h) {
+            // The foreground lock (a notification toast in front, nobody at the PC): a key
+            // event lets this process set the foreground. Alt alone, down and up.
+            keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
+            SetForegroundWindow(h);
+        }
     }
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
@@ -104,6 +110,15 @@ function Get-Window($p) {
     throw 'the game has no window'
 }
 
+function Close-FirewallNotices {
+    # A game that binds a socket (system link, Xbox Live) makes Windows ask "allow access?" once per
+    # new exe, in a window that takes the focus from the game. Ended unanswered (no rule is written,
+    # the game stays without inbound access, as on a cancel), so the keys keep reaching the game.
+    Get-CimInstance Win32_Process -Filter "Name='PickerHost.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*FirewallNotificationDialogServer*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
 function Send-Schedule($p, [string]$schedule) {
     # "<seconds from now>:<key>" items, in order.
     $start = Get-Date
@@ -114,6 +129,7 @@ function Send-Schedule($p, [string]$schedule) {
             if ($p.HasExited) { throw ('the game exited: 0x{0:X8}' -f $p.ExitCode) }
         }
         $h = Get-Window $p
+        Close-FirewallNotices
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 150
         if ([RexLiveWin]::GetForegroundWindow() -ne $h) { "skipped '$key' at ${at}s: the game is not in front"; continue }
         if ($key -like 'hold:*') {
@@ -142,6 +158,7 @@ function Save-Shot($p, [string]$path) {
         if ($c.R + $c.G + $c.B -gt 0) { $black = $false; break }
     }
     if ($black) {  # a swapchain PrintWindow cannot read: copy the screen with the window in front
+        Close-FirewallNotices
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 300
         $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
     }

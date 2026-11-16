@@ -399,8 +399,9 @@ def _codegen_and_build(work, name, rexglue, build_args, log):
 
 def find_functions(work, rexglue, build_args, seconds=60, log=print):
     """Dumps the loaded image (a run with --rexnative_dump_image, stopped once it is written),
-    finds the function starts codegen missed (functions.py), adds them to hints.txt, runs
-    codegen and builds again. Returns the addresses added."""
+    finds the function starts codegen missed (functions.py), adds them to hints.txt, gives the
+    jump tables codegen cut short (switch_tables.toml) and the addresses setjmp and longjmp are
+    called at (setjmp.toml), runs codegen and builds again. Returns the addresses added."""
     import time
     from . import functions, prepare
     work = os.path.abspath(work)
@@ -445,12 +446,40 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
     if tables:
         log('%s: %d jump tables codegen cut short, given whole: %s' % (
             name, len(tables), ' '.join('%08X (%d)' % (a, n) for a, n in tables[:8])))
-    if new or bad or tables:
+    # setjmp / longjmp: calls to them made the host's (functions.setjmp_longjmp).
+    setjmps, longjmps, _ = functions.setjmp_longjmp(gen, image)
+    jumps = write_setjmp(work, setjmps, longjmps)
+    if jumps:
+        log('%s: setjmp at %s, longjmp at %s' % (
+            name, ' '.join('%08X' % a for a in setjmps), ' '.join('%08X' % a for a in longjmps)))
+    if new or bad or tables or jumps:
         for a in new:
             hints[a] = 0
         _write_hints(work, hints)
         _codegen_and_build(work, name, rexglue, build_args, log)
     return new
+
+
+def write_setjmp(work, setjmps, longjmps):
+    """Writes <work>/setjmp.toml (the manifest includes it) with the addresses the game calls
+    setjmp and longjmp at; True when it changed. Both or neither: a host longjmp needs the host
+    setjmp that filled its jmp_buf (ppc_longjmp aborts on a guest jmp_buf it does not know)."""
+    path = os.path.join(work, 'setjmp.toml')
+    if not setjmps or not longjmps:
+        return False
+    text = '\n'.join([
+        '# The addresses the game calls setjmp and longjmp at (a body and the thunks to it),',
+        '# found by ReXNative (rexnative project --find-functions): codegen makes those calls the',
+        "# host's setjmp / longjmp. Included by the manifest.",
+        'setjmp_address = [%s]' % ', '.join('0x%08X' % a for a in setjmps),
+        'longjmp_address = [%s]' % ', '.join('0x%08X' % a for a in longjmps), ''])
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            if f.read() == text:
+                return False
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    return True
 
 
 def write_switch_tables(work, found):

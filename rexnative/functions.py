@@ -238,3 +238,75 @@ def jump_tables(generated, image_path, back=24, all_tables=False):
                 continue
             out.append((addr, int(scale_src[1:]), targets))
     return out
+
+
+def setjmp_longjmp(generated, image_path):
+    """(setjmps, longjmps, notes): every address the game calls the XDK CRT's setjmp and longjmp
+    at, sorted (empty when not found). ReXGlue's codegen turns a `bl` to setjmp_address /
+    longjmp_address into a host setjmp / longjmp (ppc_setjmp in the generated <name>_pch.h, a
+    jmp_buf per guest jmp_buf); without them a longjmp is recompiled as the guest's register
+    restore and a return, which goes back into the function that called longjmp with the stack
+    pointer of the one that called setjmp (Super Meat Boy's libjpeg: error_exit's longjmp, then
+    first_marker reading cinfo->src from the wrong frame, a null). All nine games tried have both.
+
+    setjmp stores f14-f31 at 0, 8, 16, ... of its jmp_buf (stfd f14,0(r3); stfd f15,8(r3); ...)
+    and longjmp loads them back from there (lfd f14,0(rX); ...); each is the function codegen
+    made around that run. The addresses called are that function and the thunks to it (lis r11;
+    addi r11,r11; mtctr r11; bctr, the incremental linker's: Super Meat Boy calls setjmp at
+    826882B0 through 82117310 and 82702624), those some `bl` leads to; codegen takes them as a
+    list (sdk/patches/rexnative/0003). notes: what was found, for the log."""
+    base, size, code0, code_size = bounds(generated)
+    code1 = code0 + code_size
+    with open(image_path, 'rb') as f:
+        img = f.read()
+
+    def word(a):
+        return int.from_bytes(img[a - base:a - base + 4], 'big')
+
+    def runs(op):  # stfd (54) / lfd (50) f14..f17 at 0..24 of one register
+        out = []
+        for a in range(code0, code1 - 16, 4):
+            w = word(a)
+            if w >> 21 != (op << 5 | 14) or w & 0xFFFF:
+                continue
+            ra = (w >> 16) & 31
+            if all(word(a + 4 * k) == (op << 26 | (14 + k) << 21 | ra << 16 | 8 * k)
+                   for k in (1, 2, 3)):
+                out.append(a)
+        return out
+
+    tree = listing.load(generated)
+    spans = sorted((f, max(a for a, _ in insns)) for f, insns in tree.funcs.items() if insns)
+    starts = [f for f, _ in spans]
+
+    def owner(a):
+        import bisect
+        i = bisect.bisect_right(starts, a) - 1
+        return spans[i][0] if i >= 0 and spans[i][0] <= a <= spans[i][1] else None
+
+    calls = {}
+    thunks = {}
+    for a in range(code0, code1 - 12, 4):
+        w = word(a)
+        if w >> 26 == 18 and w & 3 == 1:  # bl
+            t = (a + ((w & 0x3FFFFFC) - ((w & 0x2000000) << 1))) & 0xFFFFFFFF
+            calls[t] = calls.get(t, 0) + 1
+        elif w >> 16 == 0x3D60 and word(a + 4) >> 16 == 0x396B and word(a + 8) == 0x7D6903A6 \
+                and word(a + 12) == 0x4E800420:  # lis r11; addi r11,r11; mtctr r11; bctr
+            lo = word(a + 4) & 0xFFFF
+            t = ((w & 0xFFFF) << 16) + lo - ((lo & 0x8000) << 1) & 0xFFFFFFFF
+            thunks.setdefault(t, []).append(a)
+
+    notes = []
+
+    def called(op, what):
+        out = []
+        for f in sorted({owner(a) for a in runs(op)} - {None}):
+            for c in [f] + thunks.get(f, []):
+                n = calls.get(c, 0)
+                notes.append('%s %08X%s: %d calls' % (what, c, '' if c == f else ' (thunk to %08X)' % f, n))
+                if n:
+                    out.append(c)
+        return sorted(out)
+
+    return called(54, 'setjmp'), called(50, 'longjmp'), notes
