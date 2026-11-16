@@ -12,6 +12,7 @@
 #include <rex/cvar.h>
 #include <rex/kernel/heap.h>
 #include <rex/kernel/thread_state.h>
+#include <rex/logging.h>
 #include <rex/logging/log_category.h>
 #include <rex/platform/native_window.h>
 #include <rex/ui/ui_event.h>
@@ -28,6 +29,7 @@ REXCVAR_DEFINE_STRING(bind_renderer_switch, "F9", "ReXNative",
 REXCVAR_DEFINE_STRING(bind_upscaler, "F7", "ReXNative", "Key that turns the upscaler on and off");
 REXCVAR_DEFINE_STRING(bind_upscaler_debug, "F8", "ReXNative",
                       "Key that shows the upscaler's inputs");
+REXCVAR_DECLARE(bool, rexnative);
 
 namespace rexnative::host {
 namespace {
@@ -123,6 +125,14 @@ void State::OnInputEvent(rex::InputEvent& event) {
 void Configure() { settings::Register(); }
 
 void Attach(rex::app::App& app) {
+  // ReXNative presents from the first frame: the Xenos driver's present thread then never puts
+  // its swap chain on the window, so the window has one swap chain from the start. Taken over
+  // at the first D3D call instead, the driver released its swap chain while ReXNative's already
+  // presented into the window, and under vkd3d-proton that release could block the driver's GPU
+  // thread: Double Dragon Neon and Minecraft stopped at their first frames on the Steam Deck,
+  // now and then, on a first start.
+  if (REXCVAR_GET(rexnative) && !rex::cvar::SetFlagByName("present_external", "true"))
+    REXLOG_ERROR("ReXNative: could not set gpu.xenos.present_external (sdk/patches missing?)");
   State& s = GetState();
   rex::ui::IUISystem* ui = &app.GetUI();
   {
