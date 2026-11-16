@@ -1,4 +1,7 @@
-# The AMD FidelityFX SDK whose API, upscaler and frame generation headers the renderer builds
-# with (rexnative_add FIDELITYFX_SDK): the v2.3.0 release, as pgr4-native's scripts/fidelityfx.lock.
+# The AMD FSR (FidelityFX) SDK whose API, upscaler and frame generation headers and signed DLLs
+# the renderer builds and ships with (rexnative_add FIDELITYFX_SDK): the v2.4.0 release
+# (2026-10-28): FSR Upscaling 4.1.2, which also runs on RDNA 2 GPUs and the Steam Deck class of
+# APUs (Ryzen Z2 A), FSR 3.1.6 elsewhere, Frame Generation 4.0.2. Was v2.3.0 (60f4ea8), as
+# pgr4-native's scripts/fidelityfx.lock.
 FFX_URL=https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git
-FFX_COMMIT=60f4ea81909200d8542eca14dccb2628b763a9a3
+FFX_COMMIT=7539ae8b6568ad29ed78a753404351daf3b5cca7

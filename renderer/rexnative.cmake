@@ -5,7 +5,7 @@
 #   rexnative_add(<target>
 #       LAYER_DIR       <dir>   # this game's game_layer.h and d3d_surface.inc (rexnative adapt)
 #       REXGLUE_SDK_SRC <dir>   # the source tree the ReXGlue SDK was built from
-#       FIDELITYFX_SDK  <dir>   # AMD FidelityFX SDK v2.3.0
+#       FIDELITYFX_SDK  <dir>   # AMD FidelityFX SDK v2.4.0
 #       DLSS_SDK        <dir>   # NVIDIA DLSS SDK (include/, lib/Windows_x86_64/x64)
 #       DLSS_NR         <dir>   # NVIDIA DLSS 5 (neural rendering) headers
 #       [NO_DEFAULT_GLUE])      # the game defines the glue functions (src/glue_defaults.cpp)

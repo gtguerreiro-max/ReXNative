@@ -68,7 +68,7 @@ rexglue_setup_target({name} GPU_PLUGINS xenos)
 
 set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
 set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")
-set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.3.0")
+set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
 set(REXNATIVE_DLSS_SDK "" CACHE PATH "NVIDIA DLSS SDK")
 set(REXNATIVE_DLSS_NR "" CACHE PATH "NVIDIA DLSS 5 headers")
 include("${{REXNATIVE_DIR}}/renderer/rexnative.cmake")

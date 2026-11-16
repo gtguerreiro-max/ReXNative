@@ -89,8 +89,8 @@ foi inlined pelo jogo; o que acrescentou a Iron Brigade é a CreateDevice.
 Requisitos: Python 3.10+ (a ferramenta não tem dependências); para o renderer, Windows com o
 Visual Studio 2022 (ou as Build Tools) com o C++ e as suas ferramentas Clang, git, CMake e
 Ninja, e o NVIDIA DLSS SDK e os headers do DLSS 5 (da NVIDIA). O ReXGlue SDK de que o renderer
-precisa (fixo, com os seus patches: [sdk/README.md](sdk/README.md)) e o AMD FidelityFX SDK
-v2.3.0 vêm de um só script:
+precisa (fixo, com os seus patches: [sdk/README.md](sdk/README.md)) e o AMD FSR (FidelityFX)
+SDK v2.4.0 vêm de um só script:
 
 ```powershell
 scripts\build-sdk.ps1

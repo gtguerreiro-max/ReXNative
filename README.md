@@ -97,8 +97,8 @@ Iron Brigade is its CreateDevice.
 Requirements: Python 3.10+ (the tool has no dependencies); for the renderer, Windows with Visual
 Studio 2022 (or its Build Tools) with the C++ workload and its Clang tools, git, CMake and
 Ninja, and the NVIDIA DLSS SDK and DLSS 5 headers (from NVIDIA). The ReXGlue SDK the renderer
-needs (pinned, with its patches: [sdk/README.md](sdk/README.md)) and the AMD FidelityFX SDK
-v2.3.0 come from one script:
+needs (pinned, with its patches: [sdk/README.md](sdk/README.md)) and the AMD FSR (FidelityFX)
+SDK v2.4.0 come from one script:
 
 ```powershell
 scripts\build-sdk.ps1

@@ -11,7 +11,7 @@
 #                   <Dest>\sdk-install (install), <Dest>\fidelityfx-sdk, <Dest>\logs
 #   -SdkSrc         an existing ReXGlue checkout to use (patched already, or made here when it
 #                   has no .git yet)
-#   -FidelityFx     the FidelityFX SDK v2.3.0 checkout (made here when absent)
+#   -FidelityFx     the FidelityFX SDK v2.4.0 checkout (made here when absent)
 #   -FidelityFxSrc  a local copy of the FidelityFX tree the SDK's CMake fetches (rexglue's fork,
 #                   cmake/rexglue_fidelityfx.cmake), to build without fetching it
 #   -Tune           -mtune (znver2 for the Steam Deck); x86-64-v3 either way
