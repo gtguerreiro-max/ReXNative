@@ -152,7 +152,8 @@ def adapt(target, refs, overrides=None, log=print):
                 row['cross'][run['name']] = (mm.target, mm.how, mm.confidence())
         funcs[canon] = row
 
-    indexed_up(T, funcs)
+    indexed_up(T, funcs)  # bounded by the DrawVertices matched, whatever it turns out to be
+    draw_arity(T, funcs)
     xinput_get_state(T, target['generated'], funcs)
     unique_addresses(funcs)
 
@@ -320,6 +321,52 @@ def adapt(target, refs, overrides=None, log=print):
     if overrides:
         apply_overrides(result, overrides)
     return result
+
+
+_STORE_LIKE = ('st', 'cmp', 'tw', 'td', 'mtctr', 'mtlr', 'mtspr', 'mtcrf', 'b', 'dcb', 'icb')
+
+
+def reads_argument(T, f, reg):
+    """Whether function f reads `reg` before writing it: an argument it takes."""
+    for _, text in T[f]:
+        parts = text.replace(',', ' ').replace('(', ' ').replace(')', ' ').split()
+        if not parts:
+            continue
+        op, ops = parts[0], parts[1:]
+        if op.startswith(_STORE_LIKE):
+            if reg in ops:
+                return True
+            continue
+        if reg in ops[1:]:
+            return True
+        if ops and ops[0] == reg:
+            return False
+    return False
+
+
+def draw_arity(T, funcs):
+    """DrawVertices(device, primitive, start vertex, count) takes four arguments,
+    DrawIndexedVertices(device, primitive, base vertex, start index, index count) five. A
+    DrawVertices found that reads r7 is the game's DrawIndexedVertices (Perfect Dark: its callers
+    pass a triangle list, base 0, a start index and 3n indices; it has no DrawVertices, the linker
+    dropped it), and drawn as DrawVertices every indexed draw came out as stretched triangles."""
+    dv, di = funcs.get('DrawVertices'), funcs.get('DrawIndexedVertices')
+    if not dv or not dv.get('address') or di is None:
+        return
+    a = dv['address']
+    try:
+        if not reads_argument(T, a, 'r7'):
+            return
+    except KeyError:
+        return
+    detail = '%08X reads r7: five arguments, DrawIndexedVertices\'s (was matched as DrawVertices)' % a
+    # Its own match, unless that address is another function's (Perfect Dark's matcher gave it
+    # 823382C0, BeginIndexedVertices).
+    others = {r.get('address') for n, r in funcs.items()
+              if n not in ('DrawVertices', 'DrawIndexedVertices') and r.get('address')}
+    if not di.get('address') or di['address'] == a or di['address'] in others:
+        di.update(address=a, how='arity', confidence=dv.get('confidence') or 'medium', detail=detail)
+    dv.update(address=None, how='not found', confidence=None, detail=detail)
 
 
 def indexed_up(T, funcs):
