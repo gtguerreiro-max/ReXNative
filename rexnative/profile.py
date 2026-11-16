@@ -139,6 +139,7 @@ def extract_layer(port, name=None):
         'occlusion': const('kDefaultOcclusion') == 'true',
         'display_aspect': const('kDefaultDisplayAspect'),
         'cmdbuf': int(const('kDefaultCmdBuf', '0')),  # layers made before it: 0 (hook_args.h)
+        'cmdbuf_bin_mask': num(const('kCmdBufBinMaskOffset')),  # None: hook_args.h's
     }
     clear = None
     if num(const('kResolveDefaultClearColor')):

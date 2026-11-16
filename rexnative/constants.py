@@ -58,3 +58,32 @@ def default_clear_color(insns):
         elif kind == 'vector':
             return {'address': addr, 'vector': True, 'index': i}
     return None
+
+
+LWZ = re.compile(r'^lwz (r\d+),(-?\d+)\((r\d+)\)$')
+ORI_BIN_MASK_LO = re.compile(r'^ori (r\d+),\1,24576$')  # with lis rN,-16384: 0xC0006000
+
+
+def bin_mask_offset(T):
+    """The D3D device's bin mask offset: where the segment start reads the two words it writes
+    after SET_BIN_MASK_LO / _HI (0xC0006000, 0xC0006100), `lwz rN,off(rDevice)` then
+    `lwz rM,off+4(rDevice)` (Iron Brigade's and From Dust's 2.0.20353: 12956; PGR4's 6132:
+    12700; Midnight Club: Los Angeles's 6995: 12708). A replayed command buffer starts from that
+    mask (cmd_replay.cpp): read at the wrong offset, Midnight Club's predicated draws were all
+    skipped. The most common offset found, or None."""
+    from collections import Counter
+    found = Counter()
+    for insns in T.funcs.values():
+        for i, (_, text) in enumerate(insns):
+            if not ORI_BIN_MASK_LO.match(text):
+                continue
+            for j in range(i + 1, min(i + 9, len(insns))):
+                m = LWZ.match(insns[j][1])
+                if not m or not 8000 <= int(m.group(2)) <= 20000:
+                    continue
+                off, dev = int(m.group(2)), m.group(3)
+                if any((LWZ.match(t) and LWZ.match(t).group(2) == str(off + 4) and
+                        LWZ.match(t).group(3) == dev) for _, t in insns[j + 1:j + 8]):
+                    found[off] += 1
+                break
+    return found.most_common(1)[0][0] if found else None

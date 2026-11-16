@@ -190,6 +190,10 @@ def game_layer_h(layer, comments=True):
     if comments:
         w('// kDefaultCmdBuf: recorded command buffers (RunCommandBuffer): 0 off, 1 count, 2 replay.')
     w('inline constexpr int32_t kDefaultCmdBuf = %d;' % int(d.get('cmdbuf', 0)))
+    if d.get('cmdbuf_bin_mask'):
+        if comments:
+            w('// kCmdBufBinMaskOffset: the device's bin mask, which a replayed buffer starts from.')
+        w('inline constexpr uint32_t kCmdBufBinMaskOffset = %d;' % int(d['cmdbuf_bin_mask']))
     w('')
     w('}  // namespace rexnative::game')
     return '\n'.join(out) + '\n'

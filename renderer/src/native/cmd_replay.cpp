@@ -165,7 +165,7 @@ using Counters = std::array<uint64_t, kCountCount>;
 
 struct Ib {
   uint32_t phys, dwords;
-  uint8_t flag;  // 0x81, or 0x8F (the async kind's PFD buffers)
+  uint8_t flag;  // 0x81, or 0x8F (the async kind's PFD buffers); older XDKs: any (CollectChunks)
 };
 struct Range {
   uint32_t begin;
@@ -293,22 +293,28 @@ uint64_t BinOverride(const std::string& text, uint64_t seed) {
 }
 
 // The chunk list at +116, in the guest's own order (sub_8264EF50 walks node by node, entry by
-// entry). Pointers are 0xC0000000 + physical aliases, which the CPU reads directly.
+// entry). Pointers are physical memory's CPU views, which the CPU reads directly: 0xC0000000+
+// in Iron Brigade (16 MB pages), 0xA0000000+ in Midnight Club: Los Angeles (64 KB pages, whose
+// 67 buffers a frame hold its cars and were all refused), 0xE0000000+ for 4 KB pages.
 Reason CollectChunks(const uint8_t* base, const CommandBufferHeader& h, std::vector<Ib>& ibs,
                      uint32_t* total, uint32_t* where) {
   uint64_t sum = 0;
   uint32_t nodes = 0;
   for (uint32_t node = h.chunks; node; node = Load32(base, node)) {
     *where = node;
-    if (node < 0xC0000000u || node >= 0xE0000000u || (node & 3) || ++nodes > kMaxNodes)
+    if (node < 0xA0000000u || (node & 3) || ++nodes > kMaxNodes)
       return Reason::kBadChunkList;
     const uint32_t count = Load32(base, node + 4);
     if (count < 1 || count > kMaxNodeEntries) return Reason::kBadChunkList;
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t d0 = Load32(base, node + 8 + 8 * i), addr = Load32(base, node + 12 + 8 * i);
       const uint32_t flag = d0 >> 24, n = d0 & 0xFFFFFF;
-      if ((flag != 0x81 && flag != 0x8F) || n > kMaxIbDwords) return Reason::kBadEntry;
-      const uint32_t phys = addr & 0x1FFFFFFF;
+      // The high byte is 0x81, or 0x8F for the async kind's PFD buffers (Iron Brigade's XDK
+      // 20xxx); XDK 6995's D3D writes the dword count alone and leaves the byte as the heap
+      // left it (Midnight Club: Los Angeles: 0xCD, its allocator's fill). The walk checks the
+      // buffer's packets before anything is applied.
+      if (n > kMaxIbDwords) return Reason::kBadEntry;
+      const uint32_t phys = GpuAddress(addr);  // plus 4 KiB in the 0xE0000000 view
       if (n && ((phys & 3) || uint64_t(phys) + 4ull * n > kPhysicalEnd)) return Reason::kBadEntry;
       ibs.push_back({phys, n, uint8_t(flag)});
       sum += n;
@@ -405,8 +411,33 @@ struct Walker {
     }
   }
 
+  // Predicated tiling recorded in the buffer: one setup per tile, each under a SET_BIN_MASK of
+  // that tile's bins, moving the window (PA_SC_WINDOW_OFFSET) and its scissor onto the tile.
+  // The GPU runs the buffer once per tile with one bin selected; the replay draws once over
+  // the whole surface, so those writes become offset 0 and the scissor of all the tiles
+  // together. Midnight Club: Los Angeles's cars: tile 2's offset of -512 rows, the last write,
+  // drew them 512 rows up.
+  bool tile_write = false;  // the current packet is predicated on some of the selected bins
+  uint32_t tile_br = 0;     // the tiles' scissor bottom-right so far (x | y << 16)
+  uint32_t TileValue(uint32_t reg, uint32_t v) {
+    switch (reg) {
+      case 0x2080:  // PA_SC_WINDOW_OFFSET
+        return 0;
+      case 0x2081:  // PA_SC_WINDOW_SCISSOR_TL: window_offset_disable kept, the corner at 0, 0
+        return v & 0x80000000u;
+      case 0x2082: {  // PA_SC_WINDOW_SCISSOR_BR: the largest corner so far
+        const uint32_t x = std::max(v & 0x7FFF, tile_br & 0x7FFF);
+        const uint32_t y = std::max((v >> 16) & 0x7FFF, (tile_br >> 16) & 0x7FFF);
+        return tile_br = x | y << 16;
+      }
+      default:
+        return v;
+    }
+  }
+
   template <bool kApply>
   void Write(uint32_t reg, uint32_t v) {
+    if (tile_write && reg >= 0x2080 && reg <= 0x2082) v = TileValue(reg, v);
     if constexpr (kApply) {
       if (reg == kFetch95) up = {};  // Execute sets it again after a Begin call's own run
       Apply(reg, v);
@@ -493,6 +524,7 @@ bool Walker::Execute(uint32_t phys, uint32_t n, uint32_t depth) {
     if (d + cnt > n)
       return Fail(Reason::kOverrun, phys, i, (hdr >> 30) == 3 ? (hdr >> 8) & 0x7F : 0);
     if ((hdr >> 30) == 0) {  // `cnt` registers from base, or all into base (bit 15)
+      tile_write = false;  // type 0 has no predicate: every tile runs it
       const uint32_t reg = hdr & 0x7FFF;
       const bool one = (hdr & 0x8000) != 0;
       for (uint32_t k = 0; k < cnt; ++k) Write<kApply>(one ? reg : reg + k, Be32(p, d + k));
@@ -510,6 +542,7 @@ bool Walker::Execute(uint32_t phys, uint32_t n, uint32_t depth) {
     }
     const uint32_t op = (hdr >> 8) & 0x7F;
     const bool pred = (hdr & 1) != 0;
+    tile_write = pred && (select & mask) != select;
     ++ops[op];
     if (pred) {
       // The CP's rule, for every opcode: a predicated packet runs only if select & mask != 0;
@@ -1037,6 +1070,16 @@ void AfterRun(const uint8_t* base, const RunContext& c) {
                         "({})",
                         call, c.cb, kReasonNames[size_t(w1.reason)], w1.fail_ib, w1.fail_offset,
                         w1.fail_op, OpName(w1.fail_op));
+    // A chunk list refused: the node as the guest wrote it (next, count, the entries), since
+    // a per-frame buffer's memory is reused before anyone can read it.
+    if (collected != Reason::kNone && bad_node >= 0xA0000000u && !(bad_node & 3))
+      REXNATIVE_LOG_FIRST(4, WARN,
+                          "ReXNative cmdbuf: node {:08X}: {:08X} {:08X} | {:08X} {:08X} | "
+                          "{:08X} {:08X} | {:08X} {:08X}",
+                          bad_node, Load32(base, bad_node), Load32(base, bad_node + 4),
+                          Load32(base, bad_node + 8), Load32(base, bad_node + 12),
+                          Load32(base, bad_node + 16), Load32(base, bad_node + 20),
+                          Load32(base, bad_node + 24), Load32(base, bad_node + 28));
   }
 
   bool replayed = false;
@@ -1119,13 +1162,20 @@ void Control(const std::string& arg, const std::string& arg2, const std::string&
     s.log_left = int32_t(std::clamp<long>(n, 0, 1 << 20));
     REXLOG_INFO("ReXNative cmdbuf: logging the next {} calls in detail", s.log_left);
   } else if (arg == "dump") {
-    s.dump_tag = arg2.empty() ? "cb" : arg2;
+    // `dump tag:N`: the next N calls (Midnight Club: Los Angeles runs 67 a frame).
+    std::string tag = arg2;
+    long count = 2;  // one Iron Brigade frame: two calls
+    if (const size_t colon = tag.rfind(':'); colon != std::string::npos) {
+      count = std::strtol(tag.c_str() + colon + 1, nullptr, 10);
+      tag.resize(colon);
+    }
+    s.dump_tag = tag.empty() ? "cb" : tag;
     s.dump_dir = trace_dir.empty() ? "." : trace_dir;
-    s.dump_left = 2;  // one Iron Brigade frame: two calls
+    s.dump_left = uint32_t(std::clamp<long>(count, 1, 1000));
     REXLOG_INFO("ReXNative cmdbuf: dumping the next {} decoded calls to {}{}", s.dump_left,
                 s.dump_dir, s.mode ? "" : " (none while the mode is 0)");
   } else {
-    REXLOG_WARN("ReXNative cmdbuf: unknown command '{} {}' (cmdbuf 0|1|2, log N, dump [tag])",
+    REXLOG_WARN("ReXNative cmdbuf: unknown command '{} {}' (cmdbuf 0|1|2, log N, dump [tag[:N]])",
                 arg, arg2);
   }
 }

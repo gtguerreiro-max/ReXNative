@@ -318,7 +318,10 @@ def adapt(target, refs, overrides=None, log=print):
                      'display_aspect': '16.0 / 9.0',
                      'cmdbuf': 2 if (funcs.get('RunCommandBuffer', {}).get('address') and
                                      funcs['RunCommandBuffer'].get('confidence') == 'high')
-                               else 0},
+                               else 0,
+                     # Where the replay reads the bin mask a buffer starts from: it moves with
+                     # the XDK (constants.bin_mask_offset); None keeps hook_args.h's 12956.
+                     'cmdbuf_bin_mask': constants.bin_mask_offset(T)},
         'devices': {
             # Only the device that presents (Swap's): a game with one device is the same, and
             # one that draws on others too (Iron Brigade while loading; Halo: Combat Evolved
