@@ -53,6 +53,10 @@ uint32_t ScenePitch();   // the layer's kScenePitch until a scene is learned
 // Detection (auto mode only; calls are no-ops otherwise). NoteResolve for each guest resolve the
 // renderer records; EndFrame between frames, true when a new scene was adopted.
 void SceneNoteResolve(const ResolveParams& p);
+// Each draw that writes colour with the depth test on, by its surface (RB_SURFACE_INFO): a
+// surface without MSAA or an HDR format is still the scene when 3D draws went into it before its
+// full-size resolve (Minecraft's 8-bit 1280x720), where the HUD's and menus' draws test no depth.
+void SceneNoteDraw(uint32_t surface_info);
 bool SceneEndFrame(uint64_t frame);
 
 }  // namespace rexnative

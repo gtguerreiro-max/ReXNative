@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <unordered_map>
 
 namespace rexnative {
 
@@ -84,6 +85,26 @@ class Upscaler {
     reset_ = true;
     last_ns_ = 0;
     if (dynamic_) dynamic_->Restart();
+  }
+  // The upscaler running: NVIDIA DLSS / DLAA (dlss.h) where the GPU and nvngx_dlss.dll have it,
+  // AMD FSR through the FidelityFX API otherwise (FSR 4 on the GPUs that run it, FSR 3.1
+  // elsewhere, the Steam Deck among them), or as --rexnative_upscaler_backend asks.
+  enum class Backend { kDlss, kFsr };
+  Backend backend() const { return backend_; }
+  const char* BackendName() const;
+  // What the scene needs of the upscaler, from the game: an HDR scene (a float target, before
+  // the game's exposure) and a reversed depth (cleared to 0). DLSS takes them per evaluation;
+  // FSR's context is created with them, so an Upscale that finds them changed skips the frame
+  // and ContextOutdated asks the renderer for UpdateContext, with the GPU idle.
+  struct SceneKind {
+    bool hdr = false;
+    bool depth_inverted = false;
+    bool operator==(const SceneKind&) const = default;
+  };
+  bool ContextOutdated() const { return context_outdated_; }
+  bool UpdateContext() {
+    kind_ = wanted_kind_;
+    return CreateContext(debug_);
   }
   // FSR's debug view in place of the upscaled scene (FfxDebug): its inputs (color, depth, motion
   // vectors, reactiveness) and what it made of them, in a grid, and with FSR 4 AMD's watermark.
@@ -145,6 +166,19 @@ class Upscaler {
     bool reset = false;                // the upscaling started over
   };
   bool upscaled_this_frame() const { return upscaled_frame_ == frame_ && upscaled_; }
+
+  // After the upscaling resolve, the game may draw into the scene's surface again in the same
+  // frame: post-processing passes, its HUD, a first-person hand (Minecraft resolves it four times
+  // a frame, the HUD over the last). Resolves before any such write copy the upscaled output
+  // (PGR4's tiles, resolved one after another); the first draw or clear after them calls
+  // EnterPostScene: the surface's own full-size targets from then on (RenderTargets::
+  // SuspendSceneOverride), its color starting from the upscaled output, or from the clear the
+  // last resolve made, its depth from that clear; no jitter, no motion; the later resolves copy
+  // that target. Returns whether it recorded calls (the caller sets its own state again).
+  bool post_scene() const { return post_scene_frame_ == frame_; }
+  bool EnterPostScene(CommandStream* list, RenderTargets& targets, const SurfaceRegs& regs);
+  // Each resolve that copied the upscaled output: its clears, for EnterPostScene.
+  void NoteSceneResolve(const ResolveParams& p);
   // This frame's depth and motion, made readable in `list`; empty when the frame was not upscaled.
   SceneInputs ReadSceneInputs(CommandStream* list);
   Dlss& dlss() { return dlss_; }
@@ -161,12 +195,27 @@ class Upscaler {
   bool SetLevel(uint32_t level);
   // The clamp of FSR's input (kInputHlsl); false (logged) on failure.
   bool CreateInputPass();
-  // Records the clamp of the scene's `color` into input_ at the render size.
-  void ClampInput(CommandStream* list, ID3D12Resource* color);
+  // Records the clamp of the scene's `color` (read as `format`) into input_ at the render size.
+  void ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format);
 
   ID3D12Device* device_ = nullptr;
-  Dlss dlss_;  // this port: DLSS / DLAA in place of FSR (dlss.h)
-  Dlss::Mode mode_ = Dlss::Mode::kDlaa;
+  Backend backend_ = Backend::kDlss;
+  Dlss dlss_;  // DLSS / DLAA (dlss.h)
+  Dlss::Mode mode_ = Dlss::Mode::kDlaa;  // the render size's ratio, for either backend
+  SceneKind kind_{};         // what FSR's context was created for
+  SceneKind wanted_kind_{};  // what the last Upscale found
+  bool context_outdated_ = false;
+  uint64_t post_scene_frame_ = UINT64_MAX;  // the frame EnterPostScene ran in
+  // The last upscaled resolve's clears (ResolveParams::clear_*).
+  uint32_t resolve_clear_flags_ = 0;
+  float resolve_clear_color_[4] = {};
+  float resolve_clear_depth_ = 1.0f;
+  uint8_t resolve_clear_stencil_ = 0;
+  // EnterPostScene's copy of the output into the full-size target: per RTV format.
+  bool CreateCopyPass();
+  ComPtr<ID3D12RootSignature> copy_signature_;
+  ComPtr<ID3DBlob> copy_vs_, copy_ps_;
+  std::unordered_map<DXGI_FORMAT, ComPtr<ID3D12PipelineState>> copy_pso_;
   const FfxApi* api_ = nullptr;
   FrameGeneration* frame_generation_ = nullptr;
   const FfxCamera* camera_ = nullptr;  // the renderer's

@@ -32,6 +32,9 @@ constexpr uint32_t kStableFrames = 30;
 constexpr double kMinShare = 0.5;
 constexpr uint32_t kMinWidth = 320;
 constexpr uint32_t kSceneMask = 0x33FFF;  // RB_SURFACE_INFO surface_pitch and msaa_samples
+// Draws with the depth test on before its first resolve that make an 8-bit surface without
+// MSAA a scene (SceneNoteDraw).
+constexpr uint32_t kMinDepthDraws = 16;
 
 // RB_COLOR_INFO color_format (xenos::ColorRenderTargetFormat) with more range than 8 bits.
 bool IsHdrFormat(uint32_t f) {
@@ -65,6 +68,7 @@ struct Seen {
   uint32_t height = 0;  // the lowest resolve bottom (tiles cover the frame in bands)
   uint32_t format = 0;
   uint32_t order = 0;   // its first resolve's place in the frame
+  uint32_t depth_draws = 0;  // depth-tested draws into it before that resolve
 };
 
 struct State {
@@ -72,6 +76,8 @@ struct State {
   SceneSurface scene;
   std::array<Seen, 32> seen{};
   uint32_t seen_count = 0, resolves = 0;
+  std::array<std::pair<uint32_t, uint32_t>, 16> depth_draws{};  // surface key, draws this frame
+  uint32_t depth_draw_keys = 0;
   Seen pending{};
   uint32_t pending_frames = 0;
 } g;
@@ -138,7 +144,22 @@ void SceneNoteResolve(const ResolveParams& p) {
     }
   }
   if (g.seen_count == g.seen.size()) return;
-  g.seen[g.seen_count++] = {key, w, h, (p.regs.color_info[p.source & 3] >> 16) & 0xF, order};
+  uint32_t draws = 0;
+  for (uint32_t i = 0; i < g.depth_draw_keys; ++i)
+    if (g.depth_draws[i].first == key) draws = g.depth_draws[i].second;
+  g.seen[g.seen_count++] = {key, w, h, (p.regs.color_info[p.source & 3] >> 16) & 0xF, order, draws};
+}
+
+void SceneNoteDraw(uint32_t surface_info) {
+  if (!SceneAuto()) return;
+  const uint32_t key = surface_info & kSceneMask;
+  for (uint32_t i = 0; i < g.depth_draw_keys; ++i) {
+    if (g.depth_draws[i].first == key) {
+      ++g.depth_draws[i].second;
+      return;
+    }
+  }
+  if (g.depth_draw_keys < g.depth_draws.size()) g.depth_draws[g.depth_draw_keys++] = {key, 1};
 }
 
 bool SceneEndFrame(uint64_t frame) {
@@ -147,21 +168,25 @@ bool SceneEndFrame(uint64_t frame) {
   uint64_t largest = 0;
   for (uint32_t i = 0; i < g.seen_count; ++i)
     largest = std::max(largest, uint64_t(g.seen[i].width) * g.seen[i].height);
-  // The best candidate: MSAA first, then an HDR format, then the earliest in the frame.
+  // The best candidate: MSAA first, then an HDR format, then 3D draws (SceneNoteDraw), then the
+  // earliest in the frame.
   const Seen* best = nullptr;
   auto rank = [](const Seen& s) {
     const bool msaa = ((s.key >> 16) & 3) != 0;
-    return std::array<int64_t, 3>{msaa ? 1 : 0, IsHdrFormat(s.format) ? 1 : 0, -int64_t(s.order)};
+    return std::array<int64_t, 4>{msaa ? 1 : 0, IsHdrFormat(s.format) ? 1 : 0,
+                                  s.depth_draws >= kMinDepthDraws ? 1 : 0, -int64_t(s.order)};
   };
   for (uint32_t i = 0; i < g.seen_count; ++i) {
     const Seen& s = g.seen[i];
     const bool msaa = ((s.key >> 16) & 3) != 0;
-    if (!msaa && !IsHdrFormat(s.format)) continue;  // the HUD's and composites' surfaces
+    // The HUD's and composites' surfaces: 8-bit, single-sampled, no 3D draws before their resolve.
+    if (!msaa && !IsHdrFormat(s.format) && s.depth_draws < kMinDepthDraws) continue;
     if (s.width < kMinWidth || double(s.width) * s.height < kMinShare * double(largest)) continue;
     if (!best || rank(s) > rank(*best)) best = &s;
   }
   g.seen_count = 0;
   g.resolves = 0;
+  g.depth_draw_keys = 0;
   if (!best) {
     g.pending_frames = 0;  // no 3D scene this frame (a menu): keep the scene, start over
     return false;

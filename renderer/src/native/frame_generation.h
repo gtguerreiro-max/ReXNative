@@ -66,7 +66,7 @@ class FrameGeneration {
   void Prepare(uint64_t frame, CommandStream* list, const FfxApiResource& depth,
                const FfxApiResource& motion, FfxApiDimensions2D render_size,
                FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D motion_scale,
-               const FfxCamera& camera, float frame_ms, bool reset);
+               const FfxCamera& camera, float frame_ms, bool reset, bool depth_inverted);
   // Whether Prepare recorded frame `frame`, which is then drawn into image() and generated.
   bool prepared(uint64_t frame) const { return context_ && prepared_frame_ == frame; }
   // The frame's image: the back buffers' size and format, in PRESENT outside the frame's draws.
@@ -100,7 +100,8 @@ class FrameGeneration {
  private:
   // The context and images for back buffers of this size and format, the context with FfxDebug's
   // watermark or not (the driver reads its variable at creation); false (logged) on failure.
-  bool Resize(uint32_t width, uint32_t height, bool hdr, bool debug);
+  // depth_inverted: the game's scene depth is reversed (Upscaler::SceneKind).
+  bool Resize(uint32_t width, uint32_t height, bool hdr, bool depth_inverted, bool debug);
   void Destroy();
   D3D12_CPU_DESCRIPTOR_HANDLE Rtv(uint32_t i) const;
   bool CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs);
@@ -115,6 +116,7 @@ class FrameGeneration {
   uint32_t rtv_stride_ = 0;
   uint32_t width_ = 0, height_ = 0;
   bool hdr_ = false;
+  bool depth_inverted_ = true;
   bool debug_ = false;                    // FidelityFX's debug view and the watermark
   uint64_t prepared_frame_ = UINT64_MAX;  // the last frame Prepare recorded
   ResolveParams last_resolve_;

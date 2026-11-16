@@ -1,11 +1,13 @@
-// ReXNative renderer: the scene's upscaler. See upscaler.h. In this port it runs
-// NVIDIA DLSS / DLAA (dlss.h) in place of FidelityFX Super Resolution.
+// ReXNative renderer: the scene's upscaler. See upscaler.h. It runs NVIDIA DLSS / DLAA (dlss.h)
+// or AMD FidelityFX Super Resolution through the FidelityFX API (pgr4-native's original upscaler,
+// src/native/upscaler.cpp), whichever the GPU has (--rexnative_upscaler_backend).
 #include "upscaler.h"
 
 #include "clock.h"
 #include "frame_generation.h"
 #include "log.h"
 #include "neural.h"
+#include "resolve.h"
 
 #include <ffx_upscale.h>
 #include <dx12/ffx_api_dx12.h>
@@ -14,13 +16,23 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 REXCVAR_DEFINE_BOOL(rexnative_upscaler, false, "ReXNative",
-                    "Render the 3D scene without MSAA and antialias it with NVIDIA DLSS "
-                    "(--rexnative_dlss_mode; nvngx_dlss.dll beside the executable, an RTX GPU) "
+                    "Render the 3D scene without MSAA and antialias or upscale it with NVIDIA "
+                    "DLSS or AMD FSR (--rexnative_upscaler_backend, --rexnative_upscaler_mode) "
                     "from the start; bind_upscaler (F7) switches it");
+REXCVAR_DEFINE_STRING(rexnative_upscaler_backend, "auto", "ReXNative",
+                      "auto (NVIDIA DLSS where the GPU and nvngx_dlss.dll have it, AMD FSR "
+                      "otherwise: FSR 4 on the GPUs that run it, FSR 3.1 elsewhere, the Steam "
+                      "Deck among them), dlss or fsr");
+REXCVAR_DEFINE_STRING(rexnative_upscaler_mode, "", "ReXNative",
+                      "native (anti-aliasing at the game's resolution: DLAA, FSR Native AA), "
+                      "quality, balanced, performance or ultra (from a smaller render size); "
+                      "empty: --rexnative_dlss_mode");
 REXCVAR_DEFINE_INT32(rexnative_upscaler_width, 1280, "ReXNative",
                      "Width the upscaler's scene renders at, upscaled to 1280 (320-1280; 1280 "
                      "with the height at the render height: antialiasing only)");
@@ -67,17 +79,71 @@ void main(uint2 p : SV_DispatchThreadID) {
   dst[p] = float4(clamp(c.rgb, 0.0, 31.875), saturate(c.a));
 }
 )";
-// Per frame in flight: the input pass's SRV and UAV.
-constexpr uint32_t kViewsPerFrame = 2;
+// Per frame in flight: the input pass's SRV and UAV, EnterPostScene's copy's SRV.
+constexpr uint32_t kViewsPerFrame = 3;
+
+// EnterPostScene's copy of the upscaled output into the scene surface's full-size target: a
+// triangle over the target, each pixel loaded from the output (the same size).
+constexpr char kCopyVs[] = R"(
+float4 main(uint id : SV_VertexID) : SV_Position {
+  float2 uv = float2((id << 1) & 2, id & 2);
+  return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+)";
+constexpr char kCopyPs[] = R"(
+Texture2D<float4> src : register(t0);
+float4 main(float4 pos : SV_Position) : SV_Target { return src.Load(int3(pos.xy, 0)); }
+)";
 
 // The render size of one axis from its setting, at least a quarter of the scene's.
 uint32_t RenderExtent(int32_t setting, uint32_t scene) {
   return uint32_t(std::clamp<int32_t>(setting, int32_t(scene / 4), int32_t(scene)));
 }
 
+// FidelityFX's messages, into the log.
+void Message(uint32_t type, const wchar_t* message) {
+  std::string s;
+  const int n = WideCharToMultiByte(CP_UTF8, 0, message, -1, nullptr, 0, nullptr, nullptr);
+  if (n > 1) {
+    s.resize(size_t(n));
+    WideCharToMultiByte(CP_UTF8, 0, message, -1, s.data(), n, nullptr, nullptr);
+    s.resize(size_t(n - 1));
+  }
+  if (type == FFX_API_MESSAGE_TYPE_ERROR)
+    REXNATIVE_LOG_FIRST(16, ERROR, "ReXNative upscaler: {}", s);
+  else
+    REXNATIVE_LOG_FIRST(16, WARN, "ReXNative upscaler: {}", s);
+}
+
+// RB_COLOR_INFO color formats with more range than 8 bits (scene.cpp's IsHdrFormat).
+bool IsHdrColorFormat(uint32_t f) {
+  return f == 3 || f == 5 || f == 6 || f == 7 || f == 12 || f == 14 || f == 15;
+}
+
+// --rexnative_upscaler_mode, or --rexnative_dlss_mode when it is empty ("native" is DLAA's).
+Dlss::Mode ModeSetting() {
+  std::string name = REXCVAR_GET(rexnative_upscaler_mode);
+  if (name.empty()) name = REXCVAR_GET(rexnative_dlss_mode);
+  return Dlss::ModeFromName(name);
+}
+
+const char* FsrModeName(Dlss::Mode mode) {
+  switch (mode) {
+    case Dlss::Mode::kQuality: return "Quality";
+    case Dlss::Mode::kBalanced: return "Balanced";
+    case Dlss::Mode::kPerformance: return "Performance";
+    case Dlss::Mode::kUltraPerformance: return "Ultra Performance";
+    default: return "Native AA";
+  }
+}
+
 }  // namespace
 
 bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler); }
+
+const char* Upscaler::BackendName() const {
+  return backend_ == Backend::kDlss ? "DLSS" : "FSR";
+}
 
 Upscaler::~Upscaler() {
   if (context_) api_->destroy(&context_, nullptr);
@@ -85,15 +151,28 @@ Upscaler::~Upscaler() {
 
 bool Upscaler::Initialize(ID3D12Device* device) {
   device_ = device;
-  // This port: DLSS. The mode sets the render size (DLAA: the game's own); no dynamic resolution.
-  mode_ = Dlss::ModeFromName(REXCVAR_GET(rexnative_dlss_mode));
+  // The mode sets the render size (native: the game's own); no dynamic resolution.
+  mode_ = ModeSetting();
   const double scale = Dlss::RenderScale(mode_);
   max_width_ = RenderExtent(int32_t(std::lround(OutputWidth() * scale)), OutputWidth());
   max_height_ = RenderExtent(int32_t(std::lround(OutputHeight() * scale)), OutputHeight());
-  if (!dlss_.Initialize(device_) || !CreateContext(false)) return false;
-  REXLOG_INFO("ReXNative upscaler: {} from {}x{} to {}x{}", Dlss::Name(mode_), max_width_,
-              max_height_, OutputWidth(), OutputHeight());
-  return SetLevel(DynamicResolution::kSteps) && CreateTargets() && CreateInputPass();
+  // DLSS where it runs, FSR otherwise (or as asked).
+  const std::string want = REXCVAR_GET(rexnative_upscaler_backend);
+  if (want != "fsr" && dlss_.Initialize(device_)) {
+    backend_ = Backend::kDlss;
+  } else if (want == "dlss") {
+    REXLOG_ERROR("ReXNative upscaler: DLSS unavailable (--rexnative_upscaler_backend=dlss)");
+    return false;
+  } else {
+    backend_ = Backend::kFsr;
+    api_ = LoadFfxApi();
+    if (!api_) return false;
+  }
+  if (!SetLevel(DynamicResolution::kSteps) || !CreateContext(false)) return false;
+  if (backend_ == Backend::kDlss)
+    REXLOG_INFO("ReXNative upscaler: {} from {}x{} to {}x{}", Dlss::Name(mode_), max_width_,
+                max_height_, OutputWidth(), OutputHeight());
+  return CreateTargets() && CreateInputPass();
 }
 
 bool Upscaler::CreateInputPass() {
@@ -136,14 +215,14 @@ bool Upscaler::CreateInputPass() {
   return !Failed(device_->CreateComputePipelineState(&pd, IID_PPV_ARGS(&input_pso_)), kName);
 }
 
-void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color) {
+void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format) {
   // In the frame's own views: those of a frame kFramesInFlight back, whose fence the device
   // waited for, are free.
   const uint32_t first = uint32_t(frame_ % D3D12Device::kFramesInFlight) * kViewsPerFrame;
   D3D12_CPU_DESCRIPTOR_HANDLE cpu = input_heap_->GetCPUDescriptorHandleForHeapStart();
   cpu.ptr += size_t(first) * input_stride_;
   D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-  sd.Format = kOutputFormat;
+  sd.Format = format;  // the scene's host format: float (HDR) or 8-bit, read as float4
   sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   sd.Texture2D.MipLevels = 1;
@@ -185,11 +264,56 @@ bool Upscaler::SetLevel(uint32_t level) {
 }
 
 bool Upscaler::CreateContext(bool debug) {
-  // DLSS creates its feature at the first evaluation for a setup (dlss.h). FSR's debug view has
-  // no DLSS counterpart; the flag stays for the F8 key.
   debug_ = debug;
   reset_ = true;
-  return dlss_.available();
+  context_outdated_ = false;
+  // DLSS creates its feature at the first evaluation for a setup (dlss.h). FSR's debug view has
+  // no DLSS counterpart; the flag stays for the F8 key.
+  if (backend_ == Backend::kDlss) return dlss_.available();
+  if (context_) {
+    api_->destroy(&context_, nullptr);
+    context_ = nullptr;
+  }
+  ffxCreateBackendDX12Desc backend = {};
+  backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+  backend.device = device_;
+  ffxCreateContextDescUpscaleVersion version = {};
+  version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
+  version.header.pNext = &backend.header;
+  version.version = FFX_UPSCALER_VERSION;
+  ffxCreateContextDescUpscale desc = {};
+  desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+  desc.header.pNext = &version.header;
+  // What the game's scene is (SceneKind, from the last Upscale): an HDR scene is linear light in
+  // a float target before the game's exposure; an 8-bit one is the game's final colors.
+  desc.flags = (kind_.hdr ? FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE
+                          : 0u) |
+               (kind_.depth_inverted ? FFX_UPSCALE_ENABLE_DEPTH_INVERTED : 0u) |
+               (dynamic_ ? FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION : 0u) |
+               (debug ? FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION : 0u);
+  desc.maxRenderSize = {max_width_, max_height_};
+  desc.maxUpscaleSize = {OutputWidth(), OutputHeight()};
+  desc.fpMessage = Message;
+  SetFfxWatermark(L"MLSR-WATERMARK", debug);
+  if (const ffxReturnCode_t rc = api_->create(&context_, &desc.header, nullptr);
+      rc != FFX_API_RETURN_OK) {
+    REXLOG_ERROR("ReXNative upscaler: ffxCreateContext failed ({}){}", rc,
+                 debug ? " with debug visualization" : "");
+    context_ = nullptr;
+    return false;
+  }
+  // The FidelityFX loader picks the newest upscaler this GPU runs: FSR 4 on AMD's, FSR 3.1
+  // elsewhere.
+  ffxQueryGetProviderVersion provider = {};
+  provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+  const char* name = api_->query(&context_, &provider.header) == FFX_API_RETURN_OK &&
+                             provider.versionName
+                         ? provider.versionName
+                         : "FSR";
+  REXLOG_INFO("ReXNative upscaler: {} {} from {}x{} to {}x{} ({}{})", name, FsrModeName(mode_),
+              max_width_, max_height_, OutputWidth(), OutputHeight(),
+              kind_.hdr ? "HDR" : "8-bit", kind_.depth_inverted ? ", reversed depth" : "");
+  return true;
 }
 
 bool Upscaler::CreateTargets() {
@@ -263,6 +387,125 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
   return resized;
 }
 
+void Upscaler::NoteSceneResolve(const ResolveParams& p) {
+  resolve_clear_flags_ = p.clear_flags;
+  std::memcpy(resolve_clear_color_, p.clear_color, sizeof(resolve_clear_color_));
+  resolve_clear_depth_ = p.clear_depth;
+  resolve_clear_stencil_ = p.clear_stencil;
+}
+
+bool Upscaler::CreateCopyPass() {
+  if (copy_signature_) return true;
+  const D3D12_DESCRIPTOR_RANGE range = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
+  D3D12_ROOT_PARAMETER param = {};
+  param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  param.DescriptorTable = {1, &range};
+  param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  const D3D12_ROOT_SIGNATURE_DESC rs = {1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+  ComPtr<ID3DBlob> blob, err;
+  if (Failed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err),
+             "upscaler copy root signature serialize") ||
+      Failed(device_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                          IID_PPV_ARGS(&copy_signature_)),
+             "upscaler copy root signature"))
+    return false;
+  const pD3DCompile compile = D3DCompiler();
+  ComPtr<ID3DBlob> error;
+  if (!compile ||
+      FAILED(compile(kCopyVs, sizeof(kCopyVs) - 1, "rexnative_upscaler_copy_vs.hlsl", nullptr,
+                     nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &copy_vs_,
+                     &error)) ||
+      FAILED(compile(kCopyPs, sizeof(kCopyPs) - 1, "rexnative_upscaler_copy_ps.hlsl", nullptr,
+                     nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &copy_ps_,
+                     &error))) {
+    REXLOG_ERROR("ReXNative upscaler: copy shaders: {}",
+                 error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
+    copy_signature_.Reset();
+    return false;
+  }
+  return true;
+}
+
+bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const SurfaceRegs& regs) {
+  post_scene_frame_ = frame_;
+  targets.SuspendSceneOverride(true);
+  REXNATIVE_LOG_FIRST(1, INFO,
+                      "ReXNative upscaler: the game draws into the scene's surface after its "
+                      "upscaled resolve (post-processing, HUD): at the output's size from there");
+  bool recorded = false;
+  const uint32_t height = SceneHeight();
+  // Color: the clear the upscaled resolve made, or the upscaled scene itself.
+  if (resolve_clear_flags_ & 0x100) {
+    ClearParams cp;
+    cp.flags = 1;
+    std::memcpy(cp.color, resolve_clear_color_, sizeof(cp.color));
+    targets.Clear(list, regs, 1, false, height, cp);
+  } else if (RenderTarget* color = targets.GetColor(regs, 0, height);
+             color && color->samples == 1 && CreateCopyPass()) {
+    ComPtr<ID3D12PipelineState>& pso = copy_pso_[color->view_format];
+    if (!pso) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
+      pd.pRootSignature = copy_signature_.Get();
+      pd.VS = {copy_vs_->GetBufferPointer(), copy_vs_->GetBufferSize()};
+      pd.PS = {copy_ps_->GetBufferPointer(), copy_ps_->GetBufferSize()};
+      pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+      pd.SampleMask = UINT_MAX;
+      pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+      pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+      pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      pd.NumRenderTargets = 1;
+      pd.RTVFormats[0] = color->view_format;
+      pd.SampleDesc.Count = 1;
+      Failed(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "upscaler copy PSO");
+    }
+    if (pso) {
+      targets.PrepareRead(list, color, {0, 0, LONG(SceneWidth()), LONG(height)});
+      RenderTargets::Transition(list, color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+      if (output_.state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+        const D3D12_RESOURCE_BARRIER b = TransitionBarrier(
+            output_.resource.Get(), output_.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        list->ResourceBarrier(1, &b);
+        output_.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+      }
+      const uint32_t slot = uint32_t(frame_ % D3D12Device::kFramesInFlight) * kViewsPerFrame + 2;
+      D3D12_CPU_DESCRIPTOR_HANDLE cpu = input_heap_->GetCPUDescriptorHandleForHeapStart();
+      cpu.ptr += size_t(slot) * input_stride_;
+      D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+      sd.Format = kOutputFormat;
+      sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      sd.Texture2D.MipLevels = 1;
+      device_->CreateShaderResourceView(output_.resource.Get(), &sd, cpu);
+      D3D12_GPU_DESCRIPTOR_HANDLE gpu = input_heap_->GetGPUDescriptorHandleForHeapStart();
+      gpu.ptr += uint64_t(slot) * input_stride_;
+      ID3D12DescriptorHeap* heaps[] = {input_heap_.Get()};
+      list->SetDescriptorHeaps(1, heaps);
+      list->SetGraphicsRootSignature(copy_signature_.Get());
+      list->SetPipelineState(pso.Get());
+      list->SetGraphicsRootDescriptorTable(0, gpu);
+      const D3D12_VIEWPORT vp = {0, 0, float(OutputWidth()), float(OutputHeight()), 0, 1};
+      const D3D12_RECT sc = {0, 0, LONG(OutputWidth()), LONG(OutputHeight())};
+      list->RSSetViewports(1, &vp);
+      list->RSSetScissorRects(1, &sc);
+      list->OMSetRenderTargets(1, &color->view, FALSE, nullptr);
+      list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      list->DrawInstanced(3, 1, 0, 0);
+      targets.MarkListStateLost();
+      recorded = true;
+    }
+  }
+  // Depth: the upscaled resolve's clear; otherwise what the full-size target holds (a game that
+  // keeps testing the scene's depth after the resolve draws against it).
+  if (resolve_clear_flags_ & 0x200) {
+    ClearParams cp;
+    cp.flags = 0x30;
+    cp.depth = resolve_clear_depth_;
+    cp.stencil = resolve_clear_stencil_;
+    targets.Clear(list, regs, 0, true, height, cp);
+  }
+  return recorded;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE Upscaler::MotionTarget(CommandStream* list) {
   const D3D12_CPU_DESCRIPTOR_HANDLE rtv = motion_rtv_->GetCPUDescriptorHandleForHeapStart();
   if (motion_state_ != D3D12_RESOURCE_STATE_RENDER_TARGET) {
@@ -307,9 +550,18 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   RenderTarget* color = targets.GetColor(regs, 0, SceneHeight());
   RenderTarget* depth = targets.GetDepth(regs, SceneHeight());
   if (!color || !depth || color->samples != 1 || depth->samples != 1 || color->scale != scale() ||
-      depth->scale != scale() || color->srv_format != kOutputFormat) {
+      depth->scale != scale()) {
     REXNATIVE_WARN_ONCE("ReXNative upscaler: unexpected scene targets (surface {:08X} color {:08X})",
                    regs.surface_info, regs.color_info[0]);
+    return nullptr;
+  }
+  // The game's scene: HDR (a float target) or 8-bit, and its depth reversed (cleared to 0) or not.
+  const SceneKind kind{IsHdrColorFormat(color->guest_format), depth->clear_depth < 0.5f};
+  if (backend_ == Backend::kFsr && (!context_ || kind != kind_)) {
+    // FSR's context is made for it: by the renderer, with the GPU idle (UpdateContext). This
+    // frame keeps the scene as it is.
+    wanted_kind_ = kind;
+    context_outdated_ = true;
     return nullptr;
   }
   Time(list, GpuTimer::kUpscaleInput);
@@ -331,36 +583,68 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   to(input_.Get(), &input_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   to(output_.resource.Get(), &output_.state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   if (nb) list->ResourceBarrier(nb, bs);
-  ClampInput(list, color->resource.Get());
+  ClampInput(list, color->resource.Get(), color->srv_format);
   nb = 0;
   to(input_.Get(), &input_state_, kInputState);
   list->ResourceBarrier(nb, bs);
 
   Time(list, GpuTimer::kUpscaleDispatch);
-  // This port: DLSS. The motion target holds UV-space motion (current -> previous), so its scale
-  // to render pixels is the render size, as FSR's motionVectorScale was.
-  Dlss::Setup setup;
-  setup.render_width = render_width_;
-  setup.render_height = render_height_;
-  setup.output_width = OutputWidth();
-  setup.output_height = OutputHeight();
-  setup.mode = mode_;
-  setup.preset = REXCVAR_GET(rexnative_dlss_preset);
-  Dlss::Frame f;
-  f.color = input_.Get();
-  f.depth = depth->resource.Get();
-  f.motion = motion_.Get();
-  f.output = output_.resource.Get();
-  f.jitter_x = jitter_[0];
-  f.jitter_y = jitter_[1];
-  f.motion_scale_x = float(render_width_);
-  f.motion_scale_y = float(render_height_);
-  f.frame_ms = frame_ms_ > 0.0f ? frame_ms_ : 16.7f;
-  f.reset = reset_;
-  // On the stream's thread, which records the list: a failure shows from the next frame on.
-  list->Call([this, setup, f](CommandStream::List* l) {
-    if (!dlss_.Evaluate(l, setup, f)) REXNATIVE_WARN_ONCE("ReXNative upscaler: DLSS evaluation failed");
-  });
+  // The motion target holds UV-space motion (current -> previous), so its scale to render pixels
+  // is the render size, for DLSS as for FSR's motionVectorScale.
+  if (backend_ == Backend::kDlss) {
+    Dlss::Setup setup;
+    setup.render_width = render_width_;
+    setup.render_height = render_height_;
+    setup.output_width = OutputWidth();
+    setup.output_height = OutputHeight();
+    setup.mode = mode_;
+    setup.hdr = kind.hdr;
+    setup.depth_inverted = kind.depth_inverted;
+    setup.preset = REXCVAR_GET(rexnative_dlss_preset);
+    Dlss::Frame f;
+    f.color = input_.Get();
+    f.depth = depth->resource.Get();
+    f.motion = motion_.Get();
+    f.output = output_.resource.Get();
+    f.jitter_x = jitter_[0];
+    f.jitter_y = jitter_[1];
+    f.motion_scale_x = float(render_width_);
+    f.motion_scale_y = float(render_height_);
+    f.frame_ms = frame_ms_ > 0.0f ? frame_ms_ : 16.7f;
+    f.reset = reset_;
+    // On the stream's thread, which records the list: a failure shows from the next frame on.
+    list->Call([this, setup, f](CommandStream::List* l) {
+      if (!dlss_.Evaluate(l, setup, f)) REXNATIVE_WARN_ONCE("ReXNative upscaler: DLSS evaluation failed");
+    });
+  } else {
+    ffxDispatchDescUpscale d = {};
+    d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+    d.color = ffxApiGetResourceDX12(input_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    d.depth = ffxApiGetResourceDX12(depth->resource.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    d.motionVectors = ffxApiGetResourceDX12(motion_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    d.output = ffxApiGetResourceDX12(output_.resource.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+    d.jitterOffset = {jitter_[0], jitter_[1]};
+    d.motionVectorScale = {float(render_width_), float(render_height_)};
+    d.renderSize = {render_width_, render_height_};
+    d.upscaleSize = {OutputWidth(), OutputHeight()};
+    // FSR 4 draws its debug view after the sharpening pass and crashes without it (OptiScaler's
+    // FFXFeatureDx12::EvaluateInternal): the debug view takes the least sharpening.
+    d.enableSharpening = debug_;
+    d.sharpness = debug_ ? 0.01f : 0.0f;
+    if (debug_) d.flags = FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW;
+    d.frameTimeDelta = frame_ms_ > 0.0f ? frame_ms_ : 16.7f;
+    d.preExposure = 1.0f;
+    d.reset = reset_;
+    d.cameraNear = camera_->near_plane;
+    d.cameraFar = camera_->far_plane;
+    d.cameraFovAngleVertical = camera_->fov_y;
+    d.viewSpaceToMetersFactor = 1.0f;
+    list->Call([this, d](CommandStream::List* l) mutable {
+      d.commandList = l;
+      if (const ffxReturnCode_t rc = api_->dispatch(&context_, &d.header); rc != FFX_API_RETURN_OK)
+        REXNATIVE_WARN_ONCE("ReXNative upscaler: ffxDispatch failed ({})", rc);
+    });
+  }
   // This port: DLSS 5 on the HDR scene DLAA just made (neural.h's scene stage), before the
   // game's exposure, bloom, motion blur and tone mapping read it.
   if (neural_ && neural_->SceneWanted(dlss_)) {
@@ -384,7 +668,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
     frame_generation_->Prepare(frame_, list, fg_depth, fg_motion, {render_width_, render_height_},
                                {jitter_[0], jitter_[1]},
                                {float(render_width_), float(render_height_)}, *camera_, frame_ms_,
-                               reset_);
+                               reset_, kind.depth_inverted);
   }
   scene_depth_ = depth;
   scene_reset_ = reset_;

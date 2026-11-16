@@ -457,6 +457,10 @@ bool RenderTargets::Bind(CommandStream* list, const SurfaceRegs& regs, uint32_t 
   out->samples = samples;
   out->width = UINT32_MAX;
   out->height = UINT32_MAX;
+  if (state_lost_) {
+    out->list_state_lost = true;
+    state_lost_ = false;
+  }
   D3D12_CPU_DESCRIPTOR_HANDLE null_rtv = rtv_start_;
   null_rtv.ptr += size_t(samples > 1) * rtv_stride_;
   for (uint32_t i = 0; i < 4; ++i) {
@@ -619,7 +623,10 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
       v.depth = std::clamp(p.depth, 0.0f, 1.0f);
       v.stencil = p.stencil;
       Defer(list, rt, v, p.rects);
-      if (df & D3D12_CLEAR_FLAG_DEPTH) rt->depth_seq = ++depth_seq_;
+      if (df & D3D12_CLEAR_FLAG_DEPTH) {
+        rt->depth_seq = ++depth_seq_;
+        rt->clear_depth = v.depth;
+      }
       if (!fills_.empty()) DropFills(*rt, edram_rows(*rt));
     }
   }

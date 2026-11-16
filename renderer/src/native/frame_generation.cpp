@@ -91,8 +91,10 @@ void FrameGeneration::Destroy() {
   width_ = height_ = 0;
 }
 
-bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool debug) {
-  if (context_ && width == width_ && height == height_ && hdr == hdr_ && debug == debug_)
+bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool depth_inverted,
+                             bool debug) {
+  if (context_ && width == width_ && height == height_ && hdr == hdr_ &&
+      depth_inverted == depth_inverted_ && debug == debug_)
     return true;
   device_.WaitIdle();
   Destroy();
@@ -131,8 +133,9 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool deb
   ffxCreateContextDescFrameGeneration cd = {};
   cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
   cd.header.pNext = &version.header;
-  // The scene's depth is reversed (cleared to 0, tested GEQUAL); with HDR the image is PQ.
-  cd.flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED |
+  // The game's scene depth, reversed (cleared to 0) or not (Upscaler::SceneKind); with HDR the
+  // image is PQ.
+  cd.flags = (depth_inverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0u) |
              (hdr ? FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE : 0u);
   cd.displaySize = {width, height};
   cd.maxRenderSize = {SceneWidth(), SceneHeight()};
@@ -147,6 +150,7 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool deb
   width_ = width;
   height_ = height;
   hdr_ = hdr;
+  depth_inverted_ = depth_inverted;
   debug_ = debug;
   REXLOG_INFO("ReXNative frame generation: {}x{}{}{}", width, height, hdr ? " HDR10" : "",
               debug ? ", debug view" : "");
@@ -156,9 +160,10 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool deb
 void FrameGeneration::Prepare(uint64_t frame, CommandStream* list, const FfxApiResource& depth,
                               const FfxApiResource& motion, FfxApiDimensions2D render_size,
                               FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D motion_scale,
-                              const FfxCamera& camera, float frame_ms, bool reset) {
+                              const FfxCamera& camera, float frame_ms, bool reset,
+                              bool depth_inverted) {
   if (!device_.has_swapchain() ||
-      !Resize(device_.width(), device_.height(), device_.hdr(), FfxDebug()))
+      !Resize(device_.width(), device_.height(), device_.hdr(), depth_inverted, FfxDebug()))
     return;
   ffxDispatchDescFrameGenerationPrepareV2 d = {};
   d.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;

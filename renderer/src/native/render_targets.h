@@ -133,6 +133,9 @@ struct RenderTarget {
   // render size), at least as large.
   RenderScale scale, size_scale;
   uint32_t guest_format = 0;  // last xenos::ColorRenderTargetFormat / DepthRenderTargetFormat
+  // A depth target: the depth of its last clear. 0 is a reversed depth (near 1, far 0), as the
+  // upscalers ask (DLSS DepthInverted, FSR FFX_UPSCALE_ENABLE_DEPTH_INVERTED).
+  float clear_depth = 1.0f;
   DXGI_FORMAT resource_format = DXGI_FORMAT_UNKNOWN;
   DXGI_FORMAT view_format = DXGI_FORMAT_UNKNOWN;         // RTV or DSV
   DXGI_FORMAT srv_format = DXGI_FORMAT_UNKNOWN;          // color, or the depth plane
@@ -257,6 +260,13 @@ class RenderTargets {
     scene_samples_ = samples;
     scene_scale_ = scene_size_scale_ = scale;
   }
+  // For the rest of a frame after the upscaler's resolve (Upscaler::EnterPostScene): the scene's
+  // surface takes its own full-size targets again, so what the game draws over the upscaled scene
+  // (post-processing, the HUD) is drawn at the output's size. Until the next frame.
+  void SuspendSceneOverride(bool on) { scene_suspended_ = on; }
+  // Calls recorded outside the draws (EnterPostScene's copy) changed the list's state: the next
+  // Bind says so (BoundTargets::list_state_lost).
+  void MarkListStateLost() { state_lost_ = true; }
   // This port: the screen-sized surfaces (the scene's pitch, scene.h ScenePitch) render at
   // `scale` host pixels per guest pixel (--rexnative_resolution_scale); before the first
   // target. A scene learned at run time applies to the targets made after it.
@@ -332,7 +342,7 @@ class RenderTargets {
 
   RenderTarget* Get(bool depth, uint32_t surface_info, uint32_t info, uint32_t height);
   bool IsOverridden(uint32_t surface_info) const {
-    return scene_mask_ && (surface_info & scene_mask_) == scene_value_;
+    return scene_mask_ && !scene_suspended_ && (surface_info & scene_mask_) == scene_value_;
   }
   uint32_t HostSamples(uint32_t surface_info) const {
     return IsOverridden(surface_info) ? scene_samples_ : SurfaceSamples(surface_info);
@@ -368,6 +378,8 @@ class RenderTargets {
   uint64_t fill_seq_ = 0;
   std::FILE* log_ = nullptr;
   uint32_t scene_mask_ = 0, scene_value_ = 0, scene_samples_ = 1;
+  bool scene_suspended_ = false;  // SuspendSceneOverride
+  bool state_lost_ = false;       // MarkListStateLost
   RenderScale scene_scale_, scene_size_scale_;
   uint32_t resolution_scale_ = 1;
   RenderScale base_scale_;  // of the screen-sized surfaces that are not overridden

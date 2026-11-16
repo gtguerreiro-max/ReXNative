@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -78,14 +79,25 @@ class MotionHistory {
     }
     frame_ = frame;
     cursor_ = 0;
+    by_loose_built_ = false;
+    // The global search from the first frame whose draws the window mostly missed on (it then
+    // finds them, so the window's misses no longer tell).
+    global_ = global_ || (draws_ >= 64 && misses_ * 5 > draws_);
+    draws_ = misses_ = 0;
   }
 
   // This frame's next draw, of `identity` with the constants `now`, `floats` the `size` bytes
   // (whole registers) of float constants at now.float_constants: the previous frame's constants
   // for it, or nullptr. Valid until the next Match.
-  const Constants* Match(uint64_t identity, const Constants& now, const uint8_t* floats,
-                         uint32_t size) {
-    Draw d = {identity, now, 0, size, kNone, false};
+  // `loose`: the identity without what a game may change every frame for the same mesh (the
+  // index buffer's address: Jet Set Radio writes its geometry into a ring each frame, so 60 % of
+  // its draws found no draw of their identity and took the camera fallback, which reads another
+  // draw's matrices in its shaders of one combined transform: FSR smeared its cars and outlines).
+  // A draw first looks for its identity, then for its loose one.
+  const Constants* Match(uint64_t identity, uint64_t loose, const Constants& now,
+                         const uint8_t* floats, uint32_t size) {
+    Draw d = {identity, loose, now, 0, size, kNone, false};
+    ++draws_;
     if (!current_.empty() && current_.back().constants.float_constants == now.float_constants &&
         current_.back().size == size) {
       d.offset = current_.back().offset;  // the same upload
@@ -99,9 +111,10 @@ class MotionHistory {
     size_t best = n, first = n;
     uint32_t best_same = 0;
     bool several = false;
+    bool use_loose = false;
     auto consider = [&](size_t i) {
       const Draw& p = previous_[i];
-      if (p.identity != identity || p.matched) return;
+      if ((use_loose ? p.loose != loose : p.identity != identity) || p.matched) return;
       if (best == n) {
         best = first = i;
         return;
@@ -116,6 +129,26 @@ class MotionHistory {
       }
     };
     ForWindow(consider);
+    if (best == n && loose != identity) {
+      use_loose = true;
+      ForWindow(consider);
+    }
+    if (best == n) ++misses_;
+    if (best == n && global_) {
+      // Anywhere in the previous frame: a game whose draws the window mostly misses (Jet Set
+      // Radio: its geometry rewritten into a ring and sorted, 55 % of its draws a frame) moves
+      // them farther than the window from frame to frame. Not where the window finds nearly all
+      // (PGR4, Iron Brigade: 1 to 3 % missed, meshes that came into view, for which a copy of
+      // the mesh elsewhere would be the wrong motion and the camera's is exact).
+      use_loose = true;
+      if (!by_loose_built_) {
+        by_loose_.clear();
+        for (size_t i = 0; i < n; ++i) by_loose_[previous_[i].loose].push_back(uint32_t(i));
+        by_loose_built_ = true;
+      }
+      if (auto it = by_loose_.find(loose); it != by_loose_.end())
+        for (uint32_t i : it->second) consider(i);
+    }
     if (best == n) return Camera(now, floats, size);
     found_ = several && best != first ? Found::kCopy : Found::kOrder;
     previous_[best].matched = true;
@@ -135,6 +168,7 @@ class MotionHistory {
   static constexpr uint32_t kNone = UINT32_MAX;
   struct Draw {
     uint64_t identity;
+    uint64_t loose;  // Match's loose identity
     Constants constants;
     uint32_t offset, size;  // its float constants in the frame's array
     uint32_t previous;      // current_: the draw of previous_ it matched, or kNone
@@ -196,6 +230,11 @@ class MotionHistory {
   uint64_t frame_ = UINT64_MAX - 1;
   Found found_ = Found::kNone;
   std::vector<uint8_t> camera_floats_;  // Camera's
+  // previous_ by loose identity, built at the first draw the window does not find this frame.
+  std::unordered_map<uint64_t, std::vector<uint32_t>> by_loose_;
+  bool by_loose_built_ = false;
+  uint32_t draws_ = 0, misses_ = 0;  // this frame's draws, those the window did not find
+  bool global_ = false;              // search the whole previous frame (BeginFrame)
 };
 
 }  // namespace rexnative

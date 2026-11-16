@@ -962,8 +962,12 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
   if (copy_x1 > x0 && copy_y1 > y0 && dx >= 0 && dy >= 0) {
     const D3D12_RECT src = {LONG(x0), LONG(y0), LONG(copy_x1), LONG(copy_y1)};
     RenderTarget *source = rt, *alpha = nullptr;
-    if (upscaler_ && Upscaler::IsScene(p.regs.surface_info) && Upscaler::IsSceneWidth(p.x0, p.x1)) {
+    // After the game drew into the scene's surface again (Upscaler::EnterPostScene), its own
+    // full-size target holds the upscaled scene and what came after: copied as it is.
+    if (upscaler_ && !upscaler_->post_scene() && Upscaler::IsScene(p.regs.surface_info) &&
+        Upscaler::IsSceneWidth(p.x0, p.x1)) {
       RenderTarget* upscaled = upscaler_->Upscale(list, *targets_, p.regs);
+      if (upscaled) upscaler_->NoteSceneResolve(p);
       if (upscaled && !depth) {
         source = upscaled;
         alpha = rt;

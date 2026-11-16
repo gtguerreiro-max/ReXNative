@@ -2519,12 +2519,12 @@ bool DrawRenderer::Impl::CommitCbv(CachedCbv& cb, uint32_t root_index, CommandSt
 
 void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcShader& vs_generic,
                                                const DxbcShader* vs, CommandStream* list) {
-  const uint64_t identity = vs_generic.ucode_data_hash() ^
-                            (uint64_t(s.index_address) << 32 | s.count) ^
-                            (uint64_t(s.primitive) << 58);
+  const uint64_t loose = vs_generic.ucode_data_hash() ^ uint64_t(s.count) ^
+                         (uint64_t(s.primitive) << 58);
+  const uint64_t identity = loose ^ (uint64_t(s.index_address) << 32);
   const MotionHistory::Constants now = {vs, cb_float_vs.gpu, cb_fetch.gpu};
   const MotionHistory::Constants* previous =
-      motion_history.Match(identity, now, cb_float_vs.last, cb_float_vs.size);
+      motion_history.Match(identity, loose, now, cb_float_vs.last, cb_float_vs.size);
   const MotionHistory::Found found = motion_history.found();
   MotionHistory::Constants camera;
   if (found == MotionHistory::Found::kCamera) {
@@ -4194,7 +4194,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
   }
   // The upscaler's scene, not the rear-view mirror in a corner of its surface.
   const Upscaler* const scene_upscaler =
-      r.upscaler() && Upscaler::IsScene(surface_info.value) &&
+      r.upscaler() && !r.upscaler()->post_scene() && Upscaler::IsScene(surface_info.value) &&
               Upscaler::IsSceneWidth(int32_t(vp.xy_offset[0]),
                                      int32_t(vp.xy_offset[0] + vp.xy_extent[0]))
           ? r.upscaler()
@@ -4360,8 +4360,15 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   // depth, and the depth-tested ones that replace the color without writing depth: the sky, drawn
   // after the opaque geometry where it left the cleared depth (td-408 draw log), whose own motion
   // is the camera's turning.
+  // A draw into the scene's surface after its upscaled resolve: the post-processing or the HUD,
+  // at the output's size, neither jittered nor in the motion (Upscaler::EnterPostScene).
+  if (Upscaler* up = r.upscaler(); up && up->upscaled_this_frame() && !up->post_scene() &&
+                                   Upscaler::IsScene(sdr.rb_surface_info))
+    up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
   const Upscaler* const scene_upscaler =
-      Upscaler::IsScene(sdr.rb_surface_info) ? r.upscaler() : nullptr;
+      Upscaler::IsScene(sdr.rb_surface_info) && r.upscaler() && !r.upscaler()->post_scene()
+          ? r.upscaler()
+          : nullptr;
   const bool motion = scene_upscaler && mods.pixel_shader_used && depth_control.z_enable &&
                       (depth_control.z_write_enable ||
                        ((GetNormalizedColorMask(regs, ps->writes_color_targets()) & 0xF) &&
@@ -4509,6 +4516,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     return;
   }
   if (targets.list_state_lost) ResetListState();
+  // A 3D draw into a colour surface, for the scene's detection (scene.h).
+  if (rt_mask && depth_control.z_enable) SceneNoteDraw(regs[XE_GPU_REG_RB_SURFACE_INFO]);
   profile::Mark(profile::kRtBind);
 
   // Translations.

@@ -646,7 +646,7 @@ void NativeRenderer::SwitchUpscaler(bool on) {
   }
   resolver_->set_upscaler(upscaler());
   if (on)
-    REXLOG_INFO("ReXNative: the scene antialiased by DLSS");
+    REXLOG_INFO("ReXNative: the scene antialiased by {}", upscaler_->BackendName());
   else
     REXLOG_INFO("ReXNative: the scene with {}x MSAA", scene_msaa_);
 }
@@ -682,6 +682,16 @@ void NativeRenderer::BeginFrameModules() {
   }
   if (upscaler_switch_requested_.exchange(false, std::memory_order_relaxed))
     SwitchUpscaler(!upscaler_on_);
+  if (Upscaler* u = upscaler(); u && u->ContextOutdated()) {
+    // FSR's context for the game's scene (HDR or not, its depth reversed or not), which the last
+    // Upscale found: its old resources may be in the lists still running.
+    device_->WaitIdle();
+    if (!u->UpdateContext()) {
+      REXLOG_ERROR("ReXNative: upscaler unavailable; the scene keeps its MSAA");
+      upscaler_.reset();
+      SwitchUpscaler(false);
+    }
+  }
   if (Upscaler* u = upscaler(); u && u->debug() != FfxDebug()) {
     // The context made again: its old resources may be in the lists still running.
     device_->WaitIdle();
@@ -693,6 +703,7 @@ void NativeRenderer::BeginFrameModules() {
   }
   const uint64_t fence = device_->frame_fence(), done = device_->completed_fence();
   rt_->BeginFrame(frame_index_, fence, done);
+  rt_->SuspendSceneOverride(false);  // the scene at the upscaler's size again (EnterPostScene)
   resolver_->set_linear_output(device_->hdr());
   resolver_->BeginFrame(frame_index_, fence, done);
   if (Upscaler* u = upscaler()) {
@@ -1107,6 +1118,10 @@ void NativeRenderer::ExecuteClear(const ClearCall& c) {
   ++stats_.clears;
   if (gpu_timer_) gpu_timer_->Pass(device_->command_list(), GpuTimer::KeyClear(c));
   draw_->LogClear(c);
+  // A clear of the scene's surface after its upscaled resolve (Upscaler::EnterPostScene).
+  if (Upscaler* u = upscaler(); u && u->upscaled_this_frame() && !u->post_scene() &&
+                                Upscaler::IsScene(c.regs.surface_info))
+    u->EnterPostScene(device_->command_list(), *rt_, c.regs);
   rt_->Clear(device_->command_list(), c.regs, c.bound_colors, c.depth_bound, c.height, c.p);
   clear_ticks_ += Ticks() - t0;
 }

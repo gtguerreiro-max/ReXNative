@@ -186,9 +186,14 @@ function Set-Debug($s, [string]$line) {
 $s = Read-State
 switch ($Command) {
     'start' {
-        if ($s -and -not $Force) {
+        if ($s) {
             $old = Get-Process -Id $s.pid -ErrorAction SilentlyContinue
-            if ($old -and $old.Path -eq $s.exe) { throw "a live game is running (pid $($s.pid)): stop it or pass -Force" }
+            if ($old -and $old.Path -eq $s.exe) {
+                if (-not $Force) { throw "a live game is running (pid $($s.pid)): stop it or pass -Force" }
+                # -Force replaces it: the old game is closed, not left running beside the new one.
+                Stop-Process -Id $s.pid -Force -ErrorAction SilentlyContinue
+                $old.WaitForExit(10000) | Out-Null
+            }
         }
         if (-not $Dir -or -not $Exe) { throw 'start needs -Dir and -Exe' }
         $exePath = (Resolve-Path (Join-Path $Dir $Exe)).Path
@@ -237,6 +242,17 @@ switch ($Command) {
         $p = Get-Game $s
         $name = if ($Arg) { $Arg } else { (Get-Date).ToString('HHmmss') }
         Save-Shot $p (Join-Path $s.live "shots\$name.png")
+    }
+    'burst' {
+        # A few window captures in a row (-Arg2 of them, default 6, ~100 ms apart): glitches that
+        # one still capture does not catch (frame generation, jitter, motion).
+        $p = Get-Game $s
+        $name = if ($Arg) { $Arg } else { (Get-Date).ToString('HHmmss') }
+        $n = if ($Arg2) { [int]$Arg2 } else { 6 }
+        for ($i = 0; $i -lt $n; ++$i) {
+            Save-Shot $p (Join-Path $s.live "shots\$name-$i.png")
+            Start-Sleep -Milliseconds 100
+        }
     }
     'debug' { Get-Game $s | Out-Null; Set-Debug $s $Arg; "draw-debug.txt: $Arg$(if ($Pulse) { ' (then 0)' })" }
     'snap' {
