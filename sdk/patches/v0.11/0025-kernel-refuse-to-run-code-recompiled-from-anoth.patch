@@ -1,0 +1,52 @@
+From a48e8a40dfe5230d724ed09bfd0db0a57d8cd9f4 Mon Sep 17 00:00:00 2001
+From: shaurizard <contact@nyoom.engineering>
+Date: Mon, 16 Nov 2026 17:58:55 +0000
+Subject: [PATCH 25/30] 
+ 0028-kernel-refuse-to-run-code-recompiled-from-another-image
+
+The recompiled code is valid only for the image codegen read: the XEX with the title update it
+was generated with applied. A missing, extra or different title update changes the loaded image
+without any error, and the title then runs recompiled functions over code and data that are not
+theirs, which fails far from the cause. After the entry XEX loads, its image size is compared
+with the one codegen recorded in PPCImage, and when they differ the load stops with an error that
+names both sizes and the update data root (a zero image_size skips the check). Ported to ReXGlue
+v0.11 from pgr4-native's patch 0028.
+---
+ src/kernel/title_state.cpp | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/kernel/title_state.cpp b/src/kernel/title_state.cpp
+index 171437af..0bf28bd4 100644
+--- a/src/kernel/title_state.cpp
++++ b/src/kernel/title_state.cpp
+@@ -16,6 +16,7 @@
+ #include <rex/xam/content_manager.h>
+ #include <rex/xam/language.h>
+ #include <rex/xam/title_lifecycle.h>
++#include <rex/kernel/module.h>
+ #include <rex/kernel/object/module_object.h>
+ #include <rex/kernel/title_runtime.h>
+ #include <rex/kernel/title_paths.h>
+@@ -483,6 +484,19 @@ Result<void> TitleState::LoadXEXImage(const std::string_view module_path) {
+     return Err(
+         SetupError(status, std::format("cannot load {}, status {:08X}", module_path, status)));
+   }
++  // The recompiled code matches only the image it was generated from: a missing, extra or
++  // different title update loads another image, of another size, under the same code, which then
++  // fails far from the cause.
++  if (const kernel::XEXModule* xex = module->GetXEX();
++      !tool_mode_ && xex && image_.image_size && xex->GetImageSize() != image_.image_size) {
++    const u32 loaded_size = xex->GetImageSize();
++    kernel::CloseOwned(*object_table_, handle);
++    return Err(SetupError(
++        X_STATUS_UNSUCCESSFUL,
++        std::format("{} loads as a {:#x}-byte image, but the code was recompiled from a {:#x}-byte "
++                    "one. Is the title update it was generated with in place (update data: '{}')?",
++                    module_path, loaded_size, image_.image_size, update_data_root_.string())));
++  }
+ 
+   SetExecutableModule(handle);
+   REXSYS_DEBUG("  XEX image loaded successfully");
+-- 
+2.55.0.windows.5
+

@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From f279f3d1ccac48efef0f0f91c602dc201c75a883 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:04 +0000
-Subject: [PATCH 09/20] 
+Subject: [PATCH 09/30] 
  0049-gpu-add-occlusion_query_external-for-a-host-renderer
 
 ---
@@ -68,3 +68,6 @@ index ed177b67..cd211f56 100644
    REX_SETTING(bool, skip_draws, false,
                "Skip all host GPU work for draws, resolves, shader loads and swaps, for a host "
                "renderer that draws the guest's frames itself (ReXNative); fences, register and "
+-- 
+2.55.0.windows.5
+

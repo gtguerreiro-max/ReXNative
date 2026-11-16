@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From bd5daec069a585d7cc80992fc7dd4b7c8bc758b2 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:07 +0000
-Subject: [PATCH 12/20] 
+Subject: [PATCH 12/30] 
  0053-fix-gpu-clamp-RTV-path-colors-to-the-render-target-format-range
 
 ---
@@ -79,3 +79,6 @@ index 07244dec..375cd1c4 100644
      if (gamma_render_target_as_unorm8_) {
        a_.OpAnd(dxbc::Dest::R(gamma_temp, 0b0001), LoadFlagsSystemConstant(),
                 dxbc::Src::LU(kSysFlagConvertColor0ToGamma << i));
+-- 
+2.55.0.windows.5
+

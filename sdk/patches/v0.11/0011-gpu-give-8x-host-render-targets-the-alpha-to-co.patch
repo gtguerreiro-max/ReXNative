@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From dbe733e3698bb27bc02ed726ac55d4153d1a5339 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:05 +0000
-Subject: [PATCH 11/20] 
+Subject: [PATCH 11/30] 
  0051-gpu-give-8x-host-render-targets-the-alpha-to-coverage-of-4x
 
 ---
@@ -26,3 +26,6 @@ index 63d75e59..07244dec 100644
      // Without ROV, native 2x maps top to 1 and bottom to 0, 2x as 4x maps top to 0, bottom to 3.
      a_.OpElse();
      CompletePixelShaderAlphaToMaskSample(true, (!edram_rov_used_ && msaa_2x_supported_) ? 1 : 0,
+-- 
+2.55.0.windows.5
+

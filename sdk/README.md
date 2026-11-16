@@ -33,13 +33,19 @@ does; in short:
 | 0017 | `rex/xam/ui.h`: `XAMIsUIActive` exported, so the renderer gives the window back while an XAM dialog is up |
 | 0018, 0020 | Codegen: every copy of the millicode helpers found and named apart (Jet Set Radio links them twice; v0.11.0 stopped at its pdata) |
 | 0019 | The guest's gamma ramps published by the command processor (`rex::xenos::GetGammaRampView`) |
+| 0021, 0023, 0024, 0026 | Steam Deck performance (pgr4-native): shader constant writes off the special register path, and an unchanged constant or range changes no binding; no XMA worker wake after an inline kick decode; a single-range shared memory request without the vector, sort and merge; the xmaframes decoder flushed instead of reopened (`thirdparty/ffmpeg-overlay/wmaprodec_xmaframes.c`) |
+| 0022 | Guest physical memory in a section of its own, committed when it is created: under Wine a protection change on a view of a section that commits on demand goes through wineserver (pgr4-native) |
+| 0025 | The entry XEX's image size checked against the one codegen recorded: a missing or different title update stops with an error instead of running code over another image (pgr4-native) |
+| 0027 | A path on a device nothing is mounted at (`cache:\` before a title mounts it) answered `X_STATUS_NO_SUCH_FILE`, as Xenia and ReXGlue v0.10 did: Bionic Commando Rearmed crashed at start-up on v0.11's `OBJECT_NAME_NOT_FOUND` |
+| 0028 | A receive on a datagram socket that was never bound fails with `WSAEINVAL`, as on Windows and the console: under Proton it waited forever (Castlevania: Symphony of the Night and 3D Ultra Minigolf stopped at their first frames on the Steam Deck) |
+| 0029, 0030 | Pixel shaders (pgr4-native): computed-LOD fetches sampled with `sample_b` instead of derivatives and `sample_d`; `Modification::pixel.textures_unsigned`, set by the renderer when every texture the shader reads is unsigned (`SpecializePixelTextures`): the signed sampling and the sign, gamma and exponent conversions go |
 
-Left out, as the v0.11 port notes record: pgr4-native's Steam Deck pacing, statistics and lock
-patches (0008-0020, 0032, 0042, 0043; to be ported before the Deck build), the computed-LOD and
-`textures_unsigned` shader modifications (0021, 0022), the image check (0028), and the prebuilt
-resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from). Fixed
-upstream since: the `XThread::Resume` and timer queue patches, the physical write fault race,
-the achievement toast's repaint, the shared memory cleanup on Linux.
+Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
+prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).
+Not needed on v0.11: pgr4-native's other Deck pacing and lock patches (0009, 0011-0013,
+0015-0017, 0020) and the key bind repeat (0019), which v0.11 handles itself. Fixed upstream
+since: the `XThread::Resume` and timer queue patches, the physical write fault race, the
+achievement toast's repaint, the shared memory cleanup on Linux.
 
 ## Licenses
 

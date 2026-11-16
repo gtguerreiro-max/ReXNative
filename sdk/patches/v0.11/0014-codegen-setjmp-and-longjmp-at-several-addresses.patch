@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fc192643804e5cc830a72d2f4f83786a3f139c79 Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:27:08 +0000
-Subject: [PATCH 14/20] 0003-codegen-setjmp-and-longjmp-at-several-addresses
+Subject: [PATCH 14/30] 0003-codegen-setjmp-and-longjmp-at-several-addresses
 
 ---
  src/codegen/builder/context.cpp |  6 ++--
@@ -227,3 +227,6 @@ index 9cae32b4..e2d2d26c 100644
  
    size_t config_funcs = 0, config_chunks = 0;
    for (const auto& [address, cfg] : config.functions) {
+-- 
+2.55.0.windows.5
+

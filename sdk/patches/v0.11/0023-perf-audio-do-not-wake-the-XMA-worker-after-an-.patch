@@ -1,0 +1,32 @@
+From 00658357a58c4f2a6029ad2adb5b8acd4668eef5 Mon Sep 17 00:00:00 2001
+From: shaurizard <contact@nyoom.engineering>
+Date: Mon, 16 Nov 2026 17:54:31 +0000
+Subject: [PATCH 23/30] 
+ 0042-perf-audio-do-not-wake-the-XMA-worker-after-an-inline-kick-decode
+
+A context kick decodes the kicked contexts at once on the writing thread, and XMAContext::Work
+clears the enable before it decodes, so by the end of the kick none of them is left for the
+worker; the woken worker only walked all contexts and found nothing (8.6 % of a core in Project
+Gotham Racing 4 on a Steam Deck). Pause, resume and shutdown still set the event. Ported to
+ReXGlue v0.11 from pgr4-native's patch 0042.
+---
+ src/kernel/xma/decoder.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/kernel/xma/decoder.cpp b/src/kernel/xma/decoder.cpp
+index 9d6ae973..f55e688a 100644
+--- a/src/kernel/xma/decoder.cpp
++++ b/src/kernel/xma/decoder.cpp
+@@ -267,7 +267,8 @@ void XMADecoder::WriteRegister(u32 addr, u32 value) {
+         }
+       }
+     }
+-    work_event_->Set();
++    // Work() consumes the enable, so every kicked context is done by now. Waking the worker here
++    // only made it sweep all contexts and find nothing.
+   } else if (r >= XMARegister::Context0Lock && r <= XMARegister::Context9Lock) {
+     // XMADisableContext writes the lock registers.
+     u32 base_context_id = (r - XMARegister::Context0Lock) * 32;
+-- 
+2.55.0.windows.5
+

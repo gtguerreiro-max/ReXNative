@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 4e530ea0e9a8f61222089d4338a91cff8af416f1 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:01 +0000
-Subject: [PATCH 06/20] 
+Subject: [PATCH 06/30] 
  0031-gpu-add-gpu_skip_draws-for-a-host-renderer-that-draw
 
 ---
@@ -90,3 +90,6 @@ index d8f88a2b..ed177b67 100644
    REX_SETTING(bool, readback_resolve_half_pixel_offset, false,
                "When draw resolution scaling is active, sample from the center of each scaled block "
                "during resolve readback downscale");
+-- 
+2.55.0.windows.5
+

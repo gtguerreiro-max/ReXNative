@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fbd00713e9098f704115dda1ce0deacdefc1c77f Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:56:00 +0000
-Subject: [PATCH 16/20] 0005-gpu-integer-fetch-without-the-getenv-toggle
+Subject: [PATCH 16/30] 0005-gpu-integer-fetch-without-the-getenv-toggle
 
 ---
  include/rex/xenos/integer_fetch.h | 7 -------
@@ -32,3 +32,6 @@ index 78c09696..66bf5b5c 100644
    for (uint32_t i = 0; i < 32; ++i) {
      const uint32_t* f = source + i * 6;
      if ((f[0] & 3) != 2 || !(f[3] & 1)) {
+-- 
+2.55.0.windows.5
+

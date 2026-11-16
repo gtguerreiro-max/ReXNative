@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0d9dda5983f00892a2651bed831f8150419f1fc8 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:26:49 +0000
-Subject: [PATCH 03/20] 
+Subject: [PATCH 03/30] 
  0004-kernel-compare-ObCreateSymbolicLink-s-prefix-as-a-pl
 
 ---
@@ -23,3 +23,6 @@ index 817a8f23..f09e2b4d 100644
    }
  
    if (auto linked = kernel::GetCurrentState().GetFileSystem()->Link(path, target);
+-- 
+2.55.0.windows.5
+

@@ -1,0 +1,155 @@
+From 348541305864369f9c3b6988773dde1cfa202d0b Mon Sep 17 00:00:00 2001
+From: shaurizard <contact@nyoom.engineering>
+Date: Mon, 16 Nov 2026 19:20:49 +0000
+Subject: [PATCH 29/30] 
+ 0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sample_b
+
+A texture fetch with computed LOD in a pixel shader, without register gradients, was translated
+as deriv_rtx_coarse and deriv_rty_coarse of the coordinates, an exp of the LOD bias, two multiplies
+of the gradients by 2^bias, and a sample_d. The LOD sample_d derives from gradients scaled by
+2^bias is the LOD of the unscaled gradients plus the bias, which sample_b computes from the same
+coordinates with implicit derivatives: these fetches now emit sample_b with the accumulated bias
+and skip the gradient temp, the derivatives and the multiplies. Between the gradients and the
+sample only the array layer of stacked textures changes, and stacked textures keep the explicit
+gradients (the layer filter choice reads them); register gradients and vertex shaders keep
+sample_d. The assembler gains OpSampleB (opcode 74), sharing sample_l's encoding. Ported to
+ReXGlue v0.11 from pgr4-native's patch 0021.
+---
+ src/gpu/xenos/format/dxbc.h                   | 56 ++++++++++++-------
+ .../pipeline/shader/dxbc_translator_fetch.cpp | 16 +++++-
+ 2 files changed, 51 insertions(+), 21 deletions(-)
+
+diff --git a/src/gpu/xenos/format/dxbc.h b/src/gpu/xenos/format/dxbc.h
+index 47eaedd7..76ef13ff 100644
+--- a/src/gpu/xenos/format/dxbc.h
++++ b/src/gpu/xenos/format/dxbc.h
+@@ -1264,6 +1264,7 @@ enum class Opcode : u8 {
+   kRSq = 68,
+   kSampleL = 72,
+   kSampleD = 73,
++  kSampleB = 74,
+   kSqRt = 75,
+   kSwitch = 76,
+   kSinCos = 77,
+@@ -1674,28 +1675,18 @@ class Assembler {
+   void OpSampleL(const Dest& dest, const Src& address, u32 address_components, const Src& resource,
+                  const Src& sampler, const Src& lod, i32 aoffimmi_u = 0, i32 aoffimmi_v = 0,
+                  i32 aoffimmi_w = 0) {
+-    u32 dest_write_mask = dest.GetMask();
+-    u32 sample_controls = 0;
+-    if (aoffimmi_u || aoffimmi_v || aoffimmi_w) {
+-      sample_controls = SampleControlsExtendedOpcodeToken(aoffimmi_u, aoffimmi_v, aoffimmi_w);
+-    }
+-    u32 address_mask = (1 << address_components) - 1;
+-    u32 operands_length = dest.GetLength() + address.GetLength(address_mask) +
+-                          resource.GetLength(dest_write_mask, true) + sampler.GetLength(0b0000) +
+-                          lod.GetLength(0b0000);
+-    code_.reserve(code_.size() + 1 + (sample_controls ? 1 : 0) + operands_length);
+-    code_.push_back(OpcodeToken(Opcode::kSampleL, operands_length, false, sample_controls ? 1 : 0));
+-    if (sample_controls) {
+-      code_.push_back(sample_controls);
+-    }
+-    dest.Write(code_);
+-    address.Write(code_, false, address_mask);
+-    resource.Write(code_, false, dest_write_mask, true);
+-    sampler.Write(code_, false, 0b0000);
+-    lod.Write(code_, false, 0b0000);
+-    ++stat_.instruction_count;
++    EmitSampleScalarOp(Opcode::kSampleL, dest, address, address_components, resource, sampler, lod,
++                       aoffimmi_u, aoffimmi_v, aoffimmi_w);
+     ++stat_.texture_normal_instruction_count;
+   }
++  /** Emits a sample with implicit (screen-space) derivatives and a LOD bias, pixel shaders only. */
++  void OpSampleB(const Dest& dest, const Src& address, u32 address_components, const Src& resource,
++                 const Src& sampler, const Src& bias, i32 aoffimmi_u = 0, i32 aoffimmi_v = 0,
++                 i32 aoffimmi_w = 0) {
++    EmitSampleScalarOp(Opcode::kSampleB, dest, address, address_components, resource, sampler,
++                       bias, aoffimmi_u, aoffimmi_v, aoffimmi_w);
++    ++stat_.texture_bias_instructions;
++  }
+   /** Emits a sample with explicit derivatives, which have as many components as the address. */
+   void OpSampleD(const Dest& dest, const Src& address, u32 address_components, const Src& resource,
+                  const Src& sampler, const Src& x_derivatives, const Src& y_derivatives,
+@@ -2189,6 +2180,31 @@ class Assembler {
+   }
+ 
+  private:
++  /** sample_l and sample_b: the sample operands, then one scalar (the LOD or the bias). */
++  void EmitSampleScalarOp(Opcode opcode, const Dest& dest, const Src& address,
++                          u32 address_components, const Src& resource, const Src& sampler,
++                          const Src& scalar, i32 aoffimmi_u, i32 aoffimmi_v, i32 aoffimmi_w) {
++    u32 dest_write_mask = dest.GetMask();
++    u32 sample_controls = 0;
++    if (aoffimmi_u || aoffimmi_v || aoffimmi_w) {
++      sample_controls = SampleControlsExtendedOpcodeToken(aoffimmi_u, aoffimmi_v, aoffimmi_w);
++    }
++    u32 address_mask = (1 << address_components) - 1;
++    u32 operands_length = dest.GetLength() + address.GetLength(address_mask) +
++                          resource.GetLength(dest_write_mask, true) + sampler.GetLength(0b0000) +
++                          scalar.GetLength(0b0000);
++    code_.reserve(code_.size() + 1 + (sample_controls ? 1 : 0) + operands_length);
++    code_.push_back(OpcodeToken(opcode, operands_length, false, sample_controls ? 1 : 0));
++    if (sample_controls) {
++      code_.push_back(sample_controls);
++    }
++    dest.Write(code_);
++    address.Write(code_, false, address_mask);
++    resource.Write(code_, false, dest_write_mask, true);
++    sampler.Write(code_, false, 0b0000);
++    scalar.Write(code_, false, 0b0000);
++    ++stat_.instruction_count;
++  }
+   void EmitAluOp(Opcode opcode, u32 src_are_integer, const Dest& dest, const Src& src,
+                  bool saturate = false) {
+     u32 dest_write_mask = dest.GetMask();
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+index ded2ca5f..5e0be15d 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -1160,6 +1160,11 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+       u32 grad_component_count = 0;
+       u32 grad_h_lod_temp = UINT32_MAX;
+       u32 grad_v_temp = UINT32_MAX;
++      // Computed LOD from screen-space gradients in a pixel shader: sample_b with the LOD bias is
++      // what sample_d with the gradients scaled by 2^bias computes, without the derivative
++      // instructions and the gradient operands. Stacked textures keep the gradients, which the
++      // layer filter choice below reads.
++      bool implicit_gradients = false;
+       if (instr.attributes.mip_filter != xenos::TextureFilter::kBaseMap) {
+         grad_h_lod_temp = PushSystemTemp();
+         lod_src = dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kWWWW);
+@@ -1183,7 +1188,10 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+             a_.OpMul(lod_dest, lod_src, dxbc::Src::LF(1.0f / 32.0f));
+           }
+         }
+-        if (use_computed_lod) {
++        implicit_gradients = use_computed_lod && IsPixelShader() &&
++                             !instr.attributes.use_register_gradients &&
++                             instr.dimension != xenos::FetchOpDimension::k3DOrStacked;
++        if (use_computed_lod && !implicit_gradients) {
+           grad_v_temp = PushSystemTemp();
+           switch (instr.dimension) {
+             case xenos::FetchOpDimension::k1D:
+@@ -1477,6 +1485,9 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+                            dxbc::Src::R(coord_and_sampler_temp), 3, srv_unsigned, sampler,
+                            dxbc::Src::R(grad_h_lod_temp), dxbc::Src::R(grad_v_temp),
+                            srv_grad_component_count);
++            } else if (implicit_gradients) {
++              a_.OpSampleB(dxbc::Dest::R(layer_value_temp, used_result_nonzero_components),
++                           dxbc::Src::R(coord_and_sampler_temp), 3, srv_unsigned, sampler, lod_src);
+             } else {
+               a_.OpSampleL(dxbc::Dest::R(layer_value_temp, used_result_nonzero_components),
+                            dxbc::Src::R(coord_and_sampler_temp), 3, srv_unsigned, sampler, lod_src);
+@@ -1505,6 +1516,9 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+                            dxbc::Src::R(coord_and_sampler_temp), 3, srv_signed, sampler,
+                            dxbc::Src::R(grad_h_lod_temp), dxbc::Src::R(grad_v_temp),
+                            srv_grad_component_count);
++            } else if (implicit_gradients) {
++              a_.OpSampleB(dxbc::Dest::R(signed_temp, used_result_nonzero_components),
++                           dxbc::Src::R(coord_and_sampler_temp), 3, srv_signed, sampler, lod_src);
+             } else {
+               a_.OpSampleL(dxbc::Dest::R(signed_temp, used_result_nonzero_components),
+                            dxbc::Src::R(coord_and_sampler_temp), 3, srv_signed, sampler, lod_src);
+-- 
+2.55.0.windows.5
+

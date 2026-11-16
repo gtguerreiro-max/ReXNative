@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From bfb9ca81ea5fa62506ea9179e78ded1425399ebb Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:02 +0000
-Subject: [PATCH 07/20] 
+Subject: [PATCH 07/30] 
  0040-fix-audio-read-the-XMA-loop-subframe-end-from-bits-1
 
 ---
@@ -26,3 +26,6 @@ index 106e9b72..bf4391b6 100644
    /**
     * XMAPlaybackSetLoop dwLoopSubframeSkip, subframes discarded at loop start.
     * 4 means a whole warm up frame (frame aligned loops).
+-- 
+2.55.0.windows.5
+

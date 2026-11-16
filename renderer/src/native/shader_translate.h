@@ -81,9 +81,9 @@ inline uint64_t SpecializePixelTextures(uint64_t pixel, const uint32_t* fetch, u
     if (signs && ((signs & 0x2A8u) || !((signed_is_unsigned_formats >> (f[1] & 63)) & 1)))
       return pixel;
   }
-  // ReXGlue v0.11 without the textures_unsigned modification (sdk/patches): the pixel shader
-  // keeps converting signed fetches.
-  return pixel;
+  DxbcShaderTranslator::Modification pm(pixel);
+  pm.pixel.textures_unsigned = 1;  // sdk/patches/v0.11 (pgr4-native's 0022)
+  return pm.value;
 }
 // The draw's modifications with motion vectors (Modification::vertex/pixel.motion_vectors), for
 // a draw with a pixel shader.

@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From cba158bd5ca7db0118ea9c391c5a81a28abceaf3 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:03 +0000
-Subject: [PATCH 08/20] 
+Subject: [PATCH 08/30] 
  0041-fix-audio-count-an-XMA-frame-whose-header-straddles-
 
 ---
@@ -29,3 +29,6 @@ index 6cd1944c..9294c54e 100644
        break;
      }
  
+-- 
+2.55.0.windows.5
+

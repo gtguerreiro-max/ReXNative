@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 92c73d37598ad05c93616cf94f1bc350ee1834f3 Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 17:21:44 +0000
-Subject: [PATCH 19/20] 
+Subject: [PATCH 19/30] 
  0008-gpu-publish-the-guest-gamma-ramps-for-a-host-renderer
 
 ---
@@ -89,3 +89,6 @@ index a0c41c08..2bfadf23 100644
    worker_running_ = false;
    write_ptr_index_event_->Set();
    worker_thread_ = ScopeGuard();
+-- 
+2.55.0.windows.5
+

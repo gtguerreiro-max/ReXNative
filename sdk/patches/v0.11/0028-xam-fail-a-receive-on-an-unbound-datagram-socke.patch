@@ -1,0 +1,91 @@
+From b4a083f8c23cdf995cf666d0775896fa87b7cc4d Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 19:20:30 +0000
+Subject: [PATCH 28/30] 
+ 0016-xam-fail-a-receive-on-an-unbound-datagram-socket-as-Winsock-does
+
+Winsock, as the console, fails recv and recvfrom on a datagram socket that was never bound with
+WSAEINVAL. A POSIX host, and Wine over one, binds the socket on the fly; the native socket being
+non-blocking, the receive came back as would-block and WaitToRetry waited for data that cannot
+come. Castlevania: Symphony of the Night and 3D Ultra Minigolf Adventures stopped at their first
+frames on the Steam Deck (Proton), their main thread in the XDK's online code at a recvfrom on an
+unbound UDP socket (none showed in ss), while on Windows the call failed at once and the title
+went on. A receive on a datagram socket whose native socket has no port now fails with WSAEINVAL
+(the check stops once a port is seen).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/xam/socket_object.cpp | 29 +++++++++++++++++++++++++++++
+ src/xam/socket_object.h   |  2 ++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/src/xam/socket_object.cpp b/src/xam/socket_object.cpp
+index 43b5efe9..4bc7ad78 100644
+--- a/src/xam/socket_object.cpp
++++ b/src/xam/socket_object.cpp
+@@ -117,6 +117,29 @@ bool IsClosed(const SocketObject& sock) {
+   return true;
+ }
+ 
++// Winsock, as the console, fails a receive on a datagram socket that was never bound
++// (WSAEINVAL). A POSIX host, and Wine over one, binds it on the fly and waits instead: Castlevania:
++// Symphony of the Night and 3D Ultra Minigolf Adventures waited forever on the Steam Deck (Proton)
++// in the XDK's online code, at a recvfrom on an unbound UDP socket that Windows fails at once.
++bool UnboundDatagram(const SocketObject& sock) {
++  if (sock.type != kXSockDgram || sock.bound_seen.load(std::memory_order_relaxed)) {
++    return false;
++  }
++  sockaddr_in host{};
++  i32 host_len = sizeof(host);
++  if (sock.socket.GetLocalName(reinterpret_cast<sockaddr*>(&host), &host_len) == 0 &&
++      host.sin_port != 0) {
++    sock.bound_seen.store(true, std::memory_order_relaxed);
++    return false;
++  }
++#if REX_PLATFORM_WIN32
++  SetHostError(WSAEINVAL);
++#else
++  SetHostError(EINVAL);
++#endif
++  return true;
++}
++
+ bool WaitToRetry(const SocketObject& sock, SocketReady ready) {
+   if (sock.nonblocking || !rex::platform::IsSocketWouldBlock() || IsClosed(sock)) {
+     return false;
+@@ -591,6 +614,9 @@ int SocketObject::Recv(u8* buf, u32 buf_len, u32 flags) const {
+   if (buf_len > kMaxSocketLength) {
+     return -1;
+   }
++  if (UnboundDatagram(*this)) {
++    return -1;
++  }
+   int ret;
+   do {
+     ret = socket.Recv(buf, static_cast<i32>(buf_len), static_cast<i32>(flags));
+@@ -603,6 +629,9 @@ int SocketObject::RecvFrom(u8* buf, u32 buf_len, u32 flags, N_XSOCKADDR_IN* from
+   if (buf_len > kMaxSocketLength) {
+     return -1;
+   }
++  if (UnboundDatagram(*this)) {
++    return -1;
++  }
+   sockaddr_in nfrom{};
+   i32 nfromlen = sizeof(sockaddr_in);
+   int ret;
+diff --git a/src/xam/socket_object.h b/src/xam/socket_object.h
+index 6cbfcf27..1ab4980f 100644
+--- a/src/xam/socket_object.h
++++ b/src/xam/socket_object.h
+@@ -152,6 +152,8 @@ struct SocketObject final : kernel::IXAMObject {
+   std::unique_ptr<rex::platform::Event> event;
+   /** True once Cancel ran. Every later call fails, and the native socket stays open. */
+   std::atomic<bool> closed = false;
++  /** True once the native socket was seen bound to a port (UnboundDatagram checks it). */
++  mutable std::atomic<bool> bound_seen = false;
+   /** The native socket, set once by Initialize or Accept and closed with the object. */
+   rex::platform::Socket socket;
+   /** Guards pending_receive. The receive thread never takes it. */
+-- 
+2.55.0.windows.5
+
