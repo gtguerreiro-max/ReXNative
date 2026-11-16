@@ -41,7 +41,9 @@ namespace xenos = rex::graphics::xenos;
 namespace texture_util = rex::graphics::texture_util;
 
 constexpr uint32_t kViewsPerResolve = 4;  // t0 color/depth, t1 stencil, u0 texel bits, u1 floats
-constexpr uint32_t kHeapPerFrame = 128 * kViewsPerResolve;  // descriptors per frame slot
+// Descriptors per frame slot: 1024 resolves (Halo: Combat Evolved Anniversary passed 128 in its
+// cutscenes, and the ones after were skipped).
+constexpr uint32_t kHeapPerFrame = 1024 * kViewsPerResolve;
 constexpr uint32_t kHeapSlots = 4;                          // > frames in flight
 static_assert(kHeapSlots > D3D12Device::kFramesInFlight);
 constexpr D3D12_RESOURCE_STATES kImageReadState = D3D12_RESOURCE_STATE_COPY_SOURCE |

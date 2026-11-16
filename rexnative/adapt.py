@@ -307,12 +307,18 @@ def adapt(target, refs, overrides=None, log=print):
         # The game's own frame height (PGR4's 800 is its Steam Deck mode, made by its own
         # hooks), occlusion queries on the host off (From Dust hung with them; a new game's
         # query hooks are often not found), the console's 16:9.
-        # Recorded command buffers are not replayed (cmdbuf 0) unless overrides.json says so.
+        # Recorded command buffers are replayed (cmdbuf 2) where RunCommandBuffer is found with
+        # high confidence (a wrong function's arguments read as a command buffer would be worse
+        # than none): the draws inside them reach no other hook (Iron Brigade's static scenery,
+        # 121 draws a frame of Halo: Combat Evolved Anniversary's cutscenes); overrides.json may
+        # say 0.
         'defaults': {'enabled': True,
                      'render_height': p['scene'].get('height', 720),
                      'occlusion': False,
                      'display_aspect': '16.0 / 9.0',
-                     'cmdbuf': 0},
+                     'cmdbuf': 2 if (funcs.get('RunCommandBuffer', {}).get('address') and
+                                     funcs['RunCommandBuffer'].get('confidence') == 'high')
+                               else 0},
         'devices': {
             # Only the device that presents (Swap's): a game with one device is the same, and
             # one that draws on others too (Iron Brigade while loading; Halo: Combat Evolved
