@@ -256,15 +256,57 @@ def _epilogue_starts(work, hints):
         if not name.endswith('.cpp'):
             continue
         cur = None
+        first = []
         with open(os.path.join(gen, name), encoding='utf-8', errors='replace') as f:
             for line in f:
                 if line.startswith('DEFINE_REX_FUNC(sub_'):
                     cur = int(line[20:28], 16)
+                    first = []
                 elif cur is not None and line.startswith('\t// '):
-                    if cur in hints and EPILOGUE_START.match(line):
-                        found.add(cur)
-                    cur = None
+                    if cur in hints:
+                        first.append(line[4:].strip())
+                        if len(first) == 1 and EPILOGUE_START.match(line):
+                            found.add(cur)
+                            cur = None
+                        elif len(first) == 8 or first[-1].split()[0].startswith('b'):
+                            if _reads_saved_register(first):
+                                found.add(cur)
+                            cur = None
+                    else:
+                        cur = None
     return found
+
+
+NON_VOLATILE = {'r%d' % i for i in range(14, 32)}
+
+
+def _reads_saved_register(instructions):
+    """Whether code reads a non-volatile register (r14-r31) before it writes it: the caller's value,
+    which no function start uses, so the code is the rest of the function before it (Bionic
+    Commando Rearmed's 821DBF10, `lwz r11,0(r29)`, and 822BA4C8, `addi r3,r31,128`). Storing one,
+    as a prologue does, is not a use."""
+    written = set()
+    for text in instructions:
+        parts = text.replace(',', ' ').replace('(', ' ').replace(')', ' ').split()
+        if not parts:
+            continue
+        op = parts[0]
+        regs = [p for p in parts[1:] if re.fullmatch(r'r\d+', p)]
+        if op.startswith('b'):
+            return False
+        if op.startswith('st'):
+            # The register stored is saved, not used (a prologue, or a context save such as
+            # SwitchToFiber's: Double Dragon Neon's 826250F0); only the address registers count.
+            sources, dest = regs[1:], None
+        elif op.startswith(('cmp', 'tw', 'td', 'mt')):
+            sources, dest = regs, None
+        else:
+            dest, sources = (regs[0] if regs else None), regs[1:]
+        if any(r in NON_VOLATILE and r not in written for r in sources):
+            return True
+        if dest:
+            written.add(dest)
+    return False
 
 
 def codegen(work, name, rexglue, max_rounds, log):
