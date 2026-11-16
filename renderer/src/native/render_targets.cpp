@@ -266,10 +266,11 @@ void RenderTargets::Retire(ComPtr<ID3D12Resource> resource, uint32_t view_index,
     retired_.push_back({std::move(resource), frame_fence_, view_index, depth});
 }
 
-bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
+bool RenderTargets::Create(RenderTarget* rt, uint32_t height, uint32_t width) {
+  width = std::max({1u, rt->pitch, width});
   D3D12_RESOURCE_DESC d = {};
   d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  d.Width = rt->size_scale.Extent(std::max(1u, rt->pitch), 0);
+  d.Width = rt->size_scale.Extent(width, 0);
   d.Height = rt->size_scale.Extent(height, 1);
   d.DepthOrArraySize = 1;
   d.MipLevels = 1;
@@ -311,7 +312,7 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height) {
   Retire(nullptr, std::exchange(rt->srgb_view_index, srgb_view_index), false);
   rt->resource = std::move(res);
   rt->state = initial;
-  rt->width = std::max(1u, rt->pitch);
+  rt->width = width;
   rt->height = height;
   rt->pending_count = 0;  // a grown target loses the old one's content
   if (rt->depth) {
@@ -382,7 +383,9 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
                        (uint64_t(overridden) << kOverriddenKeyBit) | (uint64_t(base) << 44) |
                        (uint64_t(pitch) << 30) | uint64_t(view);
   GetMemo& memo = get_memo_[(key ^ (key >> 30) ^ (key >> 44) ^ (key >> 60)) & 15];
-  if (memo.rt && memo.key == key && std::min(height, kMaxHeight) <= memo.rt->height) {
+  const uint32_t want_width = WidthFor(pitch);
+  if (memo.rt && memo.key == key && std::min(height, kMaxHeight) <= memo.rt->height &&
+      want_width <= memo.rt->width) {
     memo.rt->guest_format = guest_format;
     memo.rt->last_frame = frame_;
     return memo.rt;
@@ -411,16 +414,19 @@ RenderTarget* RenderTargets::Get(bool depth, uint32_t surface_info, uint32_t inf
     rt->srv_format = srv;
     rt->stencil_srv_format = stencil_srv;
     rt->view_index = UINT32_MAX;
-    if (!Create(rt, want)) return nullptr;
+    if (!Create(rt, want, want_width)) return nullptr;
     targets_.emplace(key, std::move(owned));
   } else {
     rt = it->second.get();
-    if (std::min(height, kMaxHeight) > rt->height) {
-      // Taller than anything this surface had: a new, taller target. The old content is lost
-      // (not seen in PGR4's traces: every surface is created at its EDRAM height or more).
-      REXLOG_WARN("ReXNative RT: growing {} base {} pitch {} x{} from {} to {} rows",
-                  depth ? "depth" : "color", base, pitch, samples, rt->height, want);
-      if (!Create(rt, want)) return nullptr;
+    if (std::min(height, kMaxHeight) > rt->height || want_width > rt->width) {
+      // Taller (or, for tiles side by side, wider) than anything this surface had: a new, larger
+      // target. The old content is lost (not seen in PGR4's traces: every surface is created at
+      // its EDRAM height or more; a tiled surface grows at its first BeginTiling clear).
+      const uint32_t rows = std::max(want, rt->height);
+      REXLOG_WARN("ReXNative RT: growing {} base {} pitch {} x{} from {}x{} to {}x{}",
+                  depth ? "depth" : "color", base, pitch, samples, rt->width, rt->height,
+                  want_width, rows);
+      if (!Create(rt, rows, want_width)) return nullptr;
     }
   }
   rt->guest_format = guest_format;
@@ -568,6 +574,19 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
   // What the clear leaves in the EDRAM, in pixels from the surface's base. A whole-surface
   // clear covers the rows of the call's height hint (the target itself may be taller).
   const std::vector<D3D12_RECT>& edram = p.edram_rects.empty() ? p.rects : p.edram_rects;
+  // BeginTiling's clear (edram_rects set, rects the tiles): tiles side by side make the surface
+  // wider than its pitch (WidthFor).
+  if (!p.edram_rects.empty()) {
+    const uint32_t pitch = regs.surface_info & 0x3FFF;
+    uint32_t right = 0;
+    for (const D3D12_RECT& r : p.rects) right = std::max(right, uint32_t(std::max<LONG>(r.right, 0)));
+    right = std::min(right, 8192u);
+    if (pitch && right > WidthFor(pitch)) {
+      tiled_width_[pitch] = right;
+      REXLOG_INFO("ReXNative RT: tiles of pitch {} reach x {}: its surfaces are {} wide", pitch,
+                  right, right);
+    }
+  }
   auto edram_rows = [&](const RenderTarget& rt) {
     if (edram.empty()) return height ? std::min(height, rt.height) : rt.height;
     uint32_t rows = 0;

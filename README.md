@@ -290,8 +290,9 @@ Improving it a little at a time:
     (a new world stays on its loading screen, the main thread busy); Castlevania: Symphony of the
     Night plays (its menu with its text, from the 4_4_4_4 and 1_5_5_5 textures, the name entry,
     the prologue); Bionic Commando Rearmed reaches its mission map; Double Dragon Neon plays
-    its first mission with the stock renderer, but ReXNative draws only a strip of the street
-    and not the fighters (open); Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
+    its first mission (its fibers on the host; its scene is four predicated tiles side by side,
+    480 x 1080 each of 1920 x 1080, so host targets are as wide as the tiles reach, not the
+    EDRAM pitch); Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
     so there is nothing to compare with); 3D Ultra Minigolf runs past its start-up.
 
 No game files, generated code or data from the games are in this repository: you need your own

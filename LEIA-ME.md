@@ -277,8 +277,9 @@ Melhorar aos poucos:
     Minecraft aos menus (um mundo novo fica no ecrã de carregamento, com a thread principal
     ocupada); Castlevania: Symphony of the Night joga-se (o menu com o texto, das texturas
     4_4_4_4 e 1_5_5_5, o nome, o prólogo); Bionic Commando Rearmed chega ao mapa das missões;
-    Double Dragon Neon joga a primeira missão com o renderer original, mas o ReXNative só desenha
-    uma faixa da rua e não os lutadores (em aberto); Perfect Dark ao ecrã de título (as texturas parecem riscadas;
+    Double Dragon Neon joga a primeira missão (as fibras no anfitrião; a cena são quatro tiles
+    predicados lado a lado, 480 x 1080 cada de 1920 x 1080, por isso os alvos no anfitrião têm a
+    largura até onde os tiles chegam, não o pitch da EDRAM); Perfect Dark ao ecrã de título (as texturas parecem riscadas;
     o renderer original não arranca, por isso não há com que comparar); 3D Ultra Minigolf passa
     do arranque.
 

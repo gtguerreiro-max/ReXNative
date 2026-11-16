@@ -478,7 +478,10 @@ void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, 
   }
 }
 
-void HostScissor(const RegisterFile& regs, Scissor& out) {
+// surface_width: the host surface's width (RenderTargets::WidthFor), the pitch unless predicated
+// tiles lie side by side on it (Double Dragon Neon: four of 480 on a 1920-wide scene, drawn
+// once over all of it).
+void HostScissor(const RegisterFile& regs, Scissor& out, uint32_t surface_width) {
   auto tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
   auto br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
   int32_t tl_x = int32_t(tl.tl_x), tl_y = int32_t(tl.tl_y);
@@ -496,7 +499,7 @@ void HostScissor(const RegisterFile& regs, Scissor& out) {
   tl_y = std::max(tl_y, int32_t(stl.tl_y));
   br_x = std::min(br_x, int32_t(sbr.br_x));
   br_y = std::min(br_y, int32_t(sbr.br_y));
-  uint32_t pitch = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch;
+  const uint32_t pitch = std::max(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, surface_width);
   tl_x = std::min(tl_x, int32_t(pitch));
   br_x = std::min(br_x, int32_t(pitch));
   tl_x = std::max(tl_x, 0);
@@ -4490,7 +4493,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     return;
   }
   Scissor scissor;
-  HostScissor(regs, scissor);
+  HostScissor(regs, scissor,
+              r.render_targets().WidthFor(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch));
   ViewportInfo vp;
   HostViewportInfo(regs, ps && ps->writes_depth(), vp);
   const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);

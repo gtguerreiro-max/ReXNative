@@ -222,6 +222,16 @@ class RenderTargets {
   RenderTarget* GetColor(const SurfaceRegs& regs, uint32_t index, uint32_t height);
   RenderTarget* GetDepth(const SurfaceRegs& regs, uint32_t height);
 
+  // Host width of a surface of `pitch`: the pitch, or the right edge of the predicated tiles
+  // drawn on it when they lie side by side (Clear learns it from BeginTiling's clear). The
+  // host surface holds every tile at its place, so tiles in columns (Double Dragon Neon: four
+  // of 480 of a 1920 x 1080 scene, the EDRAM pitch 480) need it wider than the pitch, as tiles
+  // in rows need it taller than the EDRAM.
+  uint32_t WidthFor(uint32_t pitch) const {
+    auto it = tiled_width_.find(pitch);
+    return it == tiled_width_.end() ? pitch : std::max(pitch, it->second);
+  }
+
   // Before reading rt's pixels in `r` outside a draw (resolve sources): records the EDRAM fills
   // over its tiles since its last use, and its pending clears if one touches `r`, in the order
   // the guest made them.
@@ -329,7 +339,7 @@ class RenderTargets {
   }
   // Frees `resource` and the view (UINT32_MAX: none) once the GPU finished the current frame.
   void Retire(ComPtr<ID3D12Resource> resource, uint32_t view_index, bool depth);
-  bool Create(RenderTarget* rt, uint32_t height);
+  bool Create(RenderTarget* rt, uint32_t height, uint32_t width);
   uint32_t AllocView(bool depth);
 
   ID3D12Device* device_ = nullptr;
@@ -337,6 +347,7 @@ class RenderTargets {
   uint32_t rtv_stride_ = 0, dsv_stride_ = 0;
   std::vector<uint32_t> free_rtv_, free_dsv_;
   std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> targets_;
+  std::unordered_map<uint32_t, uint32_t> tiled_width_;  // pitch -> right edge of its tiles (WidthFor)
   // Get's last hits, direct-mapped by key, in front of targets_ (cleared when targets are
   // dropped); and the RTV heap start (null RTVs).
   struct GetMemo {
