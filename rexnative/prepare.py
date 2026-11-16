@@ -11,6 +11,7 @@ Every step is skipped when its result is already there, so a run can be repeated
 The external programs run at below-normal priority (the PC stays usable) and nothing from the
 game is run. <work>/<game>/prepare.json records each step's outcome; `survey` tabulates them.
 """
+import bisect
 import json
 import os
 import re
@@ -267,17 +268,44 @@ def codegen(work, name, rexglue, max_rounds, log):
             open(done, 'w').write('round %d\n' % rnd)
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}
-        targets = [int(t, 16) for t in re.findall(r'^\s+(0x[0-9A-Fa-f]+) from 0x[0-9A-Fa-f]+:',
-                                                    text, re.M)] + tails
-        new = sorted({t for t in targets if t not in hints})
-        if not new:
+        pairs = [(int(t, 16), int(s, 16)) for t, s in re.findall(
+            r'^\s+(0x[0-9A-Fa-f]+) from (0x[0-9A-Fa-f]+):', text, re.M)]
+        pairs += [(int(t, 16), int(s, 16)) for t, s in re.findall(
+            r'Unresolved b target (0x[0-9A-Fa-f]+) from (0x[0-9A-Fa-f]+)', text)]
+        # A target found before not to be a function start (not-starts.txt: its hint split a
+        # function), asked for again: the hint whose function branches there is code of that
+        # function placed out of line, after its return, and not a function of its own. Bionic
+        # Commando Rearmed: hint 821DB4F8 (r31 used unset, then `b 0x821DB404`) is
+        # sub_821DB258's; the hint codegen asked for at 821DB404 split sub_821DB258's loop, was
+        # removed, and was asked for again, round after round. That source hint goes instead.
+        known_false = not_starts(work)
+        starts = sorted(hints)
+        fragments = set()
+        for t, src in pairs:
+            if t not in known_false:
+                continue
+            i = bisect.bisect_right(starts, src) - 1
+            if i >= 0 and src - starts[i] < 0x200 and starts[i] != t:
+                fragments.add(starts[i])
+        targets = [t for t, _ in pairs] + tails
+        new = sorted({t for t in targets if t not in hints and t not in known_false})
+        if not new and not fragments:
             tail = text.strip().splitlines()[-12:]
             raise RuntimeError('codegen failed with nothing to hint:\n' + '\n'.join(tail))
+        for h in fragments:
+            del hints[h]
+        if fragments:
+            with open(os.path.join(work, 'not-starts.txt'), 'a', encoding='utf-8',
+                      newline='\n') as f:
+                f.write(''.join('0x%08X\n' % h for h in sorted(fragments)))
+            log('  codegen round %d: %d hints that branch into another function removed: %s' % (
+                rnd, len(fragments), ' '.join('%08X' % h for h in sorted(fragments))))
         for t in new:
             hints[t] = 0
         with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8', newline='\n') as f:
             f.write(''.join('0x%08X 0x%X\n' % (a, s) for a, s in sorted(hints.items())))
-        log('  codegen round %d: +%d hints (%.0f s)' % (rnd, len(new), time.time() - t0))
+        if new:
+            log('  codegen round %d: +%d hints (%.0f s)' % (rnd, len(new), time.time() - t0))
     raise RuntimeError('codegen still failing after %d rounds' % max_rounds)
 
 
