@@ -138,6 +138,16 @@ def find(generated, image_path, known=(), gaps=True):
         if any(t <= a < t + 16 for t in thunks) or any(h0 <= a < h1 for h0, h1 in helpers):
             continue
         w = word(a)
+        # A function with an exception handler has the handler's address and its data (the
+        # C++ frame handler and the FuncInfo) in the two words before it, where .pdata's
+        # exception flag points codegen: data, which decodes as `lwz rN,d(rM) / lwz r16,...`,
+        # and was made a function falling into the real one (Midnight Club: Los Angeles's
+        # 821322B0, whose build then failed on sub_821322B8). The function is the word after.
+        if w in tree.funcs and base <= word(a + 4) < base + size:
+            a += 8
+            if a >= code1 or covered[(a - code0) // 4]:
+                continue
+            w = word(a)
         prologue = w == 0x7D8802A6 or w >> 16 == 0x9421  # mflr r12 / stwu r1,-N(r1)
         # gaps: also code nothing points to (Dungeons & Dragons: Chronicles of Mystara's
         # 822BC9D0, `lis r11,...` after a bctr, reached through an address it computes); the

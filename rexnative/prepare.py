@@ -257,23 +257,34 @@ def _epilogue_starts(work, hints):
             continue
         cur = None
         first = []
+
+        def judge():
+            # Up to 8 instructions, or to the first branch, or to the end of a shorter function:
+            # Midnight Club's 821322B0 is two loads from r27 and r16 that fall through into
+            # 821322B8 (no branch, so it was never judged, and its build failed on sub_821322B8).
+            if cur is not None and first and _reads_saved_register(first):
+                found.add(cur)
+
         with open(os.path.join(gen, name), encoding='utf-8', errors='replace') as f:
             for line in f:
                 if line.startswith('DEFINE_REX_FUNC(sub_'):
+                    judge()
                     cur = int(line[20:28], 16)
                     first = []
-                elif cur is not None and line.startswith('\t// '):
-                    if cur in hints:
-                        first.append(line[4:].strip())
-                        if len(first) == 1 and EPILOGUE_START.match(line):
-                            found.add(cur)
-                            cur = None
-                        elif len(first) == 8 or first[-1].split()[0].startswith('b'):
-                            if _reads_saved_register(first):
-                                found.add(cur)
-                            cur = None
-                    else:
+                    if cur not in hints:
                         cur = None
+                elif cur is not None and line.startswith('	// '):
+                    first.append(line[4:].strip())
+                    if len(first) == 1 and EPILOGUE_START.match(line):
+                        found.add(cur)
+                        cur = None
+                    elif len(first) == 8 or first[-1].split()[0].startswith('b'):
+                        judge()
+                        cur = None
+                elif cur is not None and line.startswith('}'):
+                    judge()
+                    cur = None
+            judge()
     return found
 
 
@@ -376,7 +387,7 @@ def codegen(work, name, rexglue, max_rounds, log):
                 with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8',
                           newline='\n') as f:
                     f.write(''.join('0x%08X 0x%X\n' % (a, z) for a, z in sorted(hints.items())))
-                log('  codegen round %d: %d hints at an epilogue removed: %s' % (
+                log('  codegen round %d: %d hints at an epilogue or inside a function removed: %s' % (
                     rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
             open(done, 'w').write('round %d\n' % rnd)
