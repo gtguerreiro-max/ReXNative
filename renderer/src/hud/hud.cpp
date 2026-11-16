@@ -91,16 +91,27 @@ std::vector<Option> MakeOptions() {
   const std::vector<Choice> on_off = {{"Off", "false"}, {"On", "true"}};
   std::vector<Option> o;
   o.push_back({"Display", "antialiasing", "Antialiasing",
-               {{"Off", "1"}, {"MSAA 2x (console)", "2"}, {"MSAA 4x", "4"}, {"MSAA 8x", "8"}},
-               false, [] { return Nearest(Find("antialiasing"), FlagInt("rexnative_msaa")); },
+               {{"Off", "1"},
+                {"MSAA 2x (console)", "2"},
+                {"MSAA 4x", "4"},
+                {"MSAA 8x", "8"},
+                {"DLSS / FSR (Upscaler)", "upscaler"}},
+               false,
+               [] {
+                 if (Flag("rexnative_upscaler") == "true") return std::string("upscaler");
+                 const int msaa = FlagInt("rexnative_msaa");
+                 return msaa == 1 || msaa == 4 || msaa == 8 ? std::to_string(msaa)
+                                                            : std::string("2");
+               },
                [](const std::string& v) {
+                 if (v == "upscaler") return Assignments{{"rexnative_upscaler", "true"}};
                  return Assignments{{"rexnative_upscaler", "false"}, {"rexnative_msaa", v}};
                },
                [] {
                  if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
                },
-               "The 3D scene's multisampling (most games draw 2x on the console). Choosing it "
-               "turns the DLSS / FSR upscaler off."});
+               "The 3D scene's multisampling (most games draw 2x on the console), or the "
+               "upscaler's temporal anti-aliasing (the Upscaler options below)."});
   o.push_back({"Display", "upscaling", "Screen scaling", {{"Bilinear", "false"}, {"AMD FSR 1", "true"}},
                false, [] { return Flag("rexnative_fsr"); },
                [](const std::string& v) { return Bool("rexnative_fsr", v); }, nullptr,
@@ -136,34 +147,64 @@ std::vector<Option> MakeOptions() {
                  return Assignments{{"rexnative_frame_latency", v}};
                },
                nullptr, "Frames begun but not shown yet: fewer respond sooner, more are steadier."});
-  // NVIDIA DLSS (upscaler.h, dlss.h) and DLSS 5 neural rendering (neural.h). They work on the
-  // scene surface game_layer.h names (kSceneSurface), which has to be measured for each game
-  // (python -m rexnative scene); without it the upscaler never sees the scene.
-  o.push_back({"DLSS", "upscaler", "DLSS / FSR upscaler", on_off, false,
+  // The scene's upscaler (upscaler.h): NVIDIA DLSS (dlss.h) or AMD FSR 4 / 3.1, the mode, and
+  // FSR frame generation (frame_generation.h). They work on the scene surface (game_layer.h's
+  // kSceneSurface, or learned at run time: scene.h). The live ones make the upscaler again at
+  // the next frame (RequestAntialiasing); the page's first line says what runs (UpscalerStatus).
+  const auto remake = [] {
+    if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
+  };
+  o.push_back({"Upscaler", "upscaler", "Upscaler", on_off, false,
                [] { return Flag("rexnative_upscaler"); },
-               [](const std::string& v) { return Bool("rexnative_upscaler", v); },
-               [] {
-                 if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
+               [](const std::string& v) { return Bool("rexnative_upscaler", v); }, remake,
+               "Temporal anti-aliasing and upscaling of the 3D scene, in place of its MSAA."});
+  o.push_back({"Upscaler", "upscaler_backend", "Upscaler type",
+               {{"Automatic", "auto"}, {"NVIDIA DLSS", "dlss"}, {"AMD FSR", "fsr"}}, false,
+               [] { return Flag("rexnative_upscaler_backend"); },
+               [](const std::string& v) {
+                 return Assignments{{"rexnative_upscaler_backend", v, true}};
                },
-               "Temporal anti-aliasing and upscaling of the 3D scene: NVIDIA DLSS on an RTX GPU, "
-               "AMD FSR otherwise. Needs the game's scene surface in game_layer.h."});
-  o.push_back({"DLSS", "dlss_mode", "DLSS mode",
-               {{"DLAA (native)", "dlaa"},
+               remake,
+               "Automatic: DLSS on an NVIDIA RTX GPU, FSR on the others (the Steam Deck, AMD, "
+               "Intel). FSR runs on every GPU."});
+  o.push_back({"Upscaler", "fsr_version", "FSR version",
+               {{"Newest", "auto"}, {"FSR 4", "4"}, {"FSR 3.1", "3"}}, false,
+               [] { return Flag("rexnative_fsr_version"); },
+               [](const std::string& v) { return Assignments{{"rexnative_fsr_version", v, true}}; },
+               remake,
+               "FSR 4 (AI, sharper) needs an AMD GPU and AMD's driver library (on the Steam Deck, "
+               "GE-Proton fetches it); FSR 3.1 is lighter and runs everywhere."});
+  o.push_back({"Upscaler", "upscaler_mode", "Mode",
+               {{"Native AA (DLAA)", "native"},
                 {"Quality", "quality"},
                 {"Balanced", "balanced"},
                 {"Performance", "performance"},
                 {"Ultra performance", "ultra"}},
-               true, [] { return Flag("rexnative_dlss_mode"); },
-               [](const std::string& v) { return Assignments{{"rexnative_dlss_mode", v, true}}; },
+               false,
+               [] {
+                 // --rexnative_upscaler_mode, or the older --rexnative_dlss_mode it falls back on.
+                 std::string m = Flag("rexnative_upscaler_mode");
+                 if (m.empty()) m = Flag("rexnative_dlss_mode");
+                 return m == "dlaa" || m.empty() ? std::string("native") : m;
+               },
+               [](const std::string& v) {
+                 return Assignments{{"rexnative_upscaler_mode", v, true}};
+               },
+               remake,
+               "Native AA keeps the game's resolution and only anti-aliases; the others render "
+               "smaller (faster) and rebuild the picture."});
+  o.push_back({"Upscaler", "frame_generation", "Frame generation (FSR)", on_off, true,
+               [] { return Flag("rexnative_frame_generation"); },
+               [](const std::string& v) { return Bool("rexnative_frame_generation", v); },
                nullptr,
-               "DLAA keeps the game's resolution and only anti-aliases; the others render smaller "
-               "and let DLSS rebuild the picture."});
-  o.push_back({"DLSS", "dlss5", "DLSS 5 neural rendering", on_off, false,
+               "AMD FSR frame generation: a generated frame before each of the game's, for twice "
+               "the frames shown. Needs the upscaler; best from 30 fps up."});
+  o.push_back({"DLSS 5", "dlss5", "DLSS 5 neural rendering", on_off, false,
                [] { return Flag("rexnative_dlss5"); },
                [](const std::string& v) { return Bool("rexnative_dlss5", v); }, nullptr,
                "NVIDIA DLSS 5 on the scene, with the upscaler on: an RTX GPU, its driver and "
                "nvngx_dlssnr.dll beside the executable."});
-  o.push_back({"DLSS", "dlss5_intensity", "DLSS 5 intensity",
+  o.push_back({"DLSS 5", "dlss5_intensity", "DLSS 5 intensity",
                {{"Low", "0.5"}, {"Medium", "0.75"}, {"Full", "1"}, {"Strong", "1.25"}}, false,
                [] {
                  return Nearest(Find("dlss5_intensity"),
@@ -565,6 +606,15 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
     if (o.page != page) {
       page = o.page;
       ImGui::SeparatorText(std::string(page).c_str());
+      if (page == "Upscaler") {
+        // What runs now: the upscaler and FSR version the GPU took, its mode and sizes.
+        const std::string status = NativeRenderer::UpscalerStatus();
+        ImGui::TextDisabled("Now: %s",
+                            !status.empty() ? status.c_str()
+                            : Flag("rexnative_upscaler") == "true"
+                                ? "waiting for the game's 3D scene, or unavailable (see the log)"
+                                : "off");
+      }
     }
     if (first && appearing) ImGui::SetKeyboardFocusHere();
     first = false;

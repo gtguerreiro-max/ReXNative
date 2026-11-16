@@ -396,6 +396,8 @@ uint32_t FrameHeight() {
   return height;
 }
 
+std::string NativeRenderer::UpscalerStatus() { return Upscaler::Status(); }
+
 NativeRenderer* NativeRenderer::Get() {
   if (!(REXCVAR_GET(rexnative_beside_xenos) || REXCVAR_GET(rexnative)) || g_failed) return nullptr;
   // Never destroyed: the process exits with the game, and the guest thread may still be in a
@@ -621,6 +623,7 @@ void NativeRenderer::SwitchUpscaler(bool on) {
     if (!upscaler_->Initialize(device_->device())) {
       REXLOG_ERROR("ReXNative: upscaler unavailable; the scene keeps its MSAA");
       upscaler_.reset();
+      Upscaler::NoteOn(false);
       return;
     }
     upscaler_->set_frame_generation(frame_generation_.get());
@@ -629,6 +632,7 @@ void NativeRenderer::SwitchUpscaler(bool on) {
     upscaler_->set_neural(neural_.get());
   }
   upscaler_on_ = on;
+  Upscaler::NoteOn(on);
   // The scene's targets are keyed by their sample count: the next draws make the other ones,
   // and the unused ones age out (RenderTargets::BeginFrame).
   // The scene (scene.h); none yet when it is learned at run time and was not seen yet: the

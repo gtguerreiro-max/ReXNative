@@ -159,6 +159,9 @@ class NativeRenderer {
   void RequestAntialiasing() { antialiasing_requested_.store(true, std::memory_order_relaxed); }
   // --rexnative_present_interval changed: taken at the start of the next frame.
   void RequestFrameRate() { frame_rate_requested_.store(true, std::memory_order_relaxed); }
+  // What the upscaler runs (Upscaler::Status): "AMD FSR 4.1.2 Quality, 853x480 to 1280x720";
+  // empty while it is off or unavailable.
+  static std::string UpscalerStatus();
   // Primary mode: the native renderer (true) or the Xenos plugin draws from the next Swap on,
   // as the renderer switch does.
   void RequestRenderer(bool native) {

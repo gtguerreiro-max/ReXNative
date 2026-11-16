@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
 
 namespace rexnative {
@@ -46,6 +47,10 @@ class Upscaler {
  public:
   // Whether --rexnative_upscaler asks for the upscaler.
   static bool Requested();
+  // What the upscaler runs, for the settings menu (any thread): "AMD FSR 4.1.2 Quality, 853x480
+  // to 1280x720"; empty while it is off or failed. NoteOn: NativeRenderer::SwitchUpscaler's.
+  static std::string Status();
+  static void NoteOn(bool on);
 
   // The scene surface, from its RB_SURFACE_INFO (pitch and MSAA; the guest's value whatever the
   // host targets' sample count), and its size: game_layer.h's constants, or learned at run time
@@ -187,6 +192,9 @@ class Upscaler {
   // The upscaling context, with debug visualization and the watermark or not; false (logged) on
   // failure.
   bool CreateContext(bool debug);
+  // The FidelityFX loader's id of the newest FSR 4.x or 3.x for this GPU when
+  // --rexnative_fsr_version asks for one; 0 for the newest of all.
+  uint64_t FsrVersionId() const;
   bool CreateTargets();
   // The commands recorded next belong to the upscaling pass `phase` (with GPU timing).
   void Time(CommandStream* list, GpuTimer::UpscalePhase phase);

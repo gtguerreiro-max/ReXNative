@@ -23,11 +23,16 @@ calls into the XDK's Direct3D library (draws, clears, resolves, Swap), reads the
 D3D device keeps, and draws each call with D3D12 directly. No EDRAM emulation, and room for what
 the console never had:
 
-- **NVIDIA DLAA, DLSS Super Resolution and DLSS 5** neural rendering, or AMD FSR, on the 3D scene;
-- MSAA up to 8x, anisotropic filtering, FSR 1 screen scaling, frame generation, HDR10 output;
+- **NVIDIA DLAA, DLSS Super Resolution and DLSS 5** neural rendering, or **AMD FSR 4 / 3.1**, on
+  the 3D scene (DLSS on an RTX GPU, FSR on the others, the Steam Deck among them);
+- MSAA up to 8x, anisotropic filtering, FSR 1 screen scaling, FSR frame generation, HDR10 output;
 - frame pacing on the display, and a **settings HUD** over the running game (F1, or Back + Start
   on a pad: ReXNative hooks the game's XInputGetState, which the tool finds, and keeps the chord
-  from the game) that saves into the game's configuration file;
+  from the game) that saves into the game's configuration file. Its Upscaler page switches the
+  upscaler on, its type (automatic, DLSS or FSR), the FSR version (the newest, FSR 4 or 3.1) and
+  the mode (native anti-aliasing to ultra performance) while the game runs, says which one runs
+  ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"), and turns frame generation on for the next
+  start;
 - runs on Windows and on the Steam Deck (under Proton, through vkd3d-proton).
 
 The renderer comes from [pgr4-native](https://github.com/shaunsingh/pgr4-native) (Project Gotham

@@ -16,10 +16,16 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <climits>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <format>
+#include <mutex>
 #include <string>
+#include <vector>
 
 REXCVAR_DEFINE_BOOL(rexnative_upscaler, false, "ReXNative",
                     "Render the 3D scene without MSAA and antialias or upscale it with NVIDIA "
@@ -29,6 +35,11 @@ REXCVAR_DEFINE_STRING(rexnative_upscaler_backend, "auto", "ReXNative",
                       "auto (NVIDIA DLSS where the GPU and nvngx_dlss.dll have it, AMD FSR "
                       "otherwise: FSR 4 on the GPUs that run it, FSR 3.1 elsewhere, the Steam "
                       "Deck among them), dlss or fsr");
+REXCVAR_DEFINE_STRING(rexnative_fsr_version, "auto", "ReXNative",
+                      "The FSR the FSR backend runs: auto (the newest this GPU has: FSR 4 on "
+                      "AMD's GPUs with its driver library, the Steam Deck's under GE-Proton's "
+                      "PROTON_FSR4_UPGRADE among them, FSR 3.1 elsewhere), 4 or 3 (the newest "
+                      "FSR 4.x or 3.x the FidelityFX loader lists for this GPU)");
 REXCVAR_DEFINE_STRING(rexnative_upscaler_mode, "", "ReXNative",
                       "native (anti-aliasing at the game's resolution: DLAA, FSR Native AA), "
                       "quality, balanced, performance or ultra (from a smaller render size); "
@@ -137,9 +148,69 @@ const char* FsrModeName(Dlss::Mode mode) {
   }
 }
 
+// What runs (Upscaler::Status), for the settings menu on the UI thread.
+std::mutex g_status_mutex;
+std::string g_status;
+std::atomic<bool> g_status_on{false};
+
+void SetStatus(std::string status) {
+  std::lock_guard lock(g_status_mutex);
+  g_status = std::move(status);
+}
+
+// "4.1.2" as {4, 1, 2}; what is not a number counts as 0.
+std::array<int, 3> VersionNumbers(const char* name) {
+  std::array<int, 3> v = {};
+  for (size_t i = 0; i < v.size() && name && *name; ++i) {
+    v[i] = std::atoi(name);
+    while (*name && *name != '.') ++name;
+    if (*name == '.') ++name;
+  }
+  return v;
+}
+
 }  // namespace
 
 bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler); }
+
+std::string Upscaler::Status() {
+  if (!g_status_on.load(std::memory_order_relaxed)) return {};
+  std::lock_guard lock(g_status_mutex);
+  return g_status;
+}
+
+void Upscaler::NoteOn(bool on) { g_status_on.store(on, std::memory_order_relaxed); }
+
+uint64_t Upscaler::FsrVersionId() const {
+  const std::string want = REXCVAR_GET(rexnative_fsr_version);
+  if (want != "3" && want != "4") return 0;
+  ffxQueryDescGetVersions q = {};
+  q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+  q.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+  q.device = device_;
+  uint64_t count = 0;
+  q.outputCount = &count;
+  if (api_->query(nullptr, &q.header) != FFX_API_RETURN_OK || !count) return 0;
+  std::vector<uint64_t> ids(count);
+  std::vector<const char*> names(count);
+  q.versionIds = ids.data();
+  q.versionNames = names.data();
+  if (api_->query(nullptr, &q.header) != FFX_API_RETURN_OK) return 0;
+  uint64_t id = 0;
+  std::array<int, 3> best = {};
+  for (uint64_t i = 0; i < count && i < ids.size(); ++i) {
+    const std::array<int, 3> v = VersionNumbers(names[i]);
+    if (v[0] == want[0] - '0' && (!id || v > best)) {
+      id = ids[i];
+      best = v;
+    }
+  }
+  if (!id)
+    REXLOG_WARN("ReXNative upscaler: no FSR {} for this GPU (--rexnative_fsr_version); the "
+                "newest it has",
+                want);
+  return id;
+}
 
 const char* Upscaler::BackendName() const {
   return backend_ == Backend::kDlss ? "DLSS" : "FSR";
@@ -169,9 +240,12 @@ bool Upscaler::Initialize(ID3D12Device* device) {
     if (!api_) return false;
   }
   if (!SetLevel(DynamicResolution::kSteps) || !CreateContext(false)) return false;
-  if (backend_ == Backend::kDlss)
+  if (backend_ == Backend::kDlss) {
     REXLOG_INFO("ReXNative upscaler: {} from {}x{} to {}x{}", Dlss::Name(mode_), max_width_,
                 max_height_, OutputWidth(), OutputHeight());
+    SetStatus(std::format("NVIDIA {}, {}x{} to {}x{}", Dlss::Name(mode_), max_width_, max_height_,
+                          OutputWidth(), OutputHeight()));
+  }
   return CreateTargets() && CreateInputPass();
 }
 
@@ -281,9 +355,14 @@ bool Upscaler::CreateContext(bool debug) {
   version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
   version.header.pNext = &backend.header;
   version.version = FFX_UPSCALER_VERSION;
+  // --rexnative_fsr_version: FSR 4 or 3.1 in place of the newest the GPU runs.
+  ffxOverrideVersion override_version = {};
+  override_version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+  override_version.header.pNext = &version.header;
+  override_version.versionId = FsrVersionId();
   ffxCreateContextDescUpscale desc = {};
   desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-  desc.header.pNext = &version.header;
+  desc.header.pNext = override_version.versionId ? &override_version.header : &version.header;
   // What the game's scene is (SceneKind, from the last Upscale): an HDR scene is linear light in
   // a float target before the game's exposure; an 8-bit one is the game's final colors.
   desc.flags = (kind_.hdr ? FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE
@@ -313,6 +392,8 @@ bool Upscaler::CreateContext(bool debug) {
   REXLOG_INFO("ReXNative upscaler: {} {} from {}x{} to {}x{} ({}{})", name, FsrModeName(mode_),
               max_width_, max_height_, OutputWidth(), OutputHeight(),
               kind_.hdr ? "HDR" : "8-bit", kind_.depth_inverted ? ", reversed depth" : "");
+  SetStatus(std::format("AMD FSR {} {}, {}x{} to {}x{}", name, FsrModeName(mode_), max_width_,
+                        max_height_, OutputWidth(), OutputHeight()));
   return true;
 }
 
