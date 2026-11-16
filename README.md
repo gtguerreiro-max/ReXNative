@@ -287,10 +287,11 @@ Improving it a little at a time:
     Results on the PC (2026-11-16): Dungeons & Dragons: Chronicles of Mystara plays (menus,
     chapter select, the first chapter, 60 FPS); Super Meat Boy plays (menus, the world map, level
     1-1); Jet Set Radio reaches its title screen and plays its story intro; Minecraft its menus
-    (a new world stays on its loading screen, the main thread busy); Double Dragon Neon its title
-    screen; Castlevania: Symphony of the Night
-    its menu, with its text (4_4_4_4 and 1_5_5_5 textures); Bionic Commando Rearmed its intro;
-    Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
+    (a new world stays on its loading screen, the main thread busy); Castlevania: Symphony of the
+    Night plays (its menu with its text, from the 4_4_4_4 and 1_5_5_5 textures, the name entry,
+    the prologue); Bionic Commando Rearmed reaches its mission map; Double Dragon Neon plays
+    its first mission with the stock renderer, but ReXNative draws only a strip of the street
+    and not the fighters (open); Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
     so there is nothing to compare with); 3D Ultra Minigolf runs past its start-up.
 
 No game files, generated code or data from the games are in this repository: you need your own

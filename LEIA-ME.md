@@ -275,9 +275,10 @@ Melhorar aos poucos:
     escolha de capítulo, o primeiro capítulo, 60 FPS); Super Meat Boy joga-se (menus, o mapa, o
     nível 1-1); Jet Set Radio chega ao ecrã de título e mostra a introdução da história;
     Minecraft aos menus (um mundo novo fica no ecrã de carregamento, com a thread principal
-    ocupada); Double Dragon Neon ao ecrã de título;
-    Castlevania: Symphony of the Night ao menu, com o texto (texturas 4_4_4_4 e 1_5_5_5); Bionic
-    Commando Rearmed à introdução; Perfect Dark ao ecrã de título (as texturas parecem riscadas;
+    ocupada); Castlevania: Symphony of the Night joga-se (o menu com o texto, das texturas
+    4_4_4_4 e 1_5_5_5, o nome, o prólogo); Bionic Commando Rearmed chega ao mapa das missões;
+    Double Dragon Neon joga a primeira missão com o renderer original, mas o ReXNative só desenha
+    uma faixa da rua e não os lutadores (em aberto); Perfect Dark ao ecrã de título (as texturas parecem riscadas;
     o renderer original não arranca, por isso não há com que comparar); 3D Ultra Minigolf passa
     do arranque.
 
