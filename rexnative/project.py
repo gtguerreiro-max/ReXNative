@@ -445,9 +445,17 @@ def _grow_functions(work, hints, sites, log, name):
         nxt = [x for x in starts if x > label]
         if f is None or f > label or not nxt:
             continue
-        size = nxt[0] - f
-        if hints.get(f, 0) >= size:
+        # The next start past the label that is not itself one of the hints the span covers (as
+        # _merge_split_functions does, the hints inside the span go: they were pieces of it).
+        inside = [h for h in hints if f < h <= label]
+        nxt = [x for x in nxt if x not in hints or x > label]
+        if not nxt:
             continue
+        size = nxt[0] - f
+        if hints.get(f, 0) >= size and not inside:
+            continue
+        for h in inside:
+            del hints[h]
         hints[f] = size
         grown.append((f, nxt[0]))
     if grown:

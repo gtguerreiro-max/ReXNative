@@ -222,6 +222,10 @@ def _write_manifest(work, name):
     if table:
         lines.append('function_table_base = 0x%08X' % table)
     hints = _hints(work)
+    # A hint inside a sized one (a function grown over its pieces) would overlap it, which
+    # codegen refuses ("Overlapping boundaries"): the piece goes.
+    spans = [(a, a + s) for a, s in hints.items() if s]
+    hints = {a: s for a, s in hints.items() if not any(lo < a < hi for lo, hi in spans)}
     if hints:
         lines.append('[entrypoint.functions]')
         for a, s in sorted(hints.items()):
@@ -230,6 +234,37 @@ def _write_manifest(work, name):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     return path
+
+
+# A function's first instruction that only an epilogue has: the stack pointer back from the frame
+# pointer or the stack, the return address reloaded, r31 restored.
+EPILOGUE_START = re.compile(r'^\t// (addi r1,r31,\d+|addi r1,r1,\d+|lwz r1,0\(r1\)|'
+                            r'lwz r12,-8\(r1\)|ld r31,-16\(r1\))\s*$')
+
+
+def _epilogue_starts(work, hints):
+    """Hints whose generated function begins with an epilogue: the tail of the function before
+    it, which branches there, split off. Called as a function of its own, it restores the stack
+    from a frame pointer that is the caller's local (ReXGlue v0.11 keeps non-volatile registers
+    as locals): Bionic Commando Rearmed's 821D36E0, the epilogue of 821D36A0, crashed it at
+    start-up."""
+    gen = os.path.join(work, 'generated', 'default')
+    found = set()
+    if not hints or not os.path.isdir(gen):
+        return found
+    for name in os.listdir(gen):
+        if not name.endswith('.cpp'):
+            continue
+        cur = None
+        with open(os.path.join(gen, name), encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if line.startswith('DEFINE_REX_FUNC(sub_'):
+                    cur = int(line[20:28], 16)
+                elif cur is not None and line.startswith('\t// '):
+                    if cur in hints and EPILOGUE_START.match(line):
+                        found.add(cur)
+                    cur = None
+    return found
 
 
 def codegen(work, name, rexglue, max_rounds, log):
@@ -289,6 +324,19 @@ def codegen(work, name, rexglue, max_rounds, log):
             if not tails:
                 continue
         if r.returncode == 0 and not tails:
+            epilogues = _epilogue_starts(work, hints)
+            if epilogues:
+                for h in epilogues:
+                    del hints[h]
+                with open(os.path.join(work, 'not-starts.txt'), 'a', encoding='utf-8',
+                          newline='\n') as f:
+                    f.write(''.join('0x%08X\n' % h for h in sorted(epilogues)))
+                with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8',
+                          newline='\n') as f:
+                    f.write(''.join('0x%08X 0x%X\n' % (a, z) for a, z in sorted(hints.items())))
+                log('  codegen round %d: %d hints at an epilogue removed: %s' % (
+                    rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
+                continue
             open(done, 'w').write('round %d\n' % rnd)
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}
