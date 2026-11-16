@@ -319,6 +319,20 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
                 sites = [(f, int(n or m), int(a, 16))
                          for f, n, m, a in UNDECLARED_LABEL_AT.findall(text)]
                 raise LabelsMissing(labels, sites)
+            # A precompiled header made before the SDK's headers were installed again: clang
+            # refuses it rather than rebuilding it. It goes and the build runs again.
+            stale = sorted(set(STALE_PCH.findall(text)))
+            if stale and not getattr(build, '_pch_retry', False):
+                for pch in stale:
+                    if os.path.exists(pch):
+                        os.remove(pch)
+                log('%s: %d precompiled headers older than the SDK made again' % (name, len(stale)))
+                build._pch_retry = True
+                try:
+                    return build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs,
+                                 log)
+                finally:
+                    build._pch_retry = False
             imports = sorted(set(UNDEFINED_IMPORT.findall(text)))
             if imports and write_import_stubs(work, imports):
                 log('%s: %d imports the runtime lacks, as stubs: %s' % (
@@ -393,6 +407,7 @@ UNDECLARED_LABEL_AT = re.compile(
     r"^(\S.*?\.cpp)(?:\((\d+),\d+\)|:(\d+):\d+): error: use of undeclared label "
     r"'loc_([0-9A-F]{8})'", re.M)
 DEFINE_FUNC = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\)')
+STALE_PCH = re.compile(r"has been modified since the precompiled header '([^']+\.pch)'")
 
 
 class LabelsMissing(Exception):
@@ -413,6 +428,32 @@ def _function_at_line(path, line):
             if m:
                 found = int(m.group(1), 16)
     return found
+
+
+def _grow_functions(work, hints, sites, log, name):
+    """A branch to a label found not to be a function start (not-starts.txt: as a function it split
+    a loop): the function that branches there ends too early, codegen having taken its end from
+    pdata, and grows to the next known function start after the label. Minecraft's 82B09098
+    branches to 82B094E0 and 82B094E4: as hints they split it, without them they were labels of
+    no function, and the rounds went back and forth."""
+    from . import listing
+    tree = listing.load(os.path.join(work, 'generated', 'default'))
+    starts = sorted(set(tree.funcs) | set(hints))
+    grown = []
+    for path, line, label in sites:
+        f = _function_at_line(path, line)
+        nxt = [x for x in starts if x > label]
+        if f is None or f > label or not nxt:
+            continue
+        size = nxt[0] - f
+        if hints.get(f, 0) >= size:
+            continue
+        hints[f] = size
+        grown.append((f, nxt[0]))
+    if grown:
+        log('%s: %d functions grown over labels past their end: %s' % (
+            name, len(grown), ' '.join('%08X-%08X' % g for g in sorted(set(grown))[:8])))
+    return bool(grown)
 
 
 def _merge_split_functions(work, hints, sites, log, name):
@@ -448,10 +489,13 @@ def build_fixing(work, rexglue, build_args, jobs=0, rounds=10, log=print):
             return build(work, *build_args, jobs=jobs, log=log)
         except LabelsMissing as e:
             hints = prepare._hints(work)
-            new = [a for a in e.labels if a not in hints]
+            known_false = prepare.not_starts(work)
+            new = [a for a in e.labels if a not in hints and a not in known_false]
             split = [s for s in e.sites if s[2] in hints]
             joined = _merge_split_functions(work, hints, split, log, name) if split else False
-            if not new and not joined:
+            outside = [s for s in e.sites if s[2] in known_false and s[2] not in hints]
+            grown = _grow_functions(work, hints, outside, log, name) if outside else False
+            if not new and not joined and not grown:
                 raise SystemExit('%s: %s, already hints' % (name, e))
             if new:
                 log('%s: %d branch targets in other functions become functions: %s' % (
