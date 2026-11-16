@@ -271,17 +271,31 @@ Melhorar aos poucos:
     funciona (o Play do Double Dragon Neon escrevia na pilha de outra fibra). A app escreve
     `crash.txt` (pilha do anfitrião; o `build/<nome>.map` dá os nomes das funções do jogo).
 
-    Resultados no PC (2026-11-16): Dungeons & Dragons: Chronicles of Mystara joga-se (menus,
-    escolha de capítulo, o primeiro capítulo, 60 FPS); Super Meat Boy joga-se (menus, o mapa, o
-    nível 1-1); Jet Set Radio chega ao ecrã de título e mostra a introdução da história;
-    Minecraft aos menus (um mundo novo fica no ecrã de carregamento, com a thread principal
-    ocupada); Castlevania: Symphony of the Night joga-se (o menu com o texto, das texturas
-    4_4_4_4 e 1_5_5_5, o nome, o prólogo); Bionic Commando Rearmed chega ao mapa das missões;
-    Double Dragon Neon joga a primeira missão (as fibras no anfitrião; a cena são quatro tiles
-    predicados lado a lado, 480 x 1080 cada de 1920 x 1080, por isso os alvos no anfitrião têm a
-    largura até onde os tiles chegam, não o pitch da EDRAM); Perfect Dark ao ecrã de título (as texturas parecem riscadas;
-    o renderer original não arranca, por isso não há com que comparar); 3D Ultra Minigolf passa
-    do arranque.
+    Title updates: `prepare --title-update` instala antes do codegen a mais recente que a
+    XboxUnity lista para o título, media id e versão do jogo (`rexnative/title_update.py`;
+    `rexnative title-update <work>` lista-as sem descarregar). O pacote é verificado contra a
+    lista (o content id, o SHA-1 do cabeçalho, e cada bloco da árvore de hashes), os patches XEX
+    ficam ao lado do `default.xex` (o loader do ReXGlue aplica o `default.xexp` no codegen e no
+    jogo, por isso o código é recompilado da imagem com o patch), o resto é montado como
+    `update:` (`run/title-update`), e o que vinha da imagem antiga é feito de novo. Seis dos
+    nove jogos têm uma (o Minecraft até à TU 80); o Super Meat Boy joga-se com a TU 1.
+
+    `prepare --title-update --project` faz tudo isto para um jogo novo, do arquivo ao jogo
+    compilado que corre (a camada é feita de novo depois de encontradas as funções).
+
+    Resultados no PC (2026-11-16, com as title updates mais recentes): Dungeons & Dragons:
+    Chronicles of Mystara joga-se (menus, escolha de capítulo, o primeiro capítulo, 60 FPS);
+    Super Meat Boy joga-se (TU 1: menus, o mapa, o nível 1-1); Jet Set Radio joga-se (TU 1:
+    menus, a introdução, o primeiro nível); Minecraft joga-se (TU 80: os menus, os mundos
+    temáticos da atualização a partir do update:, um mundo novo; a versão base ficava no
+    carregamento do mundo); Castlevania: Symphony of the Night joga-se (TU 2: o menu com o texto,
+    das texturas 4_4_4_4 e 1_5_5_5, o nome, o prólogo); Bionic Commando Rearmed chega ao mapa
+    das missões (TU 2: menus); Double Dragon Neon joga a primeira missão (as fibras no
+    anfitrião; a cena são quatro tiles predicados lado a lado, 480 x 1080 cada de 1920 x 1080,
+    por isso os alvos no anfitrião têm a largura até onde os tiles chegam, não o pitch da
+    EDRAM); Perfect Dark chega aos níveis (TU 3) mas desenha-os partidos (triângulos esticados,
+    um corte a meio do ecrã; o renderer original não arranca, por isso não há com que
+    comparar); 3D Ultra Minigolf passa do arranque.
 
 Não há neste repositório ficheiros dos jogos, código gerado nem dados dos jogos: precisas da tua
 cópia de cada jogo e do seu projecto ReXGlue.

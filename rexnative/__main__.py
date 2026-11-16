@@ -145,12 +145,39 @@ def cmd_prepare(a):
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)
     for s in sources:
-        prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
-                        title_update=a.title_update)
+        st = prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
+                             title_update=a.title_update)
+        if a.project and st.get('ok'):
+            _project_chain(a, s, os.path.join(a.work, st['name']), rexglue, refs)
     text = prepare.survey(a.work)
     with open(os.path.join(a.work, 'survey.md'), 'w', encoding='utf-8', newline='\n') as f:
         f.write(text)
     print(text)
+
+
+def _project_chain(a, source, work, rexglue, refs):
+    """prepare --project: a prepared game to a built one that runs. The project is written and
+    built; the function starts, jump tables, setjmp / longjmp and XAPI fibers are found in the
+    loaded image; the layer is made again over the functions codegen now knows (a layer made
+    right after the first codegen misses D3D functions whose starts it did not know yet) and the
+    game built again if it changed; then --discover runs."""
+    from . import prepare, project
+    args = (a.sdk_install, a.sdk_src, a.fidelityfx, a.dlss_sdk, a.dlss_nr)
+    project.write(work)
+    project.build_fixing(work, rexglue, args, jobs=a.jobs)
+    project.find_functions(work, rexglue, args)
+    layer = os.path.join(work, 'layer', 'game_layer.h')
+
+    def text(p):
+        return open(p, encoding='utf-8').read() if os.path.exists(p) else ''
+
+    before = text(layer)
+    prepare.prepare(source, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
+    if text(layer) != before:
+        print('%s: the layer changed over the functions found: built again' % os.path.basename(work))
+        project.build_fixing(work, rexglue, args, jobs=a.jobs)
+    if a.discover:
+        project.discover(work, rexglue, args, rounds=a.discover, seconds=a.discover_seconds)
 
 
 def cmd_project(a):
@@ -262,6 +289,20 @@ def main(argv=None):
                    help='download the newest title update XboxUnity lists for each game and '
                         'install it before codegen (the code is recompiled from the patched '
                         'image); see `rexnative title-update`')
+    s.add_argument('--project', action='store_true',
+                   help='then make each game a built project that runs, as `rexnative project '
+                        '--build --find-functions`, the layer made again over the functions found, '
+                        'and --discover N')
+    s.add_argument('--discover', type=int, default=12, metavar='N',
+                   help='with --project: runs adding the functions the game reports missing')
+    s.add_argument('--discover-seconds', type=int, default=45)
+    s.add_argument('--jobs', type=int, default=0)
+    penv = os.environ.get
+    s.add_argument('--sdk-install', default=penv('REXNATIVE_SDK_INSTALL'))
+    s.add_argument('--sdk-src', default=penv('REXNATIVE_SDK_SRC'))
+    s.add_argument('--fidelityfx', default=penv('REXNATIVE_FIDELITYFX'))
+    s.add_argument('--dlss-sdk', default=penv('REXNATIVE_DLSS_SDK'))
+    s.add_argument('--dlss-nr', default=penv('REXNATIVE_DLSS_NR'))
     s.set_defaults(fn=cmd_prepare)
     s = sub.add_parser('title-update', parents=[lang_opt],
                        help="the title updates XboxUnity lists for games in prepare's --work, "

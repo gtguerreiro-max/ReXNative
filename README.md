@@ -284,16 +284,31 @@ Improving it a little at a time:
     Dragon Neon's Play wrote into another fiber's stack). The app writes `crash.txt` (host stack;
     `build/<name>.map` names the guest functions).
 
-    Results on the PC (2026-11-16): Dungeons & Dragons: Chronicles of Mystara plays (menus,
-    chapter select, the first chapter, 60 FPS); Super Meat Boy plays (menus, the world map, level
-    1-1); Jet Set Radio reaches its title screen and plays its story intro; Minecraft its menus
-    (a new world stays on its loading screen, the main thread busy); Castlevania: Symphony of the
-    Night plays (its menu with its text, from the 4_4_4_4 and 1_5_5_5 textures, the name entry,
-    the prologue); Bionic Commando Rearmed reaches its mission map; Double Dragon Neon plays
-    its first mission (its fibers on the host; its scene is four predicated tiles side by side,
-    480 x 1080 each of 1920 x 1080, so host targets are as wide as the tiles reach, not the
-    EDRAM pitch); Perfect Dark its title screen (its textures look streaky; the stock renderer does not start,
-    so there is nothing to compare with); 3D Ultra Minigolf runs past its start-up.
+    Title updates: `prepare --title-update` installs the newest one XboxUnity lists for the
+    game's title, media id and version before codegen (`rexnative/title_update.py`; `rexnative
+    title-update <work>` lists them without downloading). The package is checked against the
+    listing (its content id, the SHA-1 of its header, and every block of its hash tree), its XEX
+    patches go beside `default.xex` (ReXGlue's loader applies `default.xexp` for codegen as for
+    the game, so the code is recompiled from the patched image), the rest of it is mounted as
+    `update:` (`run/title-update`), and what came from the old image is made again. Six of the
+    nine games have one (Minecraft up to TU 80); Super Meat Boy plays with its TU 1.
+
+    `prepare --title-update --project` runs all of it for a new game, from its archive to a
+    built game that runs (the layer made again once the functions are found).
+
+    Results on the PC (2026-11-16, with the newest title updates): Dungeons & Dragons:
+    Chronicles of Mystara plays (menus, chapter select, the first chapter, 60 FPS); Super Meat
+    Boy plays (TU 1: menus, the world map, level 1-1); Jet Set Radio plays (TU 1: menus, the
+    story intro, the first level); Minecraft plays (TU 80: its menus, the update's world
+    templates from update:, a new world; the base version stayed on the world's loading
+    screen); Castlevania: Symphony of the Night plays (TU 2: its menu with its text, from the
+    4_4_4_4 and 1_5_5_5 textures, the name entry, the prologue); Bionic Commando Rearmed reaches
+    its mission map (TU 2: menus); Double Dragon Neon plays its first mission (its fibers on the
+    host; its scene is four predicated tiles side by side, 480 x 1080 each of 1920 x 1080, so
+    host targets are as wide as the tiles reach, not the EDRAM pitch); Perfect Dark reaches its
+    levels (TU 3) but draws them broken (stretched triangles, a seam across the screen; the stock
+    renderer does not start, so there is nothing to compare with); 3D Ultra Minigolf runs past
+    its start-up.
 
 No game files, generated code or data from the games are in this repository: you need your own
 copy of each game and its ReXGlue project.
