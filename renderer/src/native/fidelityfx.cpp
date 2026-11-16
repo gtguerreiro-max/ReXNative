@@ -63,8 +63,13 @@ bool CameraFromClipRows(const float* m, FfxCamera& out) {
   const float ex = z[0] - a * w[0], ey = z[1] - a * w[1], ez = z[2] - a * w[2];
   const float scale = std::max(std::abs(a), 1e-4f) * std::sqrt(wn2);
   if (ex * ex + ey * ey + ez * ez > 1e-6f * scale * scale) return false;
-  const float near_plane = b / (1.0f - a), far_plane = -b / a;
-  if (!(near_plane > 0.0f && near_plane <= 1.0f && far_plane >= 100.0f)) return false;
+  // Inverted depth (z 1 at the near plane, 0 at the far: PGR4) has a < 0; the usual depth (0 at
+  // the near plane, 1 at the far: Jet Set Radio) a > 1.
+  const bool inverted = a < 0.0f;
+  const float near_plane = inverted ? b / (1.0f - a) : -b / a;
+  const float far_plane = inverted ? -b / a : b / (1.0f - a);
+  if (!(near_plane > 0.0f && near_plane <= 50.0f && far_plane >= 20.0f * near_plane))
+    return false;
   const float fy = std::sqrt((y[0] * y[0] + y[1] * y[1] + y[2] * y[2]) / wn2);
   const float fx = std::sqrt((x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) / wn2);
   const float fov_y = 2.0f * std::atan(1.0f / fy);

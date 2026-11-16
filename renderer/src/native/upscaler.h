@@ -91,6 +91,9 @@ class Upscaler {
     last_ns_ = 0;
     if (dynamic_) dynamic_->Restart();
   }
+  // A camera cut this frame (NativeRenderer::FindCamera): the upscaling and the frame generation
+  // start over rather than blend the frames before it, which show another view.
+  void NoteCameraCut() { reset_ = true; }
   // The upscaler running: NVIDIA DLSS / DLAA (dlss.h) where the GPU and nvngx_dlss.dll have it,
   // AMD FSR through the FidelityFX API otherwise (FSR 4 on the GPUs that run it, FSR 3.1
   // elsewhere, the Steam Deck among them), or as --rexnative_upscaler_backend asks.

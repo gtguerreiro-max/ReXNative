@@ -34,6 +34,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <bit>
 #include <condition_variable>
@@ -1105,8 +1106,34 @@ void NativeRenderer::FindCamera(const DrawState& state) {
   float m[16];
   for (uint32_t v = 0; v + 4 <= 256; v += 4) {
     for (uint32_t i = 0; i < 16; ++i) m[i] = std::bit_cast<float>(c[4 * v + i]);
-    if (!CameraFromClipRows(m, camera_)) continue;
+    if (!CameraFromClipRows(m, camera_)) {
+      // Or kept as columns (Jet Set Radio's vertex shaders): the transpose's rows.
+      float t[16];
+      for (uint32_t i = 0; i < 16; ++i) t[i] = m[(i & 3) * 4 + (i >> 2)];
+      if (!CameraFromClipRows(t, camera_)) continue;
+      std::copy(t, t + 16, m);
+    }
     camera_scan_ = 0;
+    // A camera cut: the view turned further than a camera turns in one frame (25 degrees: a
+    // fast turn at 30 FPS is a few). The upscaler and the frame generation start over, as
+    // FidelityFX asks for a cut, instead of blending the frames of the view before it.
+    const float wl = std::sqrt(m[12] * m[12] + m[13] * m[13] + m[14] * m[14]);
+    if (wl > 0.0f) {
+      const float d[3] = {m[12] / wl, m[13] / wl, m[14] / wl};
+      constexpr float kCutCos = 0.9063f;  // cos(25 degrees)
+      if (camera_frame_ + 1 == frame_index_ &&
+          d[0] * camera_dir_[0] + d[1] * camera_dir_[1] + d[2] * camera_dir_[2] < kCutCos) {
+        if (Upscaler* u = upscaler()) u->NoteCameraCut();
+        if (++camera_cuts_ <= 8)
+          REXLOG_INFO("ReXNative: camera cut at frame {} (the view turned by {:.0f} degrees)",
+                      frame_index_,
+                      std::acos(std::clamp(d[0] * camera_dir_[0] + d[1] * camera_dir_[1] +
+                                               d[2] * camera_dir_[2],
+                                           -1.0f, 1.0f)) * 57.2958f);
+      }
+      std::copy(d, d + 3, camera_dir_);
+      camera_frame_ = frame_index_;
+    }
     if (!camera_logged_) {
       camera_logged_ = true;
       REXLOG_INFO(

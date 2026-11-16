@@ -279,6 +279,12 @@ class NativeRenderer {
   FfxCamera camera_;
   uint32_t camera_scan_ = 0;  // this frame's scene depth draws still to scan for it
   bool camera_logged_ = false;
+  // Camera cuts: the view direction (the clip transform's w row, normalized) of the last frame
+  // the camera was found in, and that frame; a turn of more than kCutCos between two frames in a
+  // row is a cut (FindCamera).
+  float camera_dir_[3] = {};
+  uint64_t camera_frame_ = 0;
+  uint32_t camera_cuts_ = 0;
   // Primary mode with --rexnative_frame_latency > 0, or observing only with --rexnative_csv.
   std::unique_ptr<FramePacer> pacer_;
   GpuTimer* gpu_timer_ = nullptr;  // device_'s, with --rexnative_gpu_timing
