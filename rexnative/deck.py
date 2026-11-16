@@ -63,7 +63,9 @@ def toml_set(text, section, key, value):
         if re.match(r'\s*%s\s*=' % re.escape(key), lines[i]):
             lines[i] = '%s = %s' % (key, value)
             return '\n'.join(lines) + '\n'
-    while end > head + 1 and not lines[end - 1].strip():
+    # Before the blank lines and the comment that open the next section (the comment is the next
+    # section's: Orcs Must Die!'s ui.resolution went under "# The full game's license").
+    while end > head + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith('#')):
         end -= 1
     lines.insert(end, '%s = %s' % (key, value))
     return '\n'.join(lines) + '\n'

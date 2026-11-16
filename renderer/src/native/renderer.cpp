@@ -1035,6 +1035,20 @@ bool NativeRenderer::AutoHandOverDue() {
   const uint32_t draws = std::exchange(frame_draw_calls_, 0);
   const int32_t frames = REXCVAR_GET(rexnative_auto_handover);
   if (frames <= 0 || !primary_ || auto_off_) return false;
+  // Under Wine (the Steam Deck's Proton) the window does not change hands: once ReXNative's
+  // swap chain was released, the Xenos driver's Present waited in vkd3d-proton for good and its
+  // GPU thread with it (Orcs Must Die! black at its title). There the game's setting picks one
+  // renderer for the whole run (<work>/deck.toml).
+  static const bool wine = [] {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll && GetProcAddress(ntdll, "wine_get_version");
+  }();
+  if (wine) {
+    auto_off_ = true;
+    REXLOG_WARN("ReXNative: rexnative.auto_handover off under Wine (the window cannot change "
+                "hands under vkd3d-proton)");
+    return false;
+  }
   idle_swaps_ = draws <= 1 ? idle_swaps_ + 1 : 0;
   if (idle_swaps_ < uint32_t(frames)) return false;
   idle_swaps_ = 0;

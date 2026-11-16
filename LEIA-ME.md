@@ -60,25 +60,26 @@ deixa um executável compilado que corre.
 |---|---|---|
 | From Dust | joga-se: menus, níveis, HUD, 60 FPS | 60 FPS ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
 | Iron Brigade | joga-se: a introdução e o vídeo, a primeira missão com o cenário | os seus 30 FPS ([IronBrigadeRecomp](https://github.com/gtguerreiro-max/IronBrigadeRecomp)) |
-| Jet Set Radio (TU 1) | joga-se: menus, a introdução da história, o primeiro nível | ainda não testado |
-| Dungeons & Dragons: Chronicles of Mystara | joga-se: menus, escolha de capítulo, o primeiro capítulo, 60 FPS | ainda não testado |
-| Super Meat Boy (TU 1) | joga-se: menus, o mapa do mundo, o nível 1-1 | ainda não testado |
-| Minecraft: Xbox 360 Edition (TU 80) | joga-se: menus, os modelos de mundo do update, um mundo novo | ainda não testado |
-| Castlevania: Symphony of the Night (TU 2) | joga-se: o menu com o texto, o nome, o prólogo | ainda não testado |
-| Orcs Must Die! (TU 1) | joga-se o primeiro nível, 30 FPS | ainda não testado |
-| Double Dragon Neon | joga-se a primeira missão | ainda não testado |
-| Brothers - A Tale of Two Sons | menu e abertura, desenhados como no renderer original | ainda não testado |
-| Bionic Commando Rearmed (TU 2) | chega ao mapa das missões | ainda não testado |
-| Halo: Combat Evolved Anniversary (TU 2) | menu da campanha e a cena de abertura; algumas superfícies escuras ou às riscas | ainda não testado |
-| Spelunky (TU 1) | menus, sem texto (também no renderer original) | ainda não testado |
-| Perfect Dark (TU 3) | chega aos níveis, mas desenha-os partidos (o renderer original não arranca) | ainda não testado |
-| 3D Ultra Minigolf Adventures | passa o arranque | ainda não testado |
+| Jet Set Radio (TU 1) | joga-se: menus, a introdução da história, o primeiro nível | 30 FPS |
+| Dungeons & Dragons: Chronicles of Mystara | joga-se: menus, escolha de capítulo, o primeiro capítulo, 60 FPS | 60 FPS |
+| Super Meat Boy (TU 1) | joga-se: menus, o mapa do mundo, o nível 1-1 | 60 FPS |
+| Minecraft: Xbox 360 Edition (TU 80) | joga-se: menus, os modelos de mundo do update, um mundo novo | 60 FPS |
+| Castlevania: Symphony of the Night (TU 2) | joga-se: o menu com o texto, o nome, o prólogo | 60 FPS |
+| Orcs Must Die! (TU 1) | joga-se o primeiro nível, 30 FPS; o título, os menus e os carregamentos são desenhados pelo renderer do ReXGlue (`rexnative.auto_handover`: o jogo pô-los em código inline, fora das funções ligadas) | renderer do ReXGlue: o título (no Proton a janela não pode mudar de renderer) |
+| Double Dragon Neon | joga-se a primeira missão | 60 FPS |
+| Brothers - A Tale of Two Sons | menu e abertura, desenhados como no renderer original | 30 FPS (renderer do ReXGlue) |
+| Bionic Commando Rearmed (TU 2) | a introdução a 60 FPS, o mapa das missões | 60 FPS |
+| Midnight Club: Los Angeles - Complete Edition | o ecrã de título com a cidade, 30 FPS | 30 FPS |
+| Halo: Combat Evolved Anniversary (TU 2) | menu da campanha e a cena de abertura; algumas superfícies escuras ou às riscas | 60 FPS (a introdução) |
+| Spelunky (TU 1) | menus, sem texto (também no renderer do ReXGlue, e no Xenia: [game-compatibility#97](https://github.com/xenia-project/game-compatibility/issues/97)) | 60 FPS, sem texto |
+| Perfect Dark (TU 3) | chega aos níveis, mas desenha-os partidos (o renderer do ReXGlue já chega aos menus, para comparar) | 60 FPS (menus) |
+| 3D Ultra Minigolf Adventures | passa o arranque | 60 FPS |
 | Project Gotham Racing 4 | a origem do renderer, com cópia própria ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
-TU: o title update instalado (sempre o mais recente). From Dust, Iron Brigade e Jet Set Radio
-foram verificados no ReXGlue v0.11 a 2026-11-16; os outros resultados são das builds ReXGlue
-v0.10 do mesmo dia, e os da Steam Deck de builds v0.10. O que cada jogo precisou está em
-[docs/NOTES.md](docs/NOTES.md) (em inglês).
+TU: o title update instalado (sempre o mais recente). Todos os resultados são de builds ReXGlue
+v0.11 de 2026-11-16; os da Steam Deck de `python -m rexnative deck --steam --try 70` (a
+velocidade do ecrã a que cada jogo chega sozinho em 70 segundos, no GE-Proton). O que cada jogo
+precisou está em [docs/NOTES.md](docs/NOTES.md) (em inglês).
 
 ## Começar
 
@@ -211,6 +212,14 @@ As teclas também são definições (`bind_rexnative_hud`, `bind_renderer_switch
 `--rexnative=false` arranca o jogo com o renderer do ReXGlue. Os nomes antigos
 (`--rexnative_upscaler`, os `pgr4_native_*` e `pgr4_d3d_*` do PGR4Native) continuam a funcionar
 como aliases.
+
+Um jogo cuja compilação pôs alguns ecrãs em código inline, fora das funções D3D ligadas (o título,
+os menus e os carregamentos do Orcs Must Die!), mostra-os a preto: com `rexnative.auto_handover =
+30`, ao fim de 30 frames em que o ReXNative não vê nenhuma chamada de desenho, o renderer do ReXGlue
+desenha até as chamadas do jogo voltarem, como faria o F9. Fica desligado no Wine: no vkd3d-proton a
+janela não pode passar da cadeia de troca de um renderer para a do outro (o Present do driver Xenos
+fica à espera para sempre), por isso na Steam Deck esse jogo usa um só renderer
+(`<work>/deck.toml`).
 
 ## Depurar um jogo
 
