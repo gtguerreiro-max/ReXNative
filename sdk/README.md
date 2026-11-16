@@ -1,37 +1,56 @@
 # The ReXGlue SDK for ReXNative
 
-ReXNative's renderer builds against the ReXGlue SDK with a fixed set of patches: upstream ReXGlue
-at the commit in `rexglue.lock`, then `patches/pgr4native/` and `patches/rexnative/` in file name
-order. `scripts/build-sdk.ps1` fetches, patches, builds and installs it, and checks out the AMD
-FidelityFX SDK at `fidelityfx.lock`; it prints the paths to give `rexnative_add()`.
+ReXNative's renderer builds against the ReXGlue SDK with a fixed set of patches: the ReXGlue
+**v0.11.0** release (the commit in `rexglue.lock`), then `patches/v0.11/` in file name order.
+`scripts/build-sdk.ps1` fetches, patches, builds (LLVM 20, the SDK's `win-amd64` preset) and
+installs it, and checks out the AMD FidelityFX SDK at `fidelityfx.lock`; it prints the paths to
+give `rexnative_add()`.
 
-This is the SDK From Dust ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) and
-Iron Brigade run with: the patched tree is identical, file for file, to the one both ports were
-built and tested with (checked 2026-11-14: all 39 patches apply in order to `bd833a2`, and the
-result equals FromDustDeck's `build/rexglue-sdk`, submodules aside; `0003`, added 2026-11-16, is
-applied there too).
+ReXGlue v0.11 reorganised the SDK: modules and GPU drivers are DLLs loaded at run time, the Xenos
+GPU code is private (`src/gpu/xenos`), cvars became settings (`--scope.name`), and builds need
+clang 20 or later. ReXNative's renderer stays in the game's executable: it compiles the SDK's
+shader translator from the source tree (`renderer/src/native/shader_xlate.cmake`), reaches the app
+through `renderer/src/host.h` (the window, input, guest memory, the XAM dialogs) and keeps its old
+option names as aliases of its `rexnative.*` settings (`renderer/src/compat/rex/cvar.h`).
 
-| Part | What | From |
-|---|---|---|
-| `rexglue.lock` | ReXGlue `development` at `bd833a2` | [rexglue-sdk](https://github.com/rexglue/rexglue-sdk) |
-| `patches/pgr4native/` (37) | The generic patches of pgr4-native's set: codegen, kernel, threading, memory and audio fixes, Steam Deck pacing and wake-ups, and the SDK side of a host renderer: `gpu_skip_draws` (0031), the gamma ramp accessors (0030), `occlusion_query_external` (0049), motion-vector shader modifications (0050), and more | [pgr4-native](https://github.com/shaunsingh/pgr4-native) `patches/`, byte for byte (its PGR4-only patches are left out) |
-| `patches/rexnative/0001-renderer-support.patch` | From Dust's port's SDK changes (30 files, 38 KB): the per-draw pixel constant hook a host renderer calls (`rex/graphics/draw_hook.h`), integer texture fetches folded into `exp_adjust` (`rex/graphics/integer_fetch.h`), headers-only FidelityFX for FSR 1 and clang-cl warnings in its build, codegen and memory fixes | FromDustDeck `patches/fromdust/0001-fromdust-sdk-changes.patch`, the source files |
-| `patches/rexnative/0002-resolve-shaders-honour-the-destination-number-format.patch` | The 20 prebuilt `resolve_full_*` compute shaders (D3D12 DXBC and Vulkan SPIR-V headers, 16 MB of hex text, ~1.6 MB compressed) rebuilt from a newer Xenia's sources, which honour the destination number format: signed resolves (From Dust's height maps) kept their negative values | the same patch, the bytecode files; ReXGlue ships these shaders prebuilt and has no sources for them, so they cannot be rebuilt here |
-| `patches/rexnative/0003-codegen-setjmp-and-longjmp-at-several-addresses.patch` | Codegen only: `setjmp_address` / `longjmp_address` may be arrays, every address a game calls them at (a body and the incremental linker's thunks to it; Super Meat Boy calls setjmp through two). `rexnative project --find-functions` finds them (`functions.setjmp_longjmp`) and writes them to the game's `setjmp.toml` | ReXNative (2026-11-16); FromDustDeck's `build/rexglue-sdk` has it applied, its games set neither address, so their generated code is unchanged |
+## The patches
 
-`0001` and `0002` are FromDustDeck's single patch split by file (disjoint files, the same
-result); `0003` is ReXNative's own. `xam_keyboard_accept_default` (pgr4-native's 0024) is not in the set: the renderer
-logs that it could not set it, which is harmless.
+Ported to v0.11 from the v0.10 series (pgr4-native's generic patches, From Dust's SDK changes,
+ReXNative's own), plus what v0.11 needed for a host renderer. Each patch's subject says what it
+does; in short:
+
+| Patches | What |
+|---|---|
+| 0001-0004 | Codegen: the manifest left alone when its `sdk_version` is older; a spin-wait hint for `db16cyc`. Kernel: `ObCreateSymbolicLink`'s prefix compared as a plain string. Threading: `Win32Thread` priority from the cached value (pgr4-native) |
+| 0005, 0006, 0009 | The host renderer's side of the Xenos driver: the gamma ramp accessors, `gpu.xenos.skip_draws` (the driver keeps fences, write-backs and interrupts but does no draws, resolves or swaps), `gpu.xenos.occlusion_query_external` (pgr4-native) |
+| 0007, 0008 | Audio: the XMA loop subframe end, and a frame whose header straddles a packet (pgr4-native) |
+| 0010 | Motion vectors for temporal upscalers: vertex and pixel shader modifications that run the vertex shader again with the previous frame's constants (pgr4-native) |
+| 0011, 0012 | 8x host render targets get the alpha to coverage of 4x; RTV path colors clamped to the render target format's range (pgr4-native) |
+| 0013 | From Dust's SDK changes: the per-draw pixel constant hook (`rex/xenos/draw_hook.h`), integer texture fetches folded into `exp_adjust` (`rex/xenos/integer_fetch.h`), `function_table_base`, `vmaxuw`, the device path module lookup, the `RtlRaiseException` log, the Vulkan stencil bit transfer fix |
+| 0014 | Codegen: `setjmp_address` / `longjmp_address` may be arrays (every address a game calls them at) |
+| 0015 | `gpu.xenos.present_external`: while set, the Xenos driver takes its presenter off the window (releasing its swap chain) so the native renderer presents into it, and gives it back for the stock renderer (F9) and the XAM dialogs |
+| 0016 | The integer fetch without its environment toggle (the SDK builds with `-Werror`) |
+| 0017 | `rex/xam/ui.h`: `XAMIsUIActive` exported, so the renderer gives the window back while an XAM dialog is up |
+| 0018, 0020 | Codegen: every copy of the millicode helpers found and named apart (Jet Set Radio links them twice; v0.11.0 stopped at its pdata) |
+| 0019 | The guest's gamma ramps published by the command processor (`rex::xenos::GetGammaRampView`) |
+
+Left out, as the v0.11 port notes record: pgr4-native's Steam Deck pacing, statistics and lock
+patches (0008-0020, 0032, 0042, 0043; to be ported before the Deck build), the computed-LOD and
+`textures_unsigned` shader modifications (0021, 0022), the image check (0028), and the prebuilt
+resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from). Fixed
+upstream since: the `XThread::Resume` and timer queue patches, the physical write fault race,
+the achievement toast's repaint, the shared memory cleanup on Linux.
 
 ## Licenses
 
 ReXGlue is BSD-3-Clause, with code from Xenia (BSD-3-Clause). Several pgr4-native patches port
-code from Xenia Canary (BSD-3-Clause; each names the Canary commit and files), and the resolve
-shaders of `0002` are built from Xenia's sources; pgr4-native's patches are MIT
-([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)). No game data is in any of them.
+code from Xenia Canary (BSD-3-Clause; each names the Canary commit and files); pgr4-native's
+patches are MIT ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)). The renderer's FSR 1
+shaders (`renderer/src/native/shaders`) are the prebuilt bytecode of the ReXGlue v0.10 SDK's
+presenter (BSD-3-Clause), built from AMD's FidelityFX FSR 1 (MIT). No game data is in any of them.
 
 ## Updating
 
 To move to another ReXGlue commit: change `rexglue.lock`, run `scripts\build-sdk.ps1 -NoBuild`
-into a fresh `-Dest`, and fix the patches that no longer apply. From Dust's port regenerates its
-own patch from a working SDK tree with its `tools/make_sdk_patch.sh`.
+into a fresh `-Dest`, and fix the patches that no longer apply; then regenerate them from the
+patched tree (`git format-patch <lock>..HEAD`).

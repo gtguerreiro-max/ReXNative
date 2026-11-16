@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:26:48 +0000
+Subject: [PATCH 02/20] 0003-codegen-emit-a-spin-wait-hint-for-db16cyc
+
+---
+ src/codegen/builder/system.cpp | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/codegen/builder/system.cpp b/src/codegen/builder/system.cpp
+index 898cc4d0..067993ef 100644
+--- a/src/codegen/builder/system.cpp
++++ b/src/codegen/builder/system.cpp
+@@ -89,8 +89,9 @@ bool Build<PPC_INST_EIEIO>(BuilderContext& ctx) {
+ 
+ template <>
+ bool Build<PPC_INST_DB16CYC>(BuilderContext& ctx) {
+-  // Xenon 16 cycle delay hint, no effect in recompiled code
+-  (void)ctx;
++  // Xenon's 16 cycle delay hint sits in spin wait loops. PAUSE is the host's spin wait hint: the
++  // loop draws less power and leaves the core to its SMT sibling.
++  ctx.Println("	simde_mm_pause();");
+   return true;
+ }
+ 

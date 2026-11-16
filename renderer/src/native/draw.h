@@ -24,7 +24,7 @@
 //   - textures from TextureCache (TextureMod), samplers from the sampler bindings (port of
 //     D3D12TextureCache::GetSamplerParameters/WriteSampler), bindless heaps;
 //   - render targets from RenderTargets::Bind (RTResolve); viewport, scissor, blend factor
-//     and stencil reference (port of draw_util::GetHostViewportInfo / GetScissor);
+//     and stencil reference (port of rex::gpu::draw_state::GetHostViewportInfo / GetScissor);
 //   - memexport (shaders that write guest memory, --rexnative_memexport): shared memory is a UAV
 //     for the draw (kSysFlag_SharedMemoryIsUAV), which runs without targets when rasterization
 //     is off (a vertex shader alone); its destination ranges are uploaded first and their pages
@@ -58,6 +58,10 @@ namespace rex::graphics {
 class DxbcShader;
 }
 
+namespace rex::gpu {
+class DXBCShader;
+}  // namespace rex::gpu
+
 namespace rexnative {
 
 class NativeRenderer;
@@ -81,8 +85,8 @@ struct AuditRange {
 
 // The guest-thread half of one draw (DrawRenderer::Prepare).
 struct DrawPrep {
-  rex::graphics::DxbcShader* vs = nullptr;  // nullptr: no vertex shader (the draw is dropped)
-  rex::graphics::DxbcShader* ps = nullptr;
+  rex::gpu::DXBCShader* vs = nullptr;  // nullptr: no vertex shader (the draw is dropped)
+  rex::gpu::DXBCShader* ps = nullptr;
   bool upload_ok = true;               // every vertex/index range was copied
   const VertexCopy* copies = nullptr;  // set by the render side before OnDraw
   uint32_t copy_count = 0;

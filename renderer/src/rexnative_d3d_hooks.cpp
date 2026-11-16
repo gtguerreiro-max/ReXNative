@@ -48,11 +48,10 @@
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
 #include <rex/cvar.h>
-#include <rex/graphics/format/ucode.h>
-#include <rex/graphics/xenos.h>
-#include <rex/hook.h>
+#include "native/sdk.h"
+#include <rex/ppc/hook.h>
 #include <rex/logging.h>
-#include <rex/system/kernel_state.h>
+#include "host.h"
 
 #include <algorithm>
 #include <array>
@@ -236,9 +235,9 @@ uint64_t Fnv(const uint32_t* d, size_t n, uint64_t h = 1469598103934665603ull) {
 const char* RegName(uint32_t r) {
   static const std::unordered_map<uint32_t, const char*> names = [] {
     std::unordered_map<uint32_t, const char*> m;
-#define XE_GPU_REGISTER(index, type, name) m.emplace(index, #name);
-#include <rex/graphics/register_table.inc>
-#undef XE_GPU_REGISTER
+#define REXGPU_REGISTER(index, type, name) m.emplace(index, #name);
+#include <rex/xenos/register_table.inc>
+#undef REXGPU_REGISTER
     return m;
   }();
   auto it = names.find(r);
@@ -355,9 +354,9 @@ void ScanUcode(const uint32_t* host_le, uint32_t dwords, ShaderInfo& info) {
     ucode::UnpackControlFlowInstructions(host_le + pair * 3, cf);
     bool end = false;
     for (auto& c : cf) {
-      auto op = c.opcode();
+      auto op = c.GetOpcode();
       if (!ucode::IsControlFlowOpcodeExec(op)) continue;
-      uint32_t addr = c.exec.address(), count = c.exec.count(), seq = c.exec.sequence();
+      uint32_t addr = c.exec.GetAddress(), count = c.exec.GetCount(), seq = c.exec.GetSequence();
       if (count) first_exec = std::min(first_exec, addr);
       for (uint32_t k = 0; k < count; ++k) {
         if (!((seq >> (k * 2)) & 1)) continue;  // ALU
@@ -365,17 +364,17 @@ void ScanUcode(const uint32_t* host_le, uint32_t dwords, ShaderInfo& info) {
         if (at + 3 > dwords) break;
         ucode::FetchInstruction fi;
         std::memcpy(&fi, host_le + at, sizeof(fi));
-        if (fi.opcode() == ucode::FetchOpcode::kVertexFetch) {
-          uint32_t vf = fi.vertex_fetch().fetch_constant_index();
+        if (fi.GetOpcode() == ucode::FetchOpcode::kVertexFetch) {
+          uint32_t vf = fi.GetVertexFetch().GetFetchConstantIndex();
           if (vf < 64)
             info.vfetch_lo |= 1ull << vf;
           else if (vf < 96)
             info.vfetch_hi |= 1u << (vf - 64);
         } else {
-          info.tfetch_mask |= 1u << (fi.texture_fetch().fetch_constant_index() & 31);
+          info.tfetch_mask |= 1u << (fi.GetTextureFetch().GetFetchConstantIndex() & 31);
         }
       }
-      end |= ucode::DoesControlFlowOpcodeEndShader(op);
+      end |= ucode::IsControlFlowOpcodeEnd(op);
     }
     if (end) break;
   }
@@ -499,7 +498,7 @@ const ShaderInfo* Shader(Tap& t, uint32_t type, uint32_t addr, uint32_t dwords) 
   info.type = type;
   info.addr = addr;
   info.dwords = dwords;
-  auto* mem = rex::system::kernel_memory();
+  auto* mem = rexnative::host::Memory();
   const uint8_t* p = mem->TranslatePhysical<const uint8_t*>(addr);
   std::vector<uint32_t> le(dwords);
   for (uint32_t i = 0; i < dwords; ++i) {
@@ -572,7 +571,7 @@ void OnDraw(Tap& t, uint32_t op, bool predicated) {
   // DRAW_INDX: viz, initiator, [index base, index size]; DRAW_INDX_2: initiator, indices.
   uint32_t initiator =
       op == 0x22 ? (t.pkt.size() > 1 ? t.pkt[1] : 0) : (t.pkt.empty() ? 0 : t.pkt[0]);
-  bool resolve = (t.regs[0x2208] & 7) == uint32_t(xenos::EdramMode::kCopy);
+  bool resolve = (t.regs[0x2208] & 7) == uint32_t(xenos::EDRAMMode::kCopy);
   if (resolve) {
     ++t.frame.tap_resolves;
     g_tap_counts[2].fetch_add(1, std::memory_order_relaxed);
@@ -691,7 +690,7 @@ void HandlePacket(Tap& t) {
                kind = (t.pkt[1] >> 16) & 0xFF;
       uint32_t n = t.pkt[2] & 0xFFF;
       if (kind >= std::size(kConstantBase)) break;
-      const uint8_t* p = rex::system::kernel_memory()->TranslatePhysical<const uint8_t*>(addr);
+      const uint8_t* p = rexnative::host::Memory()->TranslatePhysical<const uint8_t*>(addr);
       for (uint32_t i = 0; i < n; ++i) {
         uint32_t v;
         std::memcpy(&v, p + i * 4, 4);

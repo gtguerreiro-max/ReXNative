@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:26:49 +0000
+Subject: [PATCH 03/20] 
+ 0004-kernel-compare-ObCreateSymbolicLink-s-prefix-as-a-pl
+
+---
+ src/kernel/xboxkrnl/xboxkrnl_ob.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp b/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
+index 817a8f23..f09e2b4d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_ob.cpp
+@@ -207,8 +207,8 @@ u32 ObCreateSymbolicLink_entry(GuestPtrT<X_ANSI_STRING> path_ptr,
+   auto target = rex::string::utf8_canonicalize_guest_path(
+       kernel::TranslateAnsiPath(kernel::GetCurrentState().GetAddressSpace(), target_ptr));
+ 
+-  if (rex::string::utf8_starts_with(path, u8"\\??\\")) {
+-    path = path.substr(4);
++  if (rex::string::utf8_starts_with(path, "\\??\\")) {
++    path = path.substr(4);  // Strip the full qualifier
+   }
+ 
+   if (auto linked = kernel::GetCurrentState().GetFileSystem()->Link(path, target);

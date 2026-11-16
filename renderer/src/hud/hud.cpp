@@ -11,11 +11,7 @@
 #include <imgui.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/ui_event.h>
-#include <rex/ui/virtual_key.h>
-#include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
+#include "host.h"
 
 #include <algorithm>
 #include <atomic>
@@ -395,7 +391,7 @@ constexpr auto kChordWait = std::chrono::milliseconds(120);
 constexpr auto kTapReplay = std::chrono::milliseconds(100);
 
 std::atomic<bool> g_open{false};
-rex::ui::Window* g_window = nullptr;
+bool g_ready = false;  // Initialize ran (the app's UI is up)
 ImGuiContext* g_context = nullptr;  // UI thread only
 
 // The back buffer the frames are built for (guest thread -> UI thread).
@@ -733,92 +729,79 @@ void BuildFrame() {
 }
 
 // The window's mouse, touch and keys while the menu is up (UI thread), ahead of ReXGlue's
-// listeners. F1 goes on to its key bindings, which close the menu.
-class Input final : public rex::ui::WindowInputListener {
- public:
-  void OnKeyDown(rex::ui::KeyEvent& e) override { Key(e, true); }
-  void OnKeyUp(rex::ui::KeyEvent& e) override { Key(e, false); }
-  void OnKeyChar(rex::ui::KeyEvent& e) override {
-    if (Usable()) e.set_handled(true);
+// listeners (host.h). F1 goes on to its key binding, which closes the menu.
+bool Usable() { return g_context && g_open.load(std::memory_order_relaxed); }
+// Window pixels to back buffer pixels (the swapchain can differ from the window).
+float ScaleX(float x) {
+  uint32_t w = 0, h = 0;
+  rexnative::host::WindowSize(&w, &h);
+  return w ? x * float(g_display_width.load()) / float(w) : x;
+}
+float ScaleY(float y) {
+  uint32_t w = 0, h = 0;
+  rexnative::host::WindowSize(&w, &h);
+  return h ? y * float(g_display_height.load()) / float(h) : y;
+}
+bool Key(const rex::InputEvent& e, bool down) {
+  using rex::VirtualKey;
+  if (!Usable() || e.key == VirtualKey::kF1) return false;
+  ImGuiKey key = ImGuiKey_None;
+  switch (e.key) {
+    // The keypad's arrows too (also what SendKeys' arrows arrive as: no extended-key flag).
+    case VirtualKey::kUp:
+    case VirtualKey::kNumpad8: key = ImGuiKey_UpArrow; break;
+    case VirtualKey::kDown:
+    case VirtualKey::kNumpad2: key = ImGuiKey_DownArrow; break;
+    case VirtualKey::kLeft:
+    case VirtualKey::kNumpad4: key = ImGuiKey_LeftArrow; break;
+    case VirtualKey::kRight:
+    case VirtualKey::kNumpad6: key = ImGuiKey_RightArrow; break;
+    case VirtualKey::kReturn: key = ImGuiKey_Enter; break;
+    case VirtualKey::kSpace: key = ImGuiKey_Space; break;
+    case VirtualKey::kEscape: key = ImGuiKey_Escape; break;
+    case VirtualKey::kTab: key = ImGuiKey_Tab; break;
+    default: break;
   }
-  void OnMouseDown(rex::ui::MouseEvent& e) override { Mouse(e, 1); }
-  void OnMouseUp(rex::ui::MouseEvent& e) override { Mouse(e, 0); }
-  void OnMouseMove(rex::ui::MouseEvent& e) override { Mouse(e, -1); }
-  void OnMouseWheel(rex::ui::MouseEvent& e) override {
-    if (!Usable()) return;
+  if (key != ImGuiKey_None) {
     Scope scope;
-    ImGui::GetIO().AddMouseWheelEvent(
-        0.0f, float(e.scroll_y()) / float(rex::ui::MouseEvent::kScrollPerDetent));
-    e.set_handled(true);
+    ImGui::GetIO().AddKeyEvent(key, down);
   }
-  void OnTouchEvent(rex::ui::TouchEvent& e) override {
-    if (!Usable()) return;
-    Scope scope;
-    ImGuiIO& io = ImGui::GetIO();
-    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
-    io.AddMousePosEvent(ScaleX(e.x()), ScaleY(e.y()));
-    using Action = rex::ui::TouchEvent::Action;
-    if (e.action() == Action::kDown) io.AddMouseButtonEvent(0, true);
-    if (e.action() == Action::kUp || e.action() == Action::kCancel)
-      io.AddMouseButtonEvent(0, false);
-    e.set_handled(true);
+  return true;
+}
+// down: 1 pressed, 0 released, -1 a move.
+bool Mouse(const rex::InputEvent& e, int down) {
+  if (!Usable()) return false;
+  Scope scope;
+  ImGuiIO& io = ImGui::GetIO();
+  io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+  io.AddMousePosEvent(ScaleX(e.x), ScaleY(e.y));
+  if (down >= 0) {
+    int button = -1;
+    if (e.button == rex::MouseButton::kLeft) button = 0;
+    if (e.button == rex::MouseButton::kRight) button = 1;
+    if (button >= 0) io.AddMouseButtonEvent(button, down != 0);
   }
-
- private:
-  static bool Usable() { return g_context && g_open.load(std::memory_order_relaxed); }
-  // Window pixels to back buffer pixels (the swapchain can differ from the window).
-  static float ScaleX(float x) {
-    const uint32_t w = g_window ? g_window->GetActualPhysicalWidth() : 0;
-    return w ? x * float(g_display_width.load()) / float(w) : x;
-  }
-  static float ScaleY(float y) {
-    const uint32_t h = g_window ? g_window->GetActualPhysicalHeight() : 0;
-    return h ? y * float(g_display_height.load()) / float(h) : y;
-  }
-  static void Key(rex::ui::KeyEvent& e, bool down) {
-    using rex::ui::VirtualKey;
-    if (!Usable() || e.virtual_key() == VirtualKey::kF1) return;
-    ImGuiKey key = ImGuiKey_None;
-    switch (e.virtual_key()) {
-      // The keypad's arrows too (also what SendKeys' arrows arrive as: no extended-key flag).
-      case VirtualKey::kUp:
-      case VirtualKey::kNumpad8: key = ImGuiKey_UpArrow; break;
-      case VirtualKey::kDown:
-      case VirtualKey::kNumpad2: key = ImGuiKey_DownArrow; break;
-      case VirtualKey::kLeft:
-      case VirtualKey::kNumpad4: key = ImGuiKey_LeftArrow; break;
-      case VirtualKey::kRight:
-      case VirtualKey::kNumpad6: key = ImGuiKey_RightArrow; break;
-      case VirtualKey::kReturn: key = ImGuiKey_Enter; break;
-      case VirtualKey::kSpace: key = ImGuiKey_Space; break;
-      case VirtualKey::kEscape: key = ImGuiKey_Escape; break;
-      case VirtualKey::kTab: key = ImGuiKey_Tab; break;
-      default: break;
-    }
-    if (key != ImGuiKey_None) {
+  return true;
+}
+bool OnInput(rex::InputEvent& e) {
+  using Type = rex::InputEvent::Type;
+  switch (e.type) {
+    case Type::kKeyDown: return Key(e, true);
+    case Type::kKeyUp: return Key(e, false);
+    case Type::kKeyChar: return Usable();
+    case Type::kButtonDown: return Mouse(e, 1);
+    case Type::kButtonUp: return Mouse(e, 0);
+    case Type::kMotion: return Mouse(e, -1);
+    case Type::kWheel: {
+      if (!Usable()) return false;
       Scope scope;
-      ImGui::GetIO().AddKeyEvent(key, down);
+      ImGui::GetIO().AddMouseWheelEvent(0.0f, e.scroll_y);
+      return true;
     }
-    e.set_handled(true);
+    default: return false;
   }
-  static void Mouse(rex::ui::MouseEvent& e, int down) {
-    if (!Usable()) return;
-    Scope scope;
-    ImGuiIO& io = ImGui::GetIO();
-    io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
-    io.AddMousePosEvent(ScaleX(float(e.x())), ScaleY(float(e.y())));
-    if (down >= 0) {
-      int button = -1;
-      if (e.button() == rex::ui::MouseEvent::Button::kLeft) button = 0;
-      if (e.button() == rex::ui::MouseEvent::Button::kRight) button = 1;
-      if (button >= 0) io.AddMouseButtonEvent(button, down != 0);
-    }
-    e.set_handled(true);
-  }
-};
-
-Input g_input;
-constexpr size_t kInputZOrder = 128;  // above ReXGlue's ImGui drawer (64) and the app (0)
+}
+constexpr int kInputOrder = 128;  // ahead of the game's own handlers
 
 // Per pad: the Back+Start chord and what the game is kept from seeing.
 struct PadState {
@@ -837,19 +820,25 @@ void SetConfigPath(const std::filesystem::path& config) {
   g_file = config;
 }
 
-void Initialize(rex::ui::Window* window) {
-  g_window = window;
-  CreateContext();
-  if (g_window) g_window->AddInputListener(&g_input, kInputZOrder);
-  rex::ui::RegisterBind("bind_rexnative_hud", "F1", "ReXNative: the settings menu (pad: Back+Start)",
-                        [] { Toggle(); });
+void Initialize() {
+  if (g_file.empty()) {
+    // The app's configuration file (app.config_file), unless the game's app set another.
+    const std::string config = rex::cvar::GetFlagByName("app.config_file");
+    if (!config.empty()) SetConfigPath(config);
+  }
+  g_ready = true;
+  rexnative::host::RunOnUIThread([] { CreateContext(); });
+  rexnative::host::AddInputHandler(&g_ready, kInputOrder, OnInput);
+  rexnative::host::RegisterBind("bind_rexnative_hud", "F1",
+                                "ReXNative: the settings menu (pad: Back+Start)",
+                                [] { Toggle(); });
 }
 
 void Shutdown() {
-  rex::ui::UnregisterBind("bind_rexnative_hud");
+  rexnative::host::UnregisterBind("bind_rexnative_hud");
   g_open.store(false);
-  if (g_window) g_window->RemoveInputListener(&g_input);
-  g_window = nullptr;
+  rexnative::host::RemoveInputHandler(&g_ready);
+  g_ready = false;
   if (g_context) {
     ImGuiContext* previous = ImGui::GetCurrentContext();
     ImGui::DestroyContext(g_context);
@@ -926,14 +915,14 @@ bool OverlayFrameFor(uint32_t width, uint32_t height, OverlayFrame* frame) {
   const auto now = std::chrono::steady_clock::now();
   if (!g_hint_end.load(std::memory_order_relaxed) && REXCVAR_GET(rexnative_hud_hint))
     g_hint_end.store((now + kHintTime).time_since_epoch().count(), std::memory_order_relaxed);
-  if (!g_window || (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f)) {
+  if (!g_ready || (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f)) {
     std::lock_guard lock(g_frame_mutex);
     g_frame_ready = false;
     return false;
   }
   g_display_width.store(width);
   g_display_height.store(height);
-  if (!g_frame_queued.exchange(true) && !g_window->app_context().CallInUIThread(BuildFrame))
+  if (!g_frame_queued.exchange(true) && !rexnative::host::PostToUIThread(BuildFrame))
     g_frame_queued.store(false);
   std::lock_guard lock(g_frame_mutex);
   if (!g_frame_ready) return false;

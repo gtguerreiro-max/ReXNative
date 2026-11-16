@@ -17,8 +17,9 @@
 #include "renderer.h"
 
 #include <rex/cvar.h>
+#include <rex/kernel/heap.h>
 #include <rex/logging.h>
-#include <rex/system/kernel_state.h>
+#include "host.h"
 #include <xxhash.h>
 
 #include <algorithm>
@@ -985,7 +986,7 @@ void AfterRun(const uint8_t* base, const RunContext& c) {
   }
 
   const uint64_t t0 = Ticks();
-  const uint8_t* const pm = rex::system::kernel_memory()->physical_membase();
+  const uint8_t* const pm = rexnative::host::Memory()->GetPhysicalMembase();
   ++f[kBuffers];
   s.ibs.clear();
   uint32_t top_dwords = 0, bad_node = 0;

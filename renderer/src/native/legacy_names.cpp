@@ -1,16 +1,12 @@
 // ReXNative: the options' names before ReXNative renamed them (PGR4Native's pgr4_native_*,
-// pgr4_d3d_*, pgr4_render_height; From Dust's fromdust_trace_camera). Each old name is
-// registered as well and passes its value on to the new one, so configuration files and command
-// lines written for the hand-made ports keep working; the first use of each logs its new name.
-// The table is written by rexnative/names.py (legacy_table / legacy_cpp).
+// pgr4_d3d_*, pgr4_render_height; From Dust's fromdust_trace_camera). Each old name is an alias
+// of the new setting in the settings registry (native/settings.cpp registers them), so
+// configuration files and command lines written for the hand-made ports keep working; the
+// registry notes each use of an old name. The table is written by rexnative/names.py
+// (legacy_table / legacy_cpp).
 #include "legacy_names.h"
 
 #include <rex/cvar.h>
-#include <rex/logging.h>
-
-#include <mutex>
-#include <set>
-#include <string>
 #include <string_view>
 
 namespace rexnative {
@@ -131,50 +127,13 @@ constexpr Legacy kLegacy[] = {
     {"pgr4_render_height", "rexnative_render_height", rex::cvar::FlagType::Int32},
 };
 
-// Old names are set while the command line and the configuration file are read, before the log
-// is up: noted here and logged by LogOldNames (NativeRenderer::Initialize).
-std::mutex g_mutex;
-std::set<std::string_view> g_used;
-
-void Announce(const Legacy& l) {
-  std::lock_guard lock(g_mutex);
-  g_used.insert(l.old_name);
-}
-
-struct Registrar {
-  Registrar() {
-    for (const Legacy& l : kLegacy) {
-      rex::cvar::FlagEntry e;
-      e.name = l.old_name;
-      e.type = l.type;
-      e.category = "ReXNative (old names)";
-      e.description = std::string("Old name of --") + l.new_name;
-      // As the command line sets it: above the configuration file, below the settings menu.
-      e.setter = [&l](std::string_view v) {
-        Announce(l);
-        rex::cvar::SetFlagFromCommandLine(l.new_name, v);
-        return true;
-      };
-      // Never "modified": the old name is not written back anywhere.
-      e.getter = [] { return std::string(); };
-      e.command_callback = [](std::string_view) {};
-      e.default_value = "";
-      rex::cvar::RegisterFlag(std::move(e));
-    }
-  }
-};
-const Registrar g_registrar;
-
 }  // namespace
 
-void LogOldNames() {
-  std::lock_guard lock(g_mutex);
-  for (const Legacy& l : kLegacy)
-    if (g_used.count(l.old_name))
-      REXLOG_WARN("ReXNative: {} is now {} (the old name still works; {} = {})", l.old_name,
-                  l.new_name, l.new_name, rex::cvar::GetFlagByName(l.new_name));
-  g_used.clear();
+void ForEachOldName(void (*fn)(std::string_view old_name, std::string_view new_name)) {
+  for (const Legacy& l : kLegacy) fn(l.old_name, l.new_name);
 }
+
+void LogOldNames() {}
 
 const char* OldNameOf(std::string_view new_name) {
   for (const Legacy& l : kLegacy)

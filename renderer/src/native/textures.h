@@ -48,6 +48,10 @@ namespace rex::memory {
 class Memory;
 }
 
+namespace rex::kernel {
+class GuestAddressSpace;
+}  // namespace rex::kernel
+
 namespace rexnative {
 
 // Returns the image last resolved to a guest physical address (Resolver::Find), or nullptr.
@@ -107,9 +111,9 @@ class TextureCache {
   // caller's views of them must go (the GPU has finished every frame that used them).
   using EvictCallback = std::function<void(const std::vector<ID3D12Resource*>& resources)>;
 
-  // In the game: memory = rex::system::kernel_memory(); textures are read from its physical
+  // In the game: memory = rexnative::host::Memory(); textures are read from its physical
   // memory and their pages watched through it.
-  TextureCache(ID3D12Device* device, rex::memory::Memory* memory);
+  TextureCache(ID3D12Device* device, rex::kernel::GuestAddressSpace* memory);
   // Offline (REXNATIVE_TEXTURES_OFFLINE): guest physical memory at physical_membase, no write
   // tracking (a texture uploads once).
   TextureCache(ID3D12Device* device, const uint8_t* physical_membase);
@@ -280,7 +284,7 @@ class TextureCache {
   std::pair<uint32_t, uint32_t> Invalidate(uint32_t start, uint32_t length, bool exact);
   struct UntileJob {
     TextureKey key;
-    rex::graphics::texture_util::TextureGuestLayout layout;
+    rex::graphics::xenos::GuestTextureLayout layout;
     GuestTextureMemory guest;
     std::vector<HostSubresource> footprints;
     uint8_t* dst = nullptr;
@@ -322,7 +326,7 @@ class TextureCache {
 
   ID3D12Device* device_;
   const uint8_t* membase_;                 // guest physical address 0
-  rex::memory::Memory* memory_ = nullptr;  // null offline
+  rex::kernel::GuestAddressSpace* memory_ = nullptr;  // null offline
   void* invalidation_handle_ = nullptr;
   bool unaligned_bc_supported_ = false;
   ResolvedLookup resolved_lookup_;

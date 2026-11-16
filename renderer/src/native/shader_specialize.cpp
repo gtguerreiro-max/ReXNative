@@ -3,7 +3,7 @@
 #include <cstring>
 #include <vector>
 
-#include <rex/graphics/format/ucode.h>
+#include "native/sdk.h"
 #include <rex/types.h>
 
 #include <simde/x86/sse2.h>
@@ -65,21 +65,21 @@ bool SpecializeBoolControlFlow(uint32_t* ucode, uint32_t cf_pair_bound, const ui
 
   // Bool tests.
   for (ControlFlowInstruction& c : cf) {
-    switch (c.opcode()) {
+    switch (c.GetOpcode()) {
       case Op::kCondExec:
       case Op::kCondExecEnd:
       case Op::kCondExecPredClean:
       case Op::kCondExecPredCleanEnd:
-        if (BoolValue(bools, c.cond_exec.bool_address()) == c.cond_exec.condition())
-          SetExec(c, ucode::DoesControlFlowOpcodeEndShader(c.opcode()));
+        if (BoolValue(bools, c.cond_exec.GetBoolAddress()) == c.cond_exec.GetCondition())
+          SetExec(c, ucode::IsControlFlowOpcodeEnd(c.GetOpcode()));
         else
           SetEmptyExec(c);  // a failed cexece does not end the shader
         break;
       case Op::kCondJmp:
       case Op::kCondCall:
         // Same layout of the fields read here (address, unconditional, predicated, bool test).
-        if (c.cond_jmp.is_unconditional() || c.cond_jmp.is_predicated()) break;
-        if (BoolValue(bools, c.cond_jmp.bool_address()) == c.cond_jmp.condition()) {
+        if (c.cond_jmp.IsUnconditional() || c.cond_jmp.IsPredicated()) break;
+        if (BoolValue(bools, c.cond_jmp.GetBoolAddress()) == c.cond_jmp.GetCondition()) {
           c.dword_0 |= kJumpUnconditional;
           c.dword_1 &= ~kJumpConditionBits;
         } else {
@@ -103,23 +103,23 @@ bool SpecializeBoolControlFlow(uint32_t* ucode, uint32_t cf_pair_bound, const ui
     if (reached[i]) continue;
     reached[i] = 1;
     const ControlFlowInstruction& c = cf[i];
-    switch (c.opcode()) {
+    switch (c.GetOpcode()) {
       case Op::kExecEnd:
         break;
       case Op::kCondJmp:
-        follow(c.cond_jmp.address());
-        if (!c.cond_jmp.is_unconditional()) follow(i + 1);
+        follow(c.cond_jmp.GetAddress());
+        if (!c.cond_jmp.IsUnconditional()) follow(i + 1);
         break;
       case Op::kCondCall:
-        follow(c.cond_call.address());
+        follow(c.cond_call.GetAddress());
         follow(i + 1);
         break;
       case Op::kLoopStart:
-        follow(c.loop_start.address());
+        follow(c.loop_start.GetAddress());
         follow(i + 1);
         break;
       case Op::kLoopEnd:
-        follow(c.loop_end.address());
+        follow(c.loop_end.GetAddress());
         follow(i + 1);
         break;
       default:
@@ -131,7 +131,7 @@ bool SpecializeBoolControlFlow(uint32_t* ucode, uint32_t cf_pair_bound, const ui
   }
   for (uint32_t i = 0; i < n; ++i) {
     if (reached[i]) continue;
-    if (ucode::IsControlFlowOpcodeExec(cf[i].opcode()))
+    if (ucode::IsControlFlowOpcodeExec(cf[i].GetOpcode()))
       SetEmptyExec(cf[i]);
     else
       SetNop(cf[i]);
@@ -140,8 +140,8 @@ bool SpecializeBoolControlFlow(uint32_t* ucode, uint32_t cf_pair_bound, const ui
   // Forward jumps over emptied control flow only.
   for (uint32_t i = 0; i < n; ++i) {
     ControlFlowInstruction& c = cf[i];
-    if (!reached[i] || c.opcode() != Op::kCondJmp || !c.cond_jmp.is_unconditional()) continue;
-    const uint32_t target = c.cond_jmp.address();
+    if (!reached[i] || c.GetOpcode() != Op::kCondJmp || !c.cond_jmp.IsUnconditional()) continue;
+    const uint32_t target = c.cond_jmp.GetAddress();
     if (target <= i || target > n) continue;
     bool skips_reachable = false;
     for (uint32_t j = i + 1; j < target && !skips_reachable; ++j) skips_reachable = reached[j];
@@ -178,7 +178,7 @@ DxbcShader* BoolSpecializer::Get(DxbcShader* shader, const uint32_t* bools) {
   const auto load = [](const uint32_t* p) {
     return simde_mm_loadu_si128(reinterpret_cast<const simde__m128i*>(p));
   };
-  const uint32_t* tested = shader->constant_register_map().bool_bitmap;
+  const uint32_t* tested = shader->GetConstantRegisterMap().bool_bitmap;
   const simde__m128i tested_lo = load(tested), tested_hi = load(tested + 4);
   const simde__m128i any = simde_mm_or_si128(tested_lo, tested_hi);
   if (simde_mm_movemask_epi8(simde_mm_cmpeq_epi8(any, simde_mm_setzero_si128())) == 0xFFFF)
@@ -197,33 +197,33 @@ DxbcShader* BoolSpecializer::Get(DxbcShader* shader, const uint32_t* bools) {
 }
 
 DxbcShader* BoolSpecializer::Create(DxbcShader& shader, const uint32_t* bools) {
-  std::vector<uint32_t> ucode = shader.ucode_data();
-  if (!SpecializeBoolControlFlow(ucode.data(), shader.cf_pair_index_bound(), bools)) return &shader;
+  std::vector<uint32_t> ucode = shader.GetUcodeData();
+  if (!SpecializeBoolControlFlow(ucode.data(), shader.GetCFPairIndexBound(), bools)) return &shader;
   // ShaderCache::Load takes guest (big-endian) ucode, which its hash is of.
   for (uint32_t& d : ucode) d = rex::byte_swap(d);
-  DxbcShader* s = cache_.Load(shader.type(), ucode.data(), uint32_t(ucode.size()));
+  DxbcShader* s = cache_.Load(shader.GetType(), ucode.data(), uint32_t(ucode.size()));
   // The draw's pipeline, color mask and host vertex shader type follow from what a shader
   // writes. An export only on a path the bools exclude would change them, so such a shader
   // stays generic.
-  const bool same_outputs = s->writes_color_targets() == shader.writes_color_targets() &&
-                            s->writes_depth() == shader.writes_depth() &&
-                            s->writes_interpolators() == shader.writes_interpolators() &&
-                            s->writes_point_size_edge_flag_kill_vertex() ==
-                                shader.writes_point_size_edge_flag_kill_vertex() &&
-                            s->memexport_eM_written() == shader.memexport_eM_written();
+  const bool same_outputs = s->GetWritesColorTargets() == shader.GetWritesColorTargets() &&
+                            s->IsDepthWritten() == shader.IsDepthWritten() &&
+                            s->GetWritesInterpolators() == shader.GetWritesInterpolators() &&
+                            s->GetWritesPointSizeEdgeFlagKillVertex() ==
+                                shader.GetWritesPointSizeEdgeFlagKillVertex() &&
+                            s->GetMemExportEMWritten() == shader.GetMemExportEMWritten();
   if (!same_outputs) {
     REXNATIVE_LOG_FIRST(kLogged, INFO,
                    "ReXNative: shader {:016X} stays generic for bools {:08X}{:08X}{:08X}{:08X} "
                    "{:08X}{:08X}{:08X}{:08X} (outputs differ)",
-                   shader.ucode_data_hash(), bools[0], bools[1], bools[2], bools[3], bools[4],
+                   shader.GetUcodeDataHash(), bools[0], bools[1], bools[2], bools[3], bools[4],
                    bools[5], bools[6], bools[7]);
     return &shader;
   }
   REXNATIVE_LOG_FIRST(kLogged, INFO,
                  "ReXNative: shader {:016X} for bools {:08X}{:08X}{:08X}{:08X} "
                  "{:08X}{:08X}{:08X}{:08X} is {:016X}",
-                 shader.ucode_data_hash(), bools[0], bools[1], bools[2], bools[3], bools[4],
-                 bools[5], bools[6], bools[7], s->ucode_data_hash());
+                 shader.GetUcodeDataHash(), bools[0], bools[1], bools[2], bools[3], bools[4],
+                 bools[5], bools[6], bools[7], s->GetUcodeDataHash());
   return s;
 }
 

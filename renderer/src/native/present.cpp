@@ -2,6 +2,8 @@
 // See present.h.
 #include "present.h"
 
+#include "native/sdk.h"
+
 #include "d3d12_device.h"
 #include "fsr.h"
 #include "guest_memory.h"
@@ -12,12 +14,9 @@
 #include "texture_layout.h"
 
 #include <rex/cvar.h>
-#include <rex/graphics/command_processor.h>
-#include <rex/graphics/graphics_system.h>
 #include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include "host.h"
+#include <rex/kernel/heap.h>
 
 #include <algorithm>
 #include <atomic>
@@ -157,13 +156,8 @@ float4 ps(float4 pos : SV_Position, float2 texel : TEXCOORD0) : SV_Target {
 }
 )";
 
-const rex::graphics::CommandProcessor* GuestCommandProcessor() {
-  rex::Runtime* runtime = rex::Runtime::instance();
-  // The Xenos plugin's graphics system is the only IGraphicsSystem this title runs with.
-  auto* graphics =
-      runtime ? static_cast<rex::graphics::GraphicsSystem*>(runtime->graphics_system()) : nullptr;
-  return graphics ? graphics->command_processor() : nullptr;
-}
+// The Xenos driver's command processor's gamma ramps (rex/xenos/draw_hook.h, sdk/patches).
+rex::xenos::GammaRampView GuestGammaRamps() { return rex::xenos::GetGammaRampView(); }
 
 // Output of a PWL ramp channel for a 10-bit input (the shader's math), for the log.
 double PwlOut(const uint32_t* words, uint32_t channel, uint32_t x) {
@@ -221,7 +215,6 @@ struct Presenter::Impl {
   // One gamma ramp slot per frame in flight (D3D12Device::frame_slot), persistently mapped.
   ComPtr<ID3D12Resource> ramp_buffer;
   uint8_t* ramp_mapped = nullptr;
-  const rex::graphics::CommandProcessor* command_processor = nullptr;
   uint32_t last_ramp[kPwlWords] = {};
   RampMode last_ramp_mode = kRampNone;
   uint32_t ramp_changes_logged = 0;
@@ -364,11 +357,9 @@ bool Presenter::Impl::Initialize() {
 }
 
 bool Presenter::Impl::WriteRamp(RampMode mode, uint32_t slot) {
-  if (!command_processor && !(command_processor = GuestCommandProcessor())) return false;
-  const uint32_t* words =
-      mode == kRampPwl
-          ? reinterpret_cast<const uint32_t*>(command_processor->gamma_ramp_pwl_rgb())
-          : reinterpret_cast<const uint32_t*>(command_processor->gamma_ramp_256_entry_table());
+  const rex::xenos::GammaRampView ramps = GuestGammaRamps();
+  const uint32_t* words = mode == kRampPwl ? ramps.pwl_rgb : ramps.table_256;
+  if (!words) return false;
   const uint32_t count = mode == kRampPwl ? kPwlWords : kTableWords;
   // The command processor's thread writes the ramp as it executes the guest's register writes;
   // a ramp read during an update shows for one frame, the next frame reads the finished one.
@@ -472,7 +463,7 @@ void Presenter::Impl::FinishCapture() {
     uint64_t bytes = GetHostFootprints(key, false, &subs);
     uint32_t base_bytes = 0, mips_bytes = 0;
     GetGuestExtents(key, &base_bytes, &mips_bytes);
-    const uint8_t* membase = rex::system::kernel_memory()->physical_membase();
+    const uint8_t* membase = rexnative::host::Memory()->GetPhysicalMembase();
     GuestTextureMemory mem;
     mem.base = membase + (key.base_page << 12);
     mem.base_size = base_bytes;

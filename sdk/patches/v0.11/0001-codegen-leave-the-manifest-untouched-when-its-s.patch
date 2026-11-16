@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:26:48 +0000
+Subject: [PATCH 01/20] 
+ 0002-codegen-leave-the-manifest-untouched-when-its-sdk_ve
+
+---
+ src/codegen/manifest.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/codegen/manifest.cpp b/src/codegen/manifest.cpp
+index cf382f33..3acc0716 100644
+--- a/src/codegen/manifest.cpp
++++ b/src/codegen/manifest.cpp
+@@ -236,6 +236,10 @@ bool ManifestConfig::WriteSDKVersionStamp(const std::filesystem::path& path,
+   }
+ 
+   if (stamp_idx) {
++    // Rewriting an unchanged manifest would make it newer than the codegen output, and a build
++    // that runs codegen on a stale manifest would then regenerate everything on every build.
++    if (lines[*stamp_idx] == stamp_line)
++      return true;
+     lines[*stamp_idx] = stamp_line;
+   } else if (project_header_idx) {
+     lines.insert(std::next(lines.begin(), static_cast<std::ptrdiff_t>(*project_header_idx + 1)),

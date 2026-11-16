@@ -12,8 +12,9 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/string/buffer.h>
+#include <rex/string/text.h>
 
+#include "native/sdk.h"
 #include "shader_translate.h"
 
 namespace rexnative {

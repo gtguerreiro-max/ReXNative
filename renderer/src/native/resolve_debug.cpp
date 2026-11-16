@@ -5,8 +5,9 @@
 #include "win_handle.h"
 
 #include <rex/cvar.h>
+#include <rex/kernel/heap.h>
 #include <rex/logging.h>
-#include <rex/system/kernel_state.h>
+#include "host.h"
 
 #include <algorithm>
 #include <bit>
@@ -125,7 +126,7 @@ void Resolver::AfterSwap() {
   // frame's Swap only when the frame is recorded on the guest thread; on the render thread (the
   // default) the guest runs on, and the copies may hold a later frame's writes.
   Sleep(DWORD(std::max(0, REXCVAR_GET(rexnative_capture_hold_ms))));
-  const uint8_t* physical = rex::system::kernel_memory()->physical_membase();
+  const uint8_t* physical = rexnative::host::Memory()->GetPhysicalMembase();
   for (Dump::Entry& e : d.entries) {
     const uint8_t* g = physical + e.p.dest_base;
     e.guest.assign(g, g + e.p.dest_extent_bytes);

@@ -36,7 +36,7 @@
 
 #include "render_targets.h"
 
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 
 #include <cstdint>
 #include <functional>

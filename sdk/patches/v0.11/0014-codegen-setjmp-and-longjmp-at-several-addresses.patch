@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:27:08 +0000
+Subject: [PATCH 14/20] 0003-codegen-setjmp-and-longjmp-at-several-addresses
+
+---
+ src/codegen/builder/context.cpp |  6 ++--
+ src/codegen/config.cpp          | 59 ++++++++++++++++++++++++++++-----
+ src/codegen/config.h            | 17 ++++++++--
+ src/codegen/config_keys.cpp     | 10 ++++--
+ src/codegen/phase_register.cpp  |  3 ++
+ 5 files changed, 79 insertions(+), 16 deletions(-)
+
+diff --git a/src/codegen/builder/context.cpp b/src/codegen/builder/context.cpp
+index 1d676a14..3020a1f8 100644
+--- a/src/codegen/builder/context.cpp
++++ b/src/codegen/builder/context.cpp
+@@ -269,7 +269,7 @@ bool BuilderContext::CanTailCall() const {
+ 
+ bool BuilderContext::EmitTailCall(u32 address) {
+   const auto& cfg = GetConfig();
+-  if (!CanTailCall() || address == cfg.longjmp_address || address == cfg.setjmp_address) {
++  if (!CanTailCall() || cfg.IsLongjmp(address) || cfg.IsSetjmp(address)) {
+     return false;
+   }
+   const auto* target = FindCallTarget(base);
+@@ -288,12 +288,12 @@ bool BuilderContext::EmitTailCall(u32 address) {
+ void BuilderContext::EmitFunctionCall(u32 address) {
+   const auto& cfg = GetConfig();
+ 
+-  if (address == cfg.longjmp_address) {
++  if (cfg.IsLongjmp(address)) {
+     Println("\tppc_longjmp({}.u32, {}.s32);", R(3), R(4));
+     return;
+   }
+ 
+-  if (address == cfg.setjmp_address) {
++  if (cfg.IsSetjmp(address)) {
+     Println("\t{}", kSyncToCtx);
+     Println("\t{} = ctx;", Env());
+     Println("\t{}.s64 = ppc_setjmp({}.u32);", Temp(), R(3));
+diff --git a/src/codegen/config.cpp b/src/codegen/config.cpp
+index ce129900..ddbb70b7 100644
+--- a/src/codegen/config.cpp
++++ b/src/codegen/config.cpp
+@@ -149,14 +149,29 @@ bool ApplyTOML(const toml::table& root, RecompilerConfig& cfg, const std::string
+     cfg.is_dll = root["is_dll"].value_or(false);
+   }
+ 
+-  if (auto v = root["longjmp_address"].value<i64>()) {
+-    u32 addr = static_cast<u32>(*v);
+-    MergeScalar(cfg.longjmp_address, addr, "longjmp_address");
+-  }
+-  if (auto v = root["setjmp_address"].value<i64>()) {
+-    u32 addr = static_cast<u32>(*v);
+-    MergeScalar(cfg.setjmp_address, addr, "setjmp_address");
+-  }
++  // longjmp_address / setjmp_address: an address, or an array of every address the game calls
++  // it at (a body and the incremental linker's thunks to it). A later file's value replaces an
++  // earlier one's, as a scalar does; the first address is also the scalar.
++  auto jmp_addresses = [&](const char* key, u32& first, std::unordered_set<u32>& all) {
++    std::vector<u32> addrs;
++    if (auto v = root[key].value<i64>()) {
++      addrs.push_back(static_cast<u32>(*v));
++    } else if (auto* arr = root[key].as_array()) {
++      for (auto& e : *arr) {
++        if (auto a = e.value<i64>()) {
++          addrs.push_back(static_cast<u32>(*a));
++        }
++      }
++    }
++    if (addrs.empty()) {
++      return;
++    }
++    MergeScalar(first, addrs[0], key);
++    all.clear();
++    all.insert(addrs.begin(), addrs.end());
++  };
++  jmp_addresses("longjmp_address", cfg.longjmp_address, cfg.longjmp_addresses);
++  jmp_addresses("setjmp_address", cfg.setjmp_address, cfg.setjmp_addresses);
+   if (auto v = root["function_table_base"].value<i64>()) {
+     u32 addr = static_cast<u32>(*v);
+     MergeScalar(cfg.function_table_base, addr, "function_table_base");
+@@ -556,6 +571,8 @@ void RecompilerConfig::ClearAddressEntries() {
+   mid_asm_hooks.clear();
+   longjmp_address = 0;
+   setjmp_address = 0;
++  longjmp_addresses.clear();
++  setjmp_addresses.clear();
+   shim_functions.clear();
+   invalid_instruction_hints.clear();
+   declared_mmio_accesses.clear();
+@@ -593,6 +610,16 @@ void RecompilerConfig::MergeSharedEntriesIn(const RecompilerConfig& shared, u32
+       shared.setjmp_address != 0) {
+     setjmp_address = shared.setjmp_address;
+   }
++  for (u32 address : shared.longjmp_addresses) {
++    if (InImage(address, base, size)) {
++      longjmp_addresses.insert(address);
++    }
++  }
++  for (u32 address : shared.setjmp_addresses) {
++    if (InImage(address, base, size)) {
++      setjmp_addresses.insert(address);
++    }
++  }
+   for (const auto& [name, address] : shared.shim_functions) {
+     if (InImage(address, base, size)) {
+       shim_functions.try_emplace(name, address);
+@@ -646,6 +673,16 @@ std::vector<std::string> RecompilerConfig::ListEntriesOutside(
+   if (setjmp_address != 0) {
+     check("setjmp_address", setjmp_address);
+   }
++  for (u32 address : longjmp_addresses) {
++    if (address != longjmp_address) {
++      check("longjmp_address", address);
++    }
++  }
++  for (u32 address : setjmp_addresses) {
++    if (address != setjmp_address) {
++      check("setjmp_address", address);
++    }
++  }
+   std::sort(outside.begin(), outside.end());
+   return outside;
+ }
+@@ -662,6 +699,12 @@ RecompilerConfig::ValidationResult RecompilerConfig::Validate() const {
+ 
+   check_alignment(longjmp_address, "longjmp");
+   check_alignment(setjmp_address, "setjmp");
++  for (u32 addr : longjmp_addresses) {
++    check_alignment(addr, "longjmp");
++  }
++  for (u32 addr : setjmp_addresses) {
++    check_alignment(addr, "setjmp");
++  }
+   for (const auto& entry : declared_mmio_accesses) {
+     check_alignment(entry.first, "mmio");
+   }
+diff --git a/src/codegen/config.h b/src/codegen/config.h
+index 79023022..01a3cc4f 100644
+--- a/src/codegen/config.h
++++ b/src/codegen/config.h
+@@ -218,14 +218,27 @@ struct RecompilerConfig {
+   std::unordered_map<u32, MidAsmHook> mid_asm_hooks;
+   /**
+    * TOML key `longjmp_address`, default 0. Function address whose calls are emitted as
+-   * `ppc_longjmp`.
++   * `ppc_longjmp`. The key may also be an array of every address the game calls longjmp at (a
++   * body and the incremental linker's thunks to it, or a second copy of the CRT's): this is the
++   * first, longjmp_addresses holds all of them.
+    */
+   u32 longjmp_address = 0;
+   /**
+    * TOML key `setjmp_address`, default 0. Function address whose calls are emitted as
+-   * `ppc_setjmp`.
++   * `ppc_setjmp`. An array as for longjmp_address.
+    */
+   u32 setjmp_address = 0;
++  /** Every longjmp address, longjmp_address among them. */
++  std::unordered_set<u32> longjmp_addresses;
++  /** Every setjmp address, setjmp_address among them. */
++  std::unordered_set<u32> setjmp_addresses;
++
++  bool IsLongjmp(u32 address) const {
++    return address != 0 && (address == longjmp_address || longjmp_addresses.contains(address));
++  }
++  bool IsSetjmp(u32 address) const {
++    return address != 0 && (address == setjmp_address || setjmp_addresses.contains(address));
++  }
+   /**
+    * TOML key `function_table_base`, default 0. Guest address of this binary's indirect call
+    * table; 0 puts it right after the image. Needed when the next module is loaded too close to
+diff --git a/src/codegen/config_keys.cpp b/src/codegen/config_keys.cpp
+index 8b2fd614..b644ab8b 100644
+--- a/src/codegen/config_keys.cpp
++++ b/src/codegen/config_keys.cpp
+@@ -11,7 +11,7 @@ namespace rex::codegen {
+ 
+ namespace {
+ 
+-enum class Type : std::uint8_t { kString, kInteger, kBoolean, kArray, kTable };
++enum class Type : std::uint8_t { kString, kInteger, kBoolean, kArray, kTable, kIntegerOrArray };
+ 
+ struct KeySpec {
+   std::string_view name;
+@@ -32,8 +32,8 @@ constexpr std::array kBinaryKeys = {
+     KeySpec{"file_path", Type::kString},
+     KeySpec{"out_directory_path", Type::kString},
+     KeySpec{"template_dir", Type::kString},
+-    KeySpec{"longjmp_address", Type::kInteger},
+-    KeySpec{"setjmp_address", Type::kInteger},
++    KeySpec{"longjmp_address", Type::kIntegerOrArray},
++    KeySpec{"setjmp_address", Type::kIntegerOrArray},
+     KeySpec{"function_table_base", Type::kInteger},
+     KeySpec{"skip_lr", Type::kBoolean},
+     KeySpec{"skip_msr", Type::kBoolean},
+@@ -122,6 +122,8 @@ std::string_view TypeName(Type type) {
+       return "an array";
+     case Type::kTable:
+       return "a table";
++    case Type::kIntegerOrArray:
++      return "an integer or an array of integers";
+   }
+   return "";
+ }
+@@ -138,6 +140,8 @@ bool Matches(const toml::node& node, Type type) {
+       return node.is_array();
+     case Type::kTable:
+       return node.is_table();
++    case Type::kIntegerOrArray:
++      return node.is_integer() || node.is_array();
+   }
+   return false;
+ }
+diff --git a/src/codegen/phase_register.cpp b/src/codegen/phase_register.cpp
+index 9cae32b4..e2d2d26c 100644
+--- a/src/codegen/phase_register.cpp
++++ b/src/codegen/phase_register.cpp
+@@ -694,6 +694,9 @@ u32 FindRestoreHelper(const AnalysisState& state, const MillicodeEntry& entry) {
+   if (config.longjmp_address != 0) {
+     graph.DeclareNoReturn(config.longjmp_address);
+   }
++  for (u32 address : config.longjmp_addresses) {
++    graph.DeclareNoReturn(address);
++  }
+ 
+   size_t config_funcs = 0, config_chunks = 0;
+   for (const auto& [address, cfg] : config.functions) {

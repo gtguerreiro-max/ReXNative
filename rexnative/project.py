@@ -4,14 +4,19 @@ code, with ReXNative drawing it, built and laid out to run.
   python -m rexnative project <work>/<game> [--build] [--sdk-install DIR] [--sdk-src DIR]
          [--fidelityfx DIR] [--dlss-sdk DIR] [--dlss-nr DIR]
 
-Writes into the game's work folder (beside its manifest, generated/ and layer/):
-  CMakeLists.txt, src/main.cpp, src/<name>_app.h  what `rexglue init` writes, plus ReXNative
-                                                  (rexnative_add with layer/, the settings HUD)
+Writes into the game's work folder (beside its manifest, generated/ and layer/), for ReXGlue
+v0.11:
+  CMakeLists.txt, src/main.cpp,                   what `rexglue init` writes (find_package and
+  src/<name>_app.h, src/<name>_app.cpp            rexglue_project, a TitleApp), plus ReXNative
+                                                  (rexnative_add with layer/, renderer/src/host.h,
+                                                  the settings HUD)
+  src/import_stubs.cpp                            the imports the runtime lacks, as stubs
   <name>.toml                                     the run folder's configuration (kept once there)
-With --build: configures and builds it (clang-cl, Ninja, the Visual Studio environment from
-scripts/vcenv.cmd) in build/, then lays out run/: the executable, the SDK's and ReXNative's DLLs,
-the configuration, game/ (a junction to game-data/, which the app looks for beside it) and,
-with a title update installed (title_update.py), title-update/ (its files, mounted as update:).
+With --build: configures and builds it (clang++ from LLVM 20, $REXNATIVE_LLVM; Ninja; the Visual
+Studio environment from scripts/vcenv.cmd) in build/, then lays out run/: the executable, the
+DLLs the build staged (ReXGlue's modules, DLSS, FidelityFX), the configuration, game/ (a junction
+to game-data/, which the app looks for beside it) and, with a title update installed
+(title_update.py), title-update/ (its files, mounted as update:).
 Nothing of the game goes anywhere else. The SDK paths default to $REXNATIVE_SDK_INSTALL,
 $REXNATIVE_SDK_SRC, $REXNATIVE_FIDELITYFX, $REXNATIVE_DLSS_SDK and $REXNATIVE_DLSS_NR.
 """
@@ -24,10 +29,20 @@ import subprocess
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the ReXNative checkout
 
 # The ports' code generation flags (FromDustDeck's and Iron Brigade's build scripts): AVX2
-# (the Steam Deck has it), precise floating point as the console computes it.
-FLAGS = ('/clang:-march=x86-64-v3 /clang:-mtune=generic /clang:-mprefer-vector-width=128 '
-         '/clang:-ffp-model=precise /clang:-fno-math-errno /Zc:char8_t- -Wno-unknown-argument '
-         '-Wno-unused-command-line-argument /D_CRT_SECURE_NO_WARNINGS')
+# (the Steam Deck has it), precise floating point as the console computes it. ReXGlue v0.11
+# builds with clang++ (the GNU driver) from LLVM 20 or later.
+FLAGS = ('-march=x86-64-v3 -mtune=generic -mprefer-vector-width=128 -ffp-model=precise '
+         '-fno-math-errno -fno-char8_t -D_CRT_SECURE_NO_WARNINGS')
+# LLVM 20 (clang++, lld) for ReXGlue v0.11: $REXNATIVE_LLVM, else the first of these found.
+LLVM_DIRS = [os.environ.get('REXNATIVE_LLVM', ''), r'F:\Tools\LLVM-20.1.8\bin',
+             r'C:\Program Files\LLVM\bin']
+
+
+def llvm_dir():
+    for d in LLVM_DIRS:
+        if d and os.path.exists(os.path.join(d, 'clang++.exe' if os.name == 'nt' else 'clang++')):
+            return d
+    raise SystemExit('LLVM 20 not found: set REXNATIVE_LLVM to its bin folder')
 
 
 def manifest_name(work):
@@ -46,7 +61,7 @@ def _class_name(name):
 
 CMAKE = '''# {name}: recompiled with ReXGlue, drawn by ReXNative.
 # Written by `python -m rexnative project` (ReXNative); generated/ is rexglue codegen's and
-# layer/ `rexnative prepare`'s. The SDK boilerplate is in generated/rexglue.cmake.
+# layer/ `rexnative prepare`'s.
 
 cmake_minimum_required(VERSION 3.25)
 project({name} LANGUAGES CXX)
@@ -54,17 +69,23 @@ project({name} LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(generated/rexglue.cmake)
+find_package(rexglue 0.11.0 REQUIRED CONFIG)
+rexglue_project({name} OUTPUT_DIR generated/default)
+
+# Host code: the app, the stubs of the imports the runtime lacks, and ReXNative (rexnative_add
+# below) with the game's layer. OBJECT, not STATIC: an archive drops the hooks.
+add_library({name}_common OBJECT src/{name}_app.cpp src/import_stubs.cpp)
+rexglue_setup_host_library({name}_common)
 
 if(WIN32)
-    add_executable({name} WIN32 src/main.cpp src/crash_report.cpp src/import_stubs.cpp)
+    add_executable({name} WIN32 src/main.cpp)
 else()
-    add_executable({name} src/main.cpp src/crash_report.cpp src/import_stubs.cpp)
+    add_executable({name} src/main.cpp)
 endif()
-
-# The Xenos GPU plugin: ReXGlue's stock renderer. With ReXNative it only runs the GPU's fences
-# and interrupts (--gpu_skip_draws), and it is the comparison renderer (--rexnative=false).
-rexglue_setup_target({name} GPU_PLUGINS xenos)
+# ReXGlue's Xenos GPU driver: with ReXNative it only runs the GPU's fences and interrupts
+# (gpu.xenos.skip_draws), and it is the comparison renderer (--rexnative=false, or F9).
+rexglue_setup_target({name})
+target_link_libraries({name} PRIVATE {name}_common)
 
 set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
 set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")
@@ -72,100 +93,138 @@ set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
 set(REXNATIVE_DLSS_SDK "" CACHE PATH "NVIDIA DLSS SDK")
 set(REXNATIVE_DLSS_NR "" CACHE PATH "NVIDIA DLSS 5 headers")
 include("${{REXNATIVE_DIR}}/renderer/rexnative.cmake")
-rexnative_add({name}
+rexnative_add({name}_common
+    EXECUTABLE      {name}
     LAYER_DIR       "${{CMAKE_CURRENT_SOURCE_DIR}}/layer"
     REXGLUE_SDK_SRC "${{REXNATIVE_REXGLUE_SDK_SRC}}"
     FIDELITYFX_SDK  "${{REXNATIVE_FIDELITYFX_SDK}}"
     DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
     DLSS_NR         "${{REXNATIVE_DLSS_NR}}")
 
-if(MSVC)
-    target_link_options({name} PRIVATE /MAP)
-endif()
+# The link map (build/{name}.map) names the recompiled guest functions of a crash's offsets.
+target_link_options({name} PRIVATE "LINKER:/MAP")
 '''
 
 MAIN = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by `rexnative project`).
-
-#include "generated/default/{name}_init.h"
-
 #include "{name}_app.h"
 
-REX_DEFINE_APP({name}, {cls}::Create)
+REX_TITLE_APP({cls})
 '''
 
-APP = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by `rexnative project`).
-
+APP_H = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by `rexnative project`).
 #pragma once
 
+#include <rex/app/title_app.h>
+
+class {cls} : public rex::app::TitleApp {{
+ public:
+  {cls}();
+
+ protected:
+  rex::Result<void> OnConfigure(rex::SettingsRegistry& settings) override;
+  rex::Result<void> OnInit() override;
+  rex::Result<void> OnTitleLaunch(rex::kernel::TitleRuntime& title) override;
+  void OnShutdown() override;
+}};
+'''
+
+APP_CPP = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by `rexnative project`).
+#include "{name}_app.h"
+
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/rex_app.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/logging/log_category.h>
 
+#include "generated/default/{name}_init.h"
+#include "host.h"     // ReXNative's connection to the app
 #include "hud/hud.h"  // ReXNative's settings HUD
 
-void InstallCrashReport();  // crash_report.cpp
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
-// Included by main.cpp only, after the generated init header (REX_IMAGE_BASE / SIZE).
 REXCVAR_DEFINE_STRING(rexnative_dump_image, "", "ReXNative",
                       "Write the loaded default.xex image to this file when it is loaded "
                       "(rexnative project --find-functions reads it)");
 
-class {cls} : public rex::ReXApp {{
- public:
-  using rex::ReXApp::ReXApp;
+namespace {{
 
-  // crash.txt beside the executable: the host stack (module + offset; the link map,
-  // build/<name>.map, names the recompiled guest functions) when the process faults or aborts.
-  void OnPostInitLogging() override {{ InstallCrashReport(); }}
+// The folder of the executable: the game's files, its title update and the player's data are
+// beside it (game/, title-update/, userdata/).
+std::filesystem::path ExeDir() {{
+  wchar_t path[MAX_PATH];
+  const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+  return std::filesystem::path(std::wstring(path, n)).parent_path();
+}}
 
-  // --rexnative_dump_image: the image as loaded (decrypted, decompressed), before any guest
-  // code runs.
-  void OnPostLoadXexImage() override {{
-    const std::string path = REXCVAR_GET(rexnative_dump_image);
-    if (path.empty()) return;
-    const auto* data = rex::system::kernel_memory()->TranslateVirtual<const uint8_t*>(
-        uint32_t(REX_IMAGE_BASE));
-    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {{
-      std::fwrite(data, 1, size_t(REX_IMAGE_SIZE), f);
+}}  // namespace
+
+{cls}::{cls}() : TitleApp("{name}", kPPCImageConfig) {{}}
+
+rex::Result<void> {cls}::OnConfigure(rex::SettingsRegistry& settings) {{
+  rexnative::host::Configure();
+  const std::filesystem::path dir = ExeDir();
+  std::error_code ec;
+  if (std::filesystem::is_directory(dir / "game", ec))
+    (void)settings.SetText(rex::SettingLayer::kTitle, "title.game_root", (dir / "game").string());
+  if (std::filesystem::is_directory(dir / "title-update", ec))
+    (void)settings.SetText(rex::SettingLayer::kTitle, "title.update_root",
+                           (dir / "title-update").string());
+  (void)settings.SetText(rex::SettingLayer::kTitle, "app.user_root", (dir / "userdata").string());
+  return TitleApp::OnConfigure(settings);
+}}
+
+rex::Result<void> {cls}::OnInit() {{
+  if (auto r = TitleApp::OnInit(); !r) return r;
+  rexnative::host::Attach(*this);
+  rexnative::hud::Initialize();
+  return {{}};
+}}
+
+// --rexnative_dump_image: the image as loaded (decrypted, decompressed), before any guest code
+// runs.
+rex::Result<void> {cls}::OnTitleLaunch(rex::kernel::TitleRuntime& title) {{
+  if (const std::string path = REXCVAR_GET(rexnative_dump_image); !path.empty()) {{
+    auto image = title.GetGuestMemory().GetReadOnlySpan(uint32_t(REX_IMAGE_BASE),
+                                                        uint32_t(REX_IMAGE_SIZE));
+    if (std::FILE* f = image ? std::fopen(path.c_str(), "wb") : nullptr) {{
+      std::fwrite(image->data(), 1, image->size(), f);
       std::fclose(f);
       REXLOG_INFO("image dump: {{:08X}}+{{:X}} -> {{}}", uint32_t(REX_IMAGE_BASE),
                   uint32_t(REX_IMAGE_SIZE), path);
     }}
   }}
+  return TitleApp::OnTitleLaunch(title);
+}}
 
-  // The settings HUD (F1, or Back+Start on the pad) writes the configuration file.
-  void OnConfigurePaths(rex::PathConfig& paths) override {{
-    rexnative::hud::SetConfigPath(paths.config_path);
-  }}
-  void OnCreateDialogs(rex::ui::ImGuiDrawer*) override {{ rexnative::hud::Initialize(window()); }}
-  void OnShutdown() override {{ rexnative::hud::Shutdown(); }}
-
-  static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {{
-    return std::unique_ptr<{cls}>(new {cls}(ctx, "{name}", PPCImageConfig));
-  }}
-}};
+void {cls}::OnShutdown() {{
+  rexnative::hud::Shutdown();
+  rexnative::host::Detach();
+  TitleApp::OnShutdown();
+}}
 '''
 
-TOML = '''# {name} (ReXGlue), drawn by ReXNative. Read at every start; a command line flag
-# (--name=value) overrides a setting for that session. Written by `rexnative project`.
+TOML = '''# {name} (ReXGlue), drawn by ReXNative. Read at every start; a command line option
+# (--section.name=value) overrides a setting for that session. Written by `rexnative project`.
 
 # A window first: a new port is tested windowed.
+[ui]
 window_width = 1280
 window_height = 720
 fullscreen = false
 
-# ReXNative draws and presents the game; the Xenos plugin runs the GPU's fences and interrupts
-# (rexnative = false: the stock renderer, to compare).
-gpu_plugin = "xenos"
-rexnative = true
-
 # The full game's license (XBLA titles check it; 0 runs the trial).
+[kernel]
 license_mask = 1
+
+# ReXNative draws and presents the game; ReXGlue's Xenos GPU driver runs the GPU's fences and
+# interrupts (enabled = false: the stock renderer, to compare).
+[rexnative]
+enabled = true
 '''
 
 
@@ -195,12 +254,15 @@ def write(work):
     rexnative = HERE.replace('\\', '/')
     _write(os.path.join(work, 'CMakeLists.txt'), CMAKE.format(name=name, rexnative=rexnative))
     _write(os.path.join(work, 'src', 'main.cpp'), MAIN.format(name=name, cls=cls))
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates',
-                           'crash_report.cpp'), encoding='utf-8') as f:
-        _write(os.path.join(work, 'src', 'crash_report.cpp'), f.read())
-    if not os.path.exists(os.path.join(work, 'src', 'import_stubs.cpp')):
-        write_import_stubs(work, [])
-    _write(os.path.join(work, 'src', '%s_app.h' % name), APP.format(name=name, cls=cls))
+    # ReXGlue v0.11 writes its own crash report (logs/), and the generated sources.cmake replaced
+    # generated/rexglue.cmake.
+    for old in (os.path.join(work, 'src', 'crash_report.cpp'),
+                os.path.join(work, 'generated', 'rexglue.cmake')):
+        if os.path.exists(old):
+            os.remove(old)
+    write_import_stubs(work, [])
+    _write(os.path.join(work, 'src', '%s_app.h' % name), APP_H.format(name=name, cls=cls))
+    _write(os.path.join(work, 'src', '%s_app.cpp' % name), APP_CPP.format(name=name, cls=cls))
     _write(os.path.join(work, '%s.toml' % name), TOML.format(name=name), keep=True)
     return name
 
@@ -221,10 +283,18 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     dlss_sdk = _need(dlss_sdk, 'the DLSS SDK', 'REXNATIVE_DLSS_SDK')
     dlss_nr = _need(dlss_nr, 'the DLSS 5 headers', 'REXNATIVE_DLSS_NR')
     vcenv = os.path.join(HERE, 'scripts', 'vcenv.cmd')
+    llvm = llvm_dir()
     bdir = os.path.join(work, 'build')
     jobs = jobs or max(1, (os.cpu_count() or 2) - 2)
+    # A build folder of the old SDK (clang-cl, generated/rexglue.cmake) cannot be reused.
+    cache = os.path.join(bdir, 'CMakeCache.txt')
+    if os.path.exists(cache):
+        with open(cache, encoding='utf-8', errors='replace') as f:
+            old_sdk = 'clang-cl' in f.read()
+        if old_sdk:
+            shutil.rmtree(bdir)
     configure = ('cmake -S "{w}" -B "{b}" -G Ninja -DCMAKE_BUILD_TYPE=Release '
-                 '-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_LINKER=lld-link '
+                 '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
                  '"-DCMAKE_PREFIX_PATH={sdk}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF '
                  '"-DREXNATIVE_REXGLUE_SDK_SRC={src}" "-DREXNATIVE_FIDELITYFX_SDK={ffx}" '
                  '"-DREXNATIVE_DLSS_SDK={dlss}" "-DREXNATIVE_DLSS_NR={nr}"').format(
@@ -236,8 +306,8 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
         # A batch file: cmd's own quoting rules, not Python's argument escaping.
         script = os.path.join(bdir, '%s.cmd' % what)
         with open(script, 'w', encoding='utf-8', newline='\r\n') as f:
-            f.write('@echo off\ncall "%s" >nul || exit /b 1\nset "CFLAGS=%s"\nset "CXXFLAGS=%s"\n'
-                    '%s\n' % (vcenv, FLAGS, FLAGS, cmd))
+            f.write('@echo off\ncall "%s" >nul || exit /b 1\nset "PATH=%s;%%PATH%%"\n'
+                    'set "CFLAGS=%s"\nset "CXXFLAGS=%s"\n%s\n' % (vcenv, llvm, FLAGS, FLAGS, cmd))
         log('%s: %s (log: %s)' % (name, what, logf))
         with open(logf, 'w', encoding='utf-8', errors='replace') as out:
             r = subprocess.run(['cmd', '/d', '/c', script], stdout=out, stderr=subprocess.STDOUT)
@@ -246,7 +316,8 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
                 text = f.read()
             labels = sorted(set(int(a, 16) for a in UNDECLARED_LABEL.findall(text)))
             if labels:
-                sites = [(f, int(n), int(a, 16)) for f, n, a in UNDECLARED_LABEL_AT.findall(text)]
+                sites = [(f, int(n or m), int(a, 16))
+                         for f, n, m, a in UNDECLARED_LABEL_AT.findall(text)]
                 raise LabelsMissing(labels, sites)
             imports = sorted(set(UNDEFINED_IMPORT.findall(text)))
             if imports and write_import_stubs(work, imports):
@@ -261,10 +332,15 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     for f in [exe, os.path.join(bdir, '%s.pdb' % name)]:
         if os.path.exists(f):
             shutil.copy2(f, run)
-    for pattern in ('nvngx_*.dll', 'amd_fidelityfx_*_dx12.dll'):
-        for f in glob.glob(os.path.join(bdir, pattern)):
-            shutil.copy2(f, run)
-    for f in glob.glob(os.path.join(sdk_install, 'bin', '*.dll')):
+    # Every DLL the build staged beside the executable: ReXGlue's modules and drivers, SDL3,
+    # NVIDIA's DLSS and AMD's FidelityFX; the ReXGlue DLLs of an older SDK go (v0.10's
+    # rexruntime.dll and rexgpu-xenos.dll, its FidelityFX runtime).
+    staged = {os.path.basename(f).lower() for f in glob.glob(os.path.join(bdir, '*.dll'))}
+    for f in glob.glob(os.path.join(run, '*.dll')):
+        n = os.path.basename(f).lower()
+        if n not in staged and (n.startswith('rex') or n == 'amd_fidelityfx_dx12.dll'):
+            os.remove(f)
+    for f in glob.glob(os.path.join(bdir, '*.dll')):
         shutil.copy2(f, run)
     toml = os.path.join(work, '%s.toml' % name)
     if os.path.exists(toml) and not os.path.exists(os.path.join(run, '%s.toml' % name)):
@@ -302,7 +378,7 @@ def write_import_stubs(work, names):
     allnames = sorted(set(have) | set(names))
     lines = ['// Imports the runtime does not export, as stubs (written by `rexnative project` from the',
              '// link errors). Each logs a warning and returns its value.', '',
-             '#include <rex/hook.h>', '#include <rex/logging.h>', '']
+             '#include <rex/ppc/hook.h>', '#include <rex/logging/log_category.h>', '']
     for n in allnames:
         value = next((v for prefix, v in STUB_RETURNS if n.startswith(prefix)), 0)
         lines.append('REX_EXPORT_STUB_RETURN(__imp__%s, 0x%X)' % (n, value))
@@ -314,7 +390,8 @@ def write_import_stubs(work, names):
 # functions, such as a common epilogue): the target becomes a function of its own.
 UNDECLARED_LABEL = re.compile(r"use of undeclared label 'loc_([0-9A-F]{8})'")
 UNDECLARED_LABEL_AT = re.compile(
-    r"^(\S.*?\.cpp)\((\d+),\d+\): error: use of undeclared label 'loc_([0-9A-F]{8})'", re.M)
+    r"^(\S.*?\.cpp)(?:\((\d+),\d+\)|:(\d+):\d+): error: use of undeclared label "
+    r"'loc_([0-9A-F]{8})'", re.M)
 DEFINE_FUNC = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\)')
 
 
@@ -497,8 +574,8 @@ def write_setjmp(work, setjmps, longjmps):
 
 
 def write_crt(work, functions_found):
-    """Writes <work>/crt.toml (the manifest includes it): ReXGlue's [rexcrt] table, the game's
-    functions the SDK replaces with its own (kernel/crt: the XAPI fibers); True when it
+    """Writes <work>/crt.toml (the manifest includes it): ReXGlue's [shim] table (v0.11; [rexcrt]
+    before), the game's functions the SDK replaces with its own (the XAPI fibers); True when it
     changed."""
     path = os.path.join(work, 'crt.toml')
     if not functions_found:
@@ -506,7 +583,7 @@ def write_crt(work, functions_found):
     text = '\n'.join([
         "# The game's XAPI functions the ReXGlue SDK replaces with its own (kernel/crt), found by",
         '# ReXNative (rexnative project --find-functions). Included by the manifest.',
-        '[rexcrt]'] + ['%s = 0x%08X' % kv for kv in functions_found.items()] + [''])
+        '[shim]'] + ['%s = 0x%08X' % kv for kv in functions_found.items()] + [''])
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
             if f.read() == text:

@@ -8,8 +8,7 @@
 #include <ffx_framegeneration.h>
 
 #include <rex/cvar.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(rexnative_frame_generation, false, "ReXNative",
@@ -64,7 +63,6 @@ void FrameGeneration::OnSwap(uint32_t front_base) {
 }
 
 bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs) {
-  using enum rex::graphics::Register;
   const SurfaceRegs& f = front_->regs;
   // A game whose front buffer is resolved from the scene's surface itself (Jet Set Radio: its
   // characters, their outlines and its HUD all drawn into the scene, blended after opaque

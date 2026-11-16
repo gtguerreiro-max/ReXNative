@@ -7,7 +7,7 @@
 #include "log.h"
 #include "scene.h"
 
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 #include <rex/logging.h>
 
 #include <algorithm>

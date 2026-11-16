@@ -9,9 +9,10 @@
 #include <cstring>
 
 #include <rex/assert.h>
-#include <rex/graphics/format/dxbc.h>
-#include <rex/graphics/pipeline/shader/dxbc_translator.h>
-#include <rex/graphics/xenos.h>
+#include "gpu/xenos/format/dxbc.h"
+#include "gpu/xenos/pipeline/shader/dxbc.h"
+#include "gpu/xenos/pipeline/shader/dxbc_translator.h"
+#include "native/sdk.h"
 #include <rex/math.h>
 
 // thirdparty/dxbc/DXBCChecksum.cpp, compiled into rexnative_shader_xlate (shader_xlate.cmake).
@@ -20,6 +21,8 @@ void CalculateDXBCChecksum(unsigned char* pData, unsigned int dwSize, unsigned i
 namespace rexnative {
 
 using namespace rex::graphics;
+using namespace rex::gpu;
+using DxbcShaderTranslator = rex::gpu::DXBCShaderTranslator;
 using PipelineGeometryShader = GeometryShaderType;
 
 namespace {
@@ -59,7 +62,7 @@ uint32_t GeometryShaderKeyFor(xenos::PrimitiveType primitive_type, uint64_t vert
   GeometryShaderKey key;
   key.type = type;
   key.interpolator_count =
-      rex::bit_count(vm.vertex.interpolator_mask) +
+      rex::BitCount(vm.vertex.interpolator_mask) +
       (vm.vertex.motion_vectors ? DxbcShaderTranslator::kMotionVectorInterpolatorCount : 0);
   key.user_clip_plane_count = vm.vertex.user_clip_plane_count;
   key.user_clip_plane_cull = vm.vertex.user_clip_plane_cull;
@@ -106,19 +109,19 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
   // shader_out.resize(rdef_position_dwords);
 
   // RDEF header - the actual definitions will be written if needed.
-  shader_out.resize(rdef_position_dwords + sizeof(dxbc::RdefHeader) / sizeof(uint32_t));
+  shader_out.resize(rdef_position_dwords + sizeof(dxbc::RDEFHeader) / sizeof(uint32_t));
   // Generator name.
   dxbc::AppendAlignedString(shader_out, "Xenia");
   {
     auto& rdef_header =
-        *reinterpret_cast<dxbc::RdefHeader*>(shader_out.data() + rdef_position_dwords);
-    rdef_header.shader_model = dxbc::RdefShaderModel::kGeometryShader5_1;
+        *reinterpret_cast<dxbc::RDEFHeader*>(shader_out.data() + rdef_position_dwords);
+    rdef_header.shader_model = dxbc::RDEFShaderModel::kGeometryShader51;
     rdef_header.compile_flags =
         dxbc::kCompileFlagNoPreshader | dxbc::kCompileFlagPreferFlowControl |
-        dxbc::kCompileFlagIeeeStrictness | dxbc::kCompileFlagAllResourcesBound;
+        dxbc::kCompileFlagIEEEStrictness | dxbc::kCompileFlagAllResourcesBound;
     // Generator name is right after the header.
-    rdef_header.generator_name_ptr = sizeof(dxbc::RdefHeader);
-    rdef_header.fourcc = dxbc::RdefHeader::FourCC::k5_1;
+    rdef_header.generator_name_ptr = sizeof(dxbc::RDEFHeader);
+    rdef_header.fourcc = dxbc::RDEFHeader::FourCC::k51;
     rdef_header.InitializeSizes();
   }
 
@@ -136,12 +139,12 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     uint32_t rdef_type_float2_position_dwords = uint32_t(shader_out.size());
     uint32_t rdef_type_float2_ptr =
         uint32_t((rdef_type_float2_position_dwords - rdef_position_dwords) * sizeof(uint32_t));
-    shader_out.resize(rdef_type_float2_position_dwords + sizeof(dxbc::RdefType) / sizeof(uint32_t));
+    shader_out.resize(rdef_type_float2_position_dwords + sizeof(dxbc::RDEFType) / sizeof(uint32_t));
     {
       auto& rdef_type_float2 =
-          *reinterpret_cast<dxbc::RdefType*>(shader_out.data() + rdef_type_float2_position_dwords);
-      rdef_type_float2.variable_class = dxbc::RdefVariableClass::kVector;
-      rdef_type_float2.variable_type = dxbc::RdefVariableType::kFloat;
+          *reinterpret_cast<dxbc::RDEFType*>(shader_out.data() + rdef_type_float2_position_dwords);
+      rdef_type_float2.variable_class = dxbc::RDEFVariableClass::kVector;
+      rdef_type_float2.variable_type = dxbc::RDEFVariableType::kFloat;
       rdef_type_float2.row_count = 1;
       rdef_type_float2.column_count = 2;
       rdef_type_float2.name_ptr = rdef_name_ptr_float2;
@@ -166,19 +169,17 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     uint32_t rdef_constants_ptr =
         uint32_t((rdef_constants_position_dwords - rdef_position_dwords) * sizeof(uint32_t));
     shader_out.resize(rdef_constants_position_dwords +
-                      sizeof(dxbc::RdefVariable) / sizeof(uint32_t) * kPointConstantCount);
+                      sizeof(dxbc::RDEFVariable) / sizeof(uint32_t) * kPointConstantCount);
     {
       auto rdef_constants =
-          reinterpret_cast<dxbc::RdefVariable*>(shader_out.data() + rdef_constants_position_dwords);
+          reinterpret_cast<dxbc::RDEFVariable*>(shader_out.data() + rdef_constants_position_dwords);
       // float2 xe_point_constant_diameter
       static_assert(sizeof(DxbcShaderTranslator::SystemConstants::point_constant_diameter) ==
                         sizeof(float) * 2,
                     "DxbcShaderTranslator point_constant_diameter system constant size "
                     "differs between the shader translator and geometry shader "
                     "generation");
-      static_assert_size(DxbcShaderTranslator::SystemConstants::point_constant_diameter,
-                         sizeof(float) * 2);
-      dxbc::RdefVariable& rdef_constant_point_constant_diameter =
+      dxbc::RDEFVariable& rdef_constant_point_constant_diameter =
           rdef_constants[kPointConstantConstantDiameter];
       rdef_constant_point_constant_diameter.name_ptr = rdef_name_ptr_xe_point_constant_diameter;
       rdef_constant_point_constant_diameter.start_offset_bytes =
@@ -195,7 +196,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
           "DxbcShaderTranslator point_screen_diameter_to_ndc_radius system "
           "constant size differs between the shader translator and geometry "
           "shader generation");
-      dxbc::RdefVariable& rdef_constant_point_screen_diameter_to_ndc_radius =
+      dxbc::RDEFVariable& rdef_constant_point_screen_diameter_to_ndc_radius =
           rdef_constants[kPointConstantScreenDiameterToNDCRadius];
       rdef_constant_point_screen_diameter_to_ndc_radius.name_ptr =
           rdef_name_ptr_xe_point_screen_diameter_to_ndc_radius;
@@ -216,14 +217,14 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     name_ptr += dxbc::AppendAlignedString(shader_out, "xe_system_cbuffer");
     // Constant buffers.
     uint32_t rdef_cbuffer_position_dwords = uint32_t(shader_out.size());
-    shader_out.resize(rdef_cbuffer_position_dwords + sizeof(dxbc::RdefCbuffer) / sizeof(uint32_t));
+    shader_out.resize(rdef_cbuffer_position_dwords + sizeof(dxbc::RDEFCbuffer) / sizeof(uint32_t));
     {
       auto& rdef_cbuffer_system =
-          *reinterpret_cast<dxbc::RdefCbuffer*>(shader_out.data() + rdef_cbuffer_position_dwords);
+          *reinterpret_cast<dxbc::RDEFCbuffer*>(shader_out.data() + rdef_cbuffer_position_dwords);
       rdef_cbuffer_system.name_ptr = rdef_name_ptr_xe_system_cbuffer;
       rdef_cbuffer_system.variable_count = kPointConstantCount;
       rdef_cbuffer_system.variables_ptr = rdef_constants_ptr;
-      auto rdef_constants = reinterpret_cast<const dxbc::RdefVariable*>(
+      auto rdef_constants = reinterpret_cast<const dxbc::RDEFVariable*>(
           shader_out.data() + rdef_constants_position_dwords);
       for (uint32_t i = 0; i < kPointConstantCount; ++i) {
         system_cbuffer_size_vector_aligned_bytes =
@@ -245,29 +246,29 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
                               sizeof(float) * 4 * 6));
       }
       system_cbuffer_size_vector_aligned_bytes =
-          rex::align(system_cbuffer_size_vector_aligned_bytes, uint32_t(sizeof(uint32_t) * 4));
+          rex::RoundUpPow2(system_cbuffer_size_vector_aligned_bytes, uint32_t(sizeof(uint32_t) * 4));
       rdef_cbuffer_system.size_vector_aligned_bytes = system_cbuffer_size_vector_aligned_bytes;
     }
 
     // Bindings - xe_system_cbuffer only.
     uint32_t rdef_binding_position_dwords = uint32_t(shader_out.size());
     shader_out.resize(rdef_binding_position_dwords +
-                      sizeof(dxbc::RdefInputBind) / sizeof(uint32_t));
+                      sizeof(dxbc::RDEFInputBind) / sizeof(uint32_t));
     {
       auto& rdef_binding_cbuffer_system =
-          *reinterpret_cast<dxbc::RdefInputBind*>(shader_out.data() + rdef_binding_position_dwords);
+          *reinterpret_cast<dxbc::RDEFInputBind*>(shader_out.data() + rdef_binding_position_dwords);
       rdef_binding_cbuffer_system.name_ptr = rdef_name_ptr_xe_system_cbuffer;
-      rdef_binding_cbuffer_system.type = dxbc::RdefInputType::kCbuffer;
+      rdef_binding_cbuffer_system.type = dxbc::RDEFInputType::kCbuffer;
       rdef_binding_cbuffer_system.bind_point =
           uint32_t(DxbcShaderTranslator::CbufferRegister::kSystemConstants);
       rdef_binding_cbuffer_system.bind_count = 1;
-      rdef_binding_cbuffer_system.flags = dxbc::kRdefInputFlagUserPacked;
+      rdef_binding_cbuffer_system.flags = dxbc::kRDEFInputFlagUserPacked;
     }
 
     // Pointers in the header.
     {
       auto& rdef_header =
-          *reinterpret_cast<dxbc::RdefHeader*>(shader_out.data() + rdef_position_dwords);
+          *reinterpret_cast<dxbc::RDEFHeader*>(shader_out.data() + rdef_position_dwords);
       rdef_header.cbuffer_count = 1;
       rdef_header.cbuffers_ptr =
           uint32_t((rdef_cbuffer_position_dwords - rdef_position_dwords) * sizeof(uint32_t));
@@ -355,7 +356,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     if (key.interpolator_count) {
       input_register_interpolators = input_register_index;
       for (uint32_t i = 0; i < key.interpolator_count; ++i) {
-        assert_true(isgn_parameter_index < isgn_parameter_count);
+        REX_ASSERT(isgn_parameter_index < isgn_parameter_count);
         dxbc::SignatureParameter& isgn_interpolator = isgn_parameters[isgn_parameter_index++];
         isgn_interpolator.semantic_name_ptr = isgn_name_ptr_texcoord;
         isgn_interpolator.semantic_index = i;
@@ -368,10 +369,10 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
 
     // Position (SV_Position).
     input_register_position = input_register_index;
-    assert_true(isgn_parameter_index < isgn_parameter_count);
+    REX_ASSERT(isgn_parameter_index < isgn_parameter_count);
     dxbc::SignatureParameter& isgn_sv_position = isgn_parameters[isgn_parameter_index++];
     isgn_sv_position.semantic_name_ptr = isgn_name_ptr_sv_position;
-    isgn_sv_position.system_value = dxbc::Name::kPosition;
+    isgn_sv_position.system_value = dxbc::SystemValueName::kPosition;
     isgn_sv_position.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
     isgn_sv_position.register_index = input_register_index++;
     isgn_sv_position.mask = 0b1111;
@@ -386,7 +387,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
           dxbc::SignatureParameter& isgn_sv_clip_distance = isgn_parameters[isgn_parameter_index++];
           isgn_sv_clip_distance.semantic_name_ptr = isgn_name_ptr_sv_clip_distance;
           isgn_sv_clip_distance.semantic_index = i / 4;
-          isgn_sv_clip_distance.system_value = dxbc::Name::kClipDistance;
+          isgn_sv_clip_distance.system_value = dxbc::SystemValueName::kClipDistance;
           isgn_sv_clip_distance.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
           isgn_sv_clip_distance.register_index = input_register_index;
           uint8_t isgn_sv_clip_distance_mask =
@@ -398,7 +399,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
           dxbc::SignatureParameter& isgn_sv_cull_distance = isgn_parameters[isgn_parameter_index++];
           isgn_sv_cull_distance.semantic_name_ptr = isgn_name_ptr_sv_cull_distance;
           isgn_sv_cull_distance.semantic_index = isgn_cull_distance_semantic_index++;
-          isgn_sv_cull_distance.system_value = dxbc::Name::kCullDistance;
+          isgn_sv_cull_distance.system_value = dxbc::SystemValueName::kCullDistance;
           isgn_sv_cull_distance.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
           isgn_sv_cull_distance.register_index = input_register_index;
           uint8_t isgn_sv_cull_distance_mask =
@@ -416,7 +417,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     // Point size (XEPSIZE).
     if (key.has_point_size) {
       input_register_point_size = input_register_index;
-      assert_true(isgn_parameter_index < isgn_parameter_count);
+      REX_ASSERT(isgn_parameter_index < isgn_parameter_count);
       dxbc::SignatureParameter& isgn_point_size = isgn_parameters[isgn_parameter_index++];
       isgn_point_size.semantic_name_ptr = isgn_name_ptr_xepsize;
       isgn_point_size.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
@@ -426,7 +427,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
           key.type == PipelineGeometryShader::kPointList ? 0b0001 : 0;
     }
 
-    assert_true(isgn_parameter_index == isgn_parameter_count);
+    REX_ASSERT(isgn_parameter_index == isgn_parameter_count);
   }
 
   {
@@ -492,7 +493,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     if (key.interpolator_count) {
       output_register_interpolators = output_register_index;
       for (uint32_t i = 0; i < key.interpolator_count; ++i) {
-        assert_true(osgn_parameter_index < osgn_parameter_count);
+        REX_ASSERT(osgn_parameter_index < osgn_parameter_count);
         dxbc::SignatureParameterForGS& osgn_interpolator = osgn_parameters[osgn_parameter_index++];
         osgn_interpolator.semantic_name_ptr = osgn_name_ptr_texcoord;
         osgn_interpolator.semantic_index = i;
@@ -505,7 +506,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     // Point coordinates (XESPRITETEXCOORD).
     if (key.has_point_coordinates) {
       output_register_point_coordinates = output_register_index;
-      assert_true(osgn_parameter_index < osgn_parameter_count);
+      REX_ASSERT(osgn_parameter_index < osgn_parameter_count);
       dxbc::SignatureParameterForGS& osgn_point_coordinates =
           osgn_parameters[osgn_parameter_index++];
       osgn_point_coordinates.semantic_name_ptr = osgn_name_ptr_xespritetexcoord;
@@ -517,10 +518,10 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
 
     // Position (SV_Position).
     output_register_position = output_register_index;
-    assert_true(osgn_parameter_index < osgn_parameter_count);
+    REX_ASSERT(osgn_parameter_index < osgn_parameter_count);
     dxbc::SignatureParameterForGS& osgn_sv_position = osgn_parameters[osgn_parameter_index++];
     osgn_sv_position.semantic_name_ptr = osgn_name_ptr_sv_position;
-    osgn_sv_position.system_value = dxbc::Name::kPosition;
+    osgn_sv_position.system_value = dxbc::SystemValueName::kPosition;
     osgn_sv_position.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
     osgn_sv_position.register_index = output_register_index++;
     osgn_sv_position.mask = 0b1111;
@@ -533,7 +534,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
             osgn_parameters[osgn_parameter_index++];
         osgn_sv_clip_distance.semantic_name_ptr = osgn_name_ptr_sv_clip_distance;
         osgn_sv_clip_distance.semantic_index = i / 4;
-        osgn_sv_clip_distance.system_value = dxbc::Name::kClipDistance;
+        osgn_sv_clip_distance.system_value = dxbc::SystemValueName::kClipDistance;
         osgn_sv_clip_distance.component_type = dxbc::SignatureRegisterComponentType::kFloat32;
         osgn_sv_clip_distance.register_index = output_register_index++;
         uint8_t osgn_sv_clip_distance_mask =
@@ -543,7 +544,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
       }
     }
 
-    assert_true(osgn_parameter_index == osgn_parameter_count);
+    REX_ASSERT(osgn_parameter_index == osgn_parameter_count);
   }
 
   {
@@ -575,7 +576,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
 
   if (system_cbuffer_size_vector_aligned_bytes) {
     a.OpDclConstantBuffer(
-        dxbc::Src::CB(dxbc::Src::Dcl, 0,
+        dxbc::Src::CB(dxbc::Src::kDcl, 0,
                       uint32_t(DxbcShaderTranslator::CbufferRegister::kSystemConstants),
                       uint32_t(DxbcShaderTranslator::CbufferRegister::kSystemConstants)),
         system_cbuffer_size_vector_aligned_bytes / (sizeof(uint32_t) * 4));
@@ -608,19 +609,19 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
       max_output_vertex_count = 4;
       break;
     default:
-      assert_unhandled_case(key.type);
+      REX_UNHANDLED_CASE(key.type);
   }
 
-  assert_false(key.interpolator_count && input_register_interpolators == UINT32_MAX);
+  REX_ASSERT(!(key.interpolator_count && input_register_interpolators == UINT32_MAX));
   for (uint32_t i = 0; i < key.interpolator_count; ++i) {
     a.OpDclInput(dxbc::Dest::V2D(input_primitive_vertex_count, input_register_interpolators + i));
   }
   a.OpDclInputSIV(dxbc::Dest::V2D(input_primitive_vertex_count, input_register_position),
-                  dxbc::Name::kPosition);
+                  dxbc::SystemValueName::kPosition);
   // Clip and cull plane declarations are separate in FXC-generated code even
   // for a single register.
-  assert_false(input_clip_and_cull_distance_count &&
-               input_register_clip_and_cull_distances == UINT32_MAX);
+  REX_ASSERT(!(input_clip_and_cull_distance_count &&
+               input_register_clip_and_cull_distances == UINT32_MAX));
   for (uint32_t i = 0; i < input_clip_and_cull_distance_count; i += 4) {
     if (i < input_clip_distance_count) {
       a.OpDclInput(dxbc::Dest::V2D(
@@ -639,7 +640,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     }
   }
   if (key.has_point_size && key.type == PipelineGeometryShader::kPointList) {
-    assert_true(input_register_point_size != UINT32_MAX);
+    REX_ASSERT(input_register_point_size != UINT32_MAX);
     a.OpDclInput(dxbc::Dest::V2D(input_primitive_vertex_count, input_register_point_size, 0b0001));
   }
 
@@ -652,21 +653,21 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
   a.OpDclStream(stream);
   a.OpDclOutputTopology(output_primitive_topology);
 
-  assert_false(key.interpolator_count && output_register_interpolators == UINT32_MAX);
+  REX_ASSERT(!(key.interpolator_count && output_register_interpolators == UINT32_MAX));
   for (uint32_t i = 0; i < key.interpolator_count; ++i) {
     a.OpDclOutput(dxbc::Dest::O(output_register_interpolators + i));
   }
   if (key.has_point_coordinates) {
-    assert_true(output_register_point_coordinates != UINT32_MAX);
+    REX_ASSERT(output_register_point_coordinates != UINT32_MAX);
     a.OpDclOutput(dxbc::Dest::O(output_register_point_coordinates, 0b0011));
   }
-  a.OpDclOutputSIV(dxbc::Dest::O(output_register_position), dxbc::Name::kPosition);
-  assert_false(input_clip_distance_count && output_register_clip_distances == UINT32_MAX);
+  a.OpDclOutputSIV(dxbc::Dest::O(output_register_position), dxbc::SystemValueName::kPosition);
+  REX_ASSERT(!(input_clip_distance_count && output_register_clip_distances == UINT32_MAX));
   for (uint32_t i = 0; i < input_clip_distance_count; i += 4) {
     a.OpDclOutputSIV(
         dxbc::Dest::O(output_register_clip_distances + (i >> 2),
                       (UINT32_C(1) << std::min(input_clip_distance_count - i, UINT32_C(4))) - 1),
-        dxbc::Name::kClipDistance);
+        dxbc::SystemValueName::kClipDistance);
   }
 
   a.OpDclMaxOutputVertexCount(max_output_vertex_count);
@@ -1062,7 +1063,7 @@ void CreateDxbcGeometryShader(GeometryShaderKey key, std::vector<uint32_t>& shad
     } break;
 
     default:
-      assert_unhandled_case(key.type);
+      REX_UNHANDLED_CASE(key.type);
   }
 
   a.OpRet();

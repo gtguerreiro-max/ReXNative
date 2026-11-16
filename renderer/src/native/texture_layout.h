@@ -14,8 +14,7 @@
 // info_formats.cpp are compiled into the game (games/pgr4/CMakeLists.txt).
 #pragma once
 
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -74,7 +73,7 @@ struct HostFormat {
   DXGI_FORMAT snorm;     // SRV for signed components, DXGI_FORMAT_UNKNOWN if none
   TextureConversion conversion;
   bool block_compressed;  // BCn: 4x4 blocks are copied as is
-  uint32_t host_swizzle;  // XE_GPU_TEXTURE_SWIZZLE_* of the host channels
+  uint32_t host_swizzle;  // REXGPU_SWIZZLE_* of the host channels
 };
 
 // nullptr for formats PGR4 does not use yet (or that need a decompressing load).
@@ -117,12 +116,12 @@ struct GuestTextureMemory {
 };
 
 // texture_util::GetGuestTextureLayout of the key's texture.
-rex::graphics::texture_util::TextureGuestLayout GetGuestLayout(const TextureKey& key);
+rex::graphics::xenos::GuestTextureLayout GetGuestLayout(const TextureKey& key);
 
 // Guest byte extents of the base level and the mips: the ranges a cache must watch and a dump
 // must contain. `layout`: GetGuestLayout(key), for callers that keep it.
 void GetGuestExtents(const TextureKey& key,
-                     const rex::graphics::texture_util::TextureGuestLayout& layout,
+                     const rex::graphics::xenos::GuestTextureLayout& layout,
                      uint32_t* base_bytes, uint32_t* mips_bytes);
 void GetGuestExtents(const TextureKey& key, uint32_t* base_bytes, uint32_t* mips_bytes);
 
@@ -136,7 +135,7 @@ struct UntileStats {
 // host format conversion. `scratch` is reused between calls to hold the swapped guest data.
 // Returns false for unsupported formats. `layout`: GetGuestLayout(key).
 bool UntileTexture(const TextureKey& key,
-                   const rex::graphics::texture_util::TextureGuestLayout& layout,
+                   const rex::graphics::xenos::GuestTextureLayout& layout,
                    const GuestTextureMemory& memory,
                    const std::vector<HostSubresource>& subresources, uint8_t* dst,
                    std::vector<uint8_t>* scratch, UntileStats* stats = nullptr);

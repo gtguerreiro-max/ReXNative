@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:59:26 +0000
+Subject: [PATCH 17/20] 0006-xam-export-XAMIsUIActive-for-a-host-renderer
+
+---
+ include/rex/xam/ui.h | 19 +++++++++++++++++++
+ src/xam/xam_ui.h     | 10 +---------
+ 2 files changed, 20 insertions(+), 9 deletions(-)
+ create mode 100644 include/rex/xam/ui.h
+
+diff --git a/include/rex/xam/ui.h b/include/rex/xam/ui.h
+new file mode 100644
+index 00000000..1ed05c3b
+--- /dev/null
++++ b/include/rex/xam/ui.h
+@@ -0,0 +1,19 @@
++/**
++ * @file        xam/ui.h
++ * @brief       Whether an XAM dialog is on screen, for a host renderer that presents itself
++ */
++
++#pragma once
++
++#include <rex/platform.h>
++
++namespace rex::xam {
++
++/**
++ * Reports whether an XAM dialog (a message box, the keyboard, a device selector) is on screen.
++ * A host renderer that presents the title itself gives the window back to the SDK's presenter,
++ * which draws the dialog, while this is true.
++ */
++REX_XAM_API bool XAMIsUIActive();
++
++}  // namespace rex::xam
+diff --git a/src/xam/xam_ui.h b/src/xam/xam_ui.h
+index 19cd426f..59c3d837 100644
+--- a/src/xam/xam_ui.h
++++ b/src/xam/xam_ui.h
+@@ -14,12 +14,4 @@
+ #include <rex/types.h>
+ #include <rex/platform.h>
+ #include <rex/kernel/title_runtime.h>
+-
+-namespace rex {
+-namespace xam {
+-
+-/** Reports whether an XAM dialog is on screen. */
+-bool XAMIsUIActive();
+-
+-}  // namespace xam
+-}  // namespace rex
++#include <rex/xam/ui.h>

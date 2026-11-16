@@ -11,9 +11,8 @@
 
 #include <xxhash.h>
 
-#include <rex/graphics/registers.h>
-#include <rex/graphics/util/draw.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
+#include "gpu/xenos/draw_state.h"
 #include <rex/logging.h>
 
 // The SDK translator sources read these GPU cvars, which the rexgpu-xenos plugin DLL defines and
@@ -55,17 +54,17 @@ bool CoverageDependsOnAlpha(reg::RB_COLORCONTROL c) {
          c.alpha_to_mask_enable;
 }
 
-// draw_util::IsPixelShaderNeededWithRasterization.
+// rex::gpu::draw_state::IsPixelShaderNeededWithRasterization.
 bool PixelShaderNeeded(const DxbcShader& ps, const ShaderDrawRegs& regs) {
-  if (Reg<reg::RB_MODECONTROL>(regs.rb_modecontrol).edram_mode != xenos::EdramMode::kColorDepth) {
+  if (Reg<reg::RB_MODECONTROL>(regs.rb_modecontrol).edram_mode != xenos::EDRAMMode::kColorDepth) {
     return false;
   }
-  if (ps.kills_pixels() || ps.writes_depth() || ps.memexport_eM_written() ||
-      (ps.writes_color_target(0) &&
+  if (ps.DoesKillPixels() || ps.IsDepthWritten() || ps.GetMemExportEMWritten() ||
+      (ps.IsColorTargetWritten(0) &&
        CoverageDependsOnAlpha(Reg<reg::RB_COLORCONTROL>(regs.rb_colorcontrol)))) {
     return true;
   }
-  uint32_t rts = ps.writes_color_targets();
+  uint32_t rts = ps.GetWritesColorTargets();
   while (rts) {
     uint32_t i = uint32_t(std::countr_zero(rts));
     rts &= rts - 1;
@@ -141,22 +140,22 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
 
   // D3D12CommandProcessor::IssueDraw: which draws reach the pipeline at all.
   auto mode = Reg<reg::RB_MODECONTROL>(regs.rb_modecontrol).edram_mode;
-  if (mode == xenos::EdramMode::kCopy) return out;
-  bool polygonal = rex::graphics::draw_util::IsPrimitivePolygonal(
+  if (mode == xenos::EDRAMMode::kCopy) return out;
+  bool polygonal = rex::gpu::draw_state::IsPrimitivePolygonal(
       Reg<reg::VGT_OUTPUT_PATH_CNTL>(regs.vgt_output_path_cntl).path_select ==
           xenos::VGTOutputPath::kTessellationEnable,
       draw_initiator.prim_type);
-  // draw_util::IsRasterizationPotentiallyDone.
+  // rex::gpu::draw_state::IsRasterizationPotentiallyDone.
   auto sc_mode = Reg<reg::PA_SU_SC_MODE_CNTL>(regs.pa_su_sc_mode_cntl);
   bool pitch_zero = !Reg<reg::RB_SURFACE_INFO>(regs.rb_surface_info).surface_pitch;
   bool rasterization =
-      (mode == xenos::EdramMode::kColorDepth || mode == xenos::EdramMode::kDepthOnly) &&
+      (mode == xenos::EDRAMMode::kColorDepth || mode == xenos::EDRAMMode::kDepthOnly) &&
       program_cntl.vs_export_mode != xenos::VertexShaderExportMode::kMultipass && !pitch_zero &&
       !(polygonal && sc_mode.cull_front && sc_mode.cull_back);
   if (rasterization) {
     if (ps && !PixelShaderNeeded(*ps, regs)) ps = nullptr;  // also drops it outside kColorDepth
   } else {
-    if (!vs.memexport_eM_written()) return out;
+    if (!vs.GetMemExportEMWritten()) return out;
     ps = nullptr;
   }
   out.draw = true;
@@ -164,7 +163,7 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
 
   uint32_t param_gen_pos = UINT32_MAX;
   uint32_t interpolator_mask =
-      ps ? vs.writes_interpolators() &
+      ps ? vs.GetWritesInterpolators() &
                ps->GetInterpolatorInputMask(
                    program_cntl, Reg<reg::SQ_CONTEXT_MISC>(regs.sq_context_misc), param_gen_pos)
          : 0;
@@ -172,7 +171,7 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
   // Vertex shader (always a plain host vertex shader: PGR4 does not tessellate).
   Modification vm(translator.GetDefaultVertexShaderModification(
       vs.GetDynamicAddressableRegisterCount(program_cntl.vs_num_reg),
-      rex::graphics::Shader::HostVertexShaderType::kVertex));
+      rex::gpu::Shader::HostVertexShaderType::kVertex));
   vm.vertex.interpolator_mask = interpolator_mask;
   auto clip = Reg<reg::PA_CL_CLIP_CNTL>(regs.pa_cl_clip_cntl);
   uint32_t ucp = clip.clip_disable ? 0 : clip.ucp_ena;
@@ -180,9 +179,9 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
   vm.vertex.user_clip_plane_cull = uint32_t(ucp && clip.ucp_cull_only_ena);
   vm.vertex.point_ps_ucp_mode = clip.ps_ucp_mode;
   vm.vertex.vertex_kill_and =
-      uint32_t((vs.writes_point_size_edge_flag_kill_vertex() & 0b100) && !clip.vtx_kill_or);
+      uint32_t((vs.GetWritesPointSizeEdgeFlagKillVertex() & 0b100) && !clip.vtx_kill_or);
   vm.vertex.output_point_size =
-      uint32_t((vs.writes_point_size_edge_flag_kill_vertex() & 0b001) && points);
+      uint32_t((vs.GetWritesPointSizeEdgeFlagKillVertex() & 0b001) && points);
   out.vertex = vm.value;
 
   if (!ps) return out;
@@ -209,8 +208,8 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
   }
   using DepthStencilMode = Modification::DepthStencilMode;
   pm.pixel.depth_stencil_mode =
-      ps->implicit_early_z_write_allowed() &&
-              (!ps->writes_color_target(0) ||
+      ps->IsImplicitEarlyZWriteAllowed() &&
+              (!ps->IsColorTargetWritten(0) ||
                !CoverageDependsOnAlpha(Reg<reg::RB_COLORCONTROL>(regs.rb_colorcontrol)))
           ? DepthStencilMode::kEarlyHint
           : DepthStencilMode::kNoModifiers;

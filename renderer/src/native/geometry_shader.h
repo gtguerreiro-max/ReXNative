@@ -8,7 +8,7 @@
 
 #include <d3d12.h>
 
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 
 namespace rexnative {
 

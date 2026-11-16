@@ -15,7 +15,7 @@
 #include "upscaler.h"
 
 #include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/util.h>
+#include "native/sdk.h"
 #include <rex/logging.h>
 
 #include <d3dcompiler.h>
@@ -571,11 +571,11 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
   // Destination address of the level and slice. The texture object holds virtual addresses;
   // GpuAddress is also the physical address the GPU-side fetch constant (and so the texture
   // cache) sees.
-  const texture_util::TextureGuestLayout layout = texture_util::GetGuestTextureLayout(
+  const xenos::GuestTextureLayout layout = texture_util::GetGuestTextureLayout(
       key.dimension, key.pitch, key.width, key.height, key.depth_or_array_size, key.tiled,
       rex::graphics::GetBaseFormat(xenos::TextureFormat(fetch_format)), key.packed_mips, true,
       std::max(level, key.mip_max_level));
-  const texture_util::TextureGuestLayout::Level* lv;
+  const xenos::GuestTextureLayout::Level* lv;
   if (level == 0) {
     p.dest_base = GpuAddress(fetch[1] & 0xFFFFF000u);
     lv = &layout.base;
@@ -589,10 +589,10 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
     p.dest_base = GpuAddress(fetch[5] & 0xFFFFF000u) + layout.mip_offsets_bytes[level];
     lv = &layout.mips[level];
   }
-  p.dest_base += lv->array_slice_stride_bytes * slice;
+  p.dest_base += lv->array_layer_stride_bytes * slice;
   p.dest_tiled = key.tiled;
   p.dest_pitch_blocks = lv->row_pitch_bytes >> DestBppLog2(p.dest_format);
-  p.dest_extent_bytes = lv->array_slice_data_extent_bytes;
+  p.dest_extent_bytes = lv->array_layer_data_extent_bytes;
 
   // Rectangle: pSourceRect or the destination level's size; right/bottom rounded up to 8.
   if (rect_ptr) {
@@ -914,7 +914,7 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
   // logged so frame-time spikes can be matched against it.
   REXLOG_INFO("ReXNative resolve: image {} {} {:08X}: format {} {}x{}{}{} ({} there)",
               ++image_count_, &dest == &own_ ? "for copies of" : "at", p.dest_base, p.dest_format,
-              p.dest_width, p.dest_height, scale > 1 ? fmt::format(" at {}x", scale) : "",
+              p.dest_width, p.dest_height, scale > 1 ? std::format(" at {}x", scale) : "",
               depth ? " + depth float" : "", dest.images.size() + 1);
   return dest.images.emplace_back(std::move(img)).get();
 }

@@ -22,16 +22,10 @@
 #include "textures.h"
 #include "upscaler.h"
 
-#include <rex/graphics/registers.h>
-#include <rex/kernel/xam/module.h>
+#include "host.h"
+
 #include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/interfaces/graphics.h>
-#include <rex/system/kernel_state.h>
-#include <rex/ui/flags.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/xenos/register.h>
 
 #include <algorithm>
 #include <cmath>
@@ -184,17 +178,9 @@ namespace {
 // Set once the device or swapchain failed; the native path stops.
 std::atomic<bool> g_failed{false};
 
-// The game window (the SDK's display window), and ReXGlue's presenter, which presents into it
-// unless the renderer does (OwnGameWindow).
-rex::ui::Window* GameWindow() {
-  rex::Runtime* runtime = rex::Runtime::instance();
-  return runtime ? runtime->display_window() : nullptr;
-}
-rex::ui::Presenter* SdkPresenter() {
-  rex::Runtime* runtime = rex::Runtime::instance();
-  rex::system::IGraphicsSystem* graphics = runtime ? runtime->graphics_system() : nullptr;
-  return graphics ? graphics->presenter() : nullptr;
-}
+// The game window (the SDK's display window). ReXGlue's Xenos driver presents into it unless
+// the renderer does (OwnGameWindow).
+HWND GameWindow() { return static_cast<HWND>(host::Window()); }
 
 // `path`, or the first of <stem>.1<ext>, <stem>.2<ext>... that does not exist: a title launched
 // from this one gets this process's arguments (games/common/title_launch.cpp), and PGR4 started
@@ -268,13 +254,12 @@ void AppendCsvCells(std::span<const CsvCell> cells, bool header, bool leading_co
     AppendCsvCell(cells[i], header, i || leading_comma, line);
 }
 
-// The window's presenter belongs to the UI thread.
+// The Xenos driver's presenter on (connect) or off the game window: with
+// gpu.xenos.present_external (sdk/patches) its present thread lets the window go, releasing its
+// swap chain, at its next present, within about 100 ms.
 void ConnectSdkPresenter(bool connect) {
-  rex::ui::Window* window = GameWindow();
-  rex::ui::Presenter* presenter = SdkPresenter();
-  if (window && presenter)
-    window->app_context().CallInUIThreadSynchronous(
-        [&] { window->SetPresenter(connect ? presenter : nullptr); });
+  if (!rex::cvar::SetFlagByName("present_external", connect ? "false" : "true"))
+    REXLOG_ERROR("ReXNative: could not set gpu.xenos.present_external (sdk/patches missing?)");
 }
 
 }  // namespace
@@ -421,10 +406,10 @@ NativeRenderer::~NativeRenderer() {
   // The lists in flight and the calls the command stream holds use the modules' objects.
   if (device_) device_->WaitIdle();
   if (limit_timer_) CloseHandle(limit_timer_);
-  if (switch_bound_) rex::ui::UnregisterBind("bind_renderer_switch");
+  if (switch_bound_) host::UnregisterBind("bind_renderer_switch");
   if (upscaler_bound_) {
-    rex::ui::UnregisterBind("bind_upscaler");
-    rex::ui::UnregisterBind("bind_upscaler_debug");
+    host::UnregisterBind("bind_upscaler");
+    host::UnregisterBind("bind_upscaler_debug");
   }
 }
 
@@ -441,8 +426,7 @@ bool NativeRenderer::Initialize() {
   if (primary) {
     // The first D3D call comes after the SDK opened its window; wait briefly in case not.
     for (int i = 0; i < 100 && !game_window; ++i) {
-      if (rex::ui::Window* window = GameWindow())
-        game_window = static_cast<HWND>(window->GetNativeWindowHandle());
+      game_window = GameWindow();
       if (!game_window) Sleep(50);
     }
     if (!game_window) {
@@ -488,7 +472,7 @@ bool NativeRenderer::Initialize() {
   // it as it is made.
   if (NeuralPass::Requested()) neural_ = std::make_unique<NeuralPass>(device_->device());
   SwitchUpscaler(Upscaler::Requested());
-  textures_ = std::make_unique<TextureCache>(device_->device(), rex::system::kernel_memory());
+  textures_ = std::make_unique<TextureCache>(device_->device(), host::Memory());
   textures_->SetResolvedLookup([this](uint32_t a) { return resolver_->Find(a); });
   textures_->SetResolvedContaining(
       [this](uint32_t a, uint32_t* row) { return resolver_->FindContaining(a, row); });
@@ -516,11 +500,9 @@ bool NativeRenderer::Initialize() {
         "ReXNative: could not set gpu_skip_draws (patches/0031 missing?); "
         "Xenos keeps drawing");
   // A handheld has no keyboard for the replay name prompt; the title's default name is what
-  // confirming the dialog unchanged returns.
-  if (primary && !rex::cvar::SetFlagByName("xam_keyboard_accept_default", "true"))
-    REXLOG_ERROR(
-        "ReXNative: could not set xam_keyboard_accept_default "
-        "(patches/0024 missing?)");
+  // confirming the dialog unchanged returns (PGR4Native's SDK patch; ReXGlue v0.11 has no such
+  // setting, and its keyboard dialog takes the pad).
+  if (primary) rex::cvar::SetFlagByName("xam_keyboard_accept_default", "true");
   // The keys are read when pressed: the Developer settings turn them off and on.
   const auto key = [](std::atomic<bool>& request) {
     return [&request] {
@@ -528,7 +510,7 @@ bool NativeRenderer::Initialize() {
     };
   };
   if (primary && REXCVAR_GET(rexnative_renderer_switch)) {
-    rex::ui::RegisterBind("bind_renderer_switch", "F9",
+    host::RegisterBind("bind_renderer_switch", "F9",
                           "ReXNative: switch between the native renderer and the Xenos plugin",
                           key(switch_requested_));
     switch_bound_ = true;
@@ -537,13 +519,13 @@ bool NativeRenderer::Initialize() {
   if (primary && REXCVAR_GET(rexnative_classic))
     switch_requested_.store(true, std::memory_order_relaxed);
   if (primary) {
-    rex::ui::RegisterBind(
+    host::RegisterBind(
         "bind_upscaler", "F7",
         "ReXNative: switch the 3D scene between MSAA and FidelityFX Super Resolution",
         key(upscaler_switch_requested_));
     // This port: F8 cycles DLSS 5 (with --rexnative_dlss5) between the balanced settings
     // (Default, 1 pass), the strong ones (Natural, 2 passes) and off, live.
-    rex::ui::RegisterBind(
+    host::RegisterBind(
         "bind_upscaler_debug", "F8",
         "ReXNative: DLSS 5 balanced (Default, 1 pass), strong (Natural, 2 passes) or off", [] {
           if (!REXCVAR_GET(rexnative_debug_keys)) return;
@@ -716,7 +698,9 @@ void NativeRenderer::BeginFrameModules() {
   if (Upscaler* u = upscaler()) {
     // A frame's time on the display: refreshes at the rate the guest's vblanks run at (as
     // ReXGlue's xboxkrnl_video clamps it), two with a generated frame before it.
-    const double hz = std::clamp(REXCVAR_GET(video_mode_refresh_rate), 24.0, 240.0);
+    const double hz =
+        std::clamp(std::atof(rex::cvar::GetFlagByName("ui.video_mode_refresh_rate").c_str()),
+                   24.0, 240.0);
     const uint32_t presents = frame_generation_ ? 2 : device_->present_interval();
     if (u->BeginFrame(frame_index_, device_->gpu_busy_ns(), uint64_t(1e9 * presents / hz)))
       rt_->SetSceneScale(u->scale());
@@ -1094,7 +1078,6 @@ void NativeRenderer::ExecuteDraw(const DrawState& state, const DrawPrep* prep) {
 }
 
 void NativeRenderer::FindCamera(const DrawState& state) {
-  using enum rex::graphics::Register;
   const uint32_t* regs = state.regs;
   if (!Upscaler::IsScene(regs[XE_GPU_REG_RB_SURFACE_INFO])) return;
   const reg::RB_DEPTHCONTROL depth{.value = regs[XE_GPU_REG_RB_DEPTHCONTROL]};
@@ -1258,7 +1241,11 @@ bool NativeRenderer::OwnGameWindow(bool own) {
   }
   ConnectSdkPresenter(false);
   window_taken_ = true;
-  if (!d.AttachSwapchain()) return false;
+  // The Xenos driver lets the window go at its next present: until then the window has its swap
+  // chain and making one fails.
+  bool attached = false;
+  for (int i = 0; i < 100 && !(attached = d.AttachSwapchain(/*quiet=*/i < 99)); ++i) Sleep(20);
+  if (!attached) return false;
   if (pacer_) {
     HANDLE waitable =
         d.TakeFrameLatencyWaitable(FramePacer::kMaxFrameLatency * D3D12Device::kMaxFramePresents);
@@ -1280,7 +1267,7 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   // stays on screen while the next one waits for them.
   const bool incomplete = draw_->FrameIncomplete();
   if (incomplete) ++stats_.frames_held;
-  if (primary_ && !OwnGameWindow(!swap.hand_over && !rex::kernel::xam::xeXamIsUIActive()))
+  if (primary_ && !OwnGameWindow(!swap.hand_over && !host::XamUIActive()))
     return Fail();
   const bool shown = !incomplete && d.has_swapchain();
   FrameGeneration* const fg = frame_generation_.get();

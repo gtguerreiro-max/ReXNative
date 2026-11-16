@@ -7,15 +7,16 @@
 
 #include <cstdint>
 
-namespace rex::graphics {
-class RegisterFile;
+#include "native/sdk.h"
+
+namespace rex::gpu {
 class Shader;
-}  // namespace rex::graphics
+}  // namespace rex::gpu
 
 namespace rexnative {
 
-void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::graphics::Shader& vs,
-                       const rex::graphics::Shader* ps);
+void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::gpu::Shader& vs,
+                       const rex::gpu::Shader* ps);
 bool MemexportRangeOf(uint32_t address, uint32_t* base, uint32_t* bytes);
 
 }  // namespace rexnative

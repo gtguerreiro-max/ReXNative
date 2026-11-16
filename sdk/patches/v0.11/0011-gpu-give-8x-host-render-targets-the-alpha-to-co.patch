@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:27:05 +0000
+Subject: [PATCH 11/20] 
+ 0051-gpu-give-8x-host-render-targets-the-alpha-to-coverage-of-4x
+
+---
+ src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+index 63d75e59..07244dec 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+@@ -1061,6 +1061,13 @@ void DXBCShaderTranslator::CompletePixelShaderAlphaToMask() {
+                                          coverage_temp_component, temp, 1);
+     CompletePixelShaderAlphaToMaskSample(false, 3, 1.0f, temp_x_src, 1.0f / 16.0f, coverage_temp,
+                                          coverage_temp_component, temp, 1);
++    if (!edram_rov_used_) {
++      // For a host target of 8 samples (more than the guest's 4), each threshold covers two:
++      // samples 4:7 get the coverage of 0:3. A 4-sample target ignores the bits above 3.
++      a_.OpBFI(dxbc::Dest::R(coverage_temp, 1 << coverage_temp_component), dxbc::Src::LU(4),
++               dxbc::Src::LU(4), dxbc::Src::R(coverage_temp).Select(coverage_temp_component),
++               dxbc::Src::R(coverage_temp).Select(coverage_temp_component));
++    }
+     // Without ROV, native 2x maps top to 1 and bottom to 0, 2x as 4x maps top to 0, bottom to 3.
+     a_.OpElse();
+     CompletePixelShaderAlphaToMaskSample(true, (!edram_rov_used_ && msaa_2x_supported_) ? 1 : 0,

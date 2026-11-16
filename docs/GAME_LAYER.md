@@ -55,8 +55,9 @@ with nothing special: `RexNativeGame60Fps()` (the game's own 60 FPS option), `Re
 
 ## The HUD
 
-`renderer/src/hud/hud.h`: the game's app calls `rexnative::hud::SetConfigPath(config)` in
-`OnConfigurePaths`, `Initialize(window())` in `OnCreateDialogs` and `Shutdown()` in `OnShutdown`.
+`renderer/src/hud/hud.h`: the game's app calls `rexnative::hud::Initialize()` in `OnInit`, after
+`rexnative::host::Attach(*this)` (`renderer/src/host.h`), and `Shutdown()` in `OnShutdown`; the
+menu writes the app's configuration file (`app.config_file`) unless `SetConfigPath` names another.
 A game that hooks `XInputGetState` can pass each pad read through `FilterPad` for the
 Back + Start chord; F1 always works. Settings are saved into the configuration file, keeping its
 other lines and comments.

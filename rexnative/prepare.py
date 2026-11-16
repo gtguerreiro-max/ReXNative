@@ -185,11 +185,11 @@ def _false_starts(text, hints):
 
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
-             '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.10.1"',
+             '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.11.0"',
              'game_root = "game-data"', '', '[entrypoint]', 'file_path = "game-data/default.xex"',
              'out_directory_path = "generated/default"']
     # Jump tables codegen cut short, given whole ([[switch_tables]]), the setjmp / longjmp the
-    # game calls (setjmp_address, longjmp_address) and its XAPI fiber functions ([rexcrt]), all
+    # game calls (setjmp_address, longjmp_address) and its XAPI fiber functions ([shim]), all
     # from `rexnative project --find-functions` (functions.jump_tables, .setjmp_longjmp,
     # .xapi_fibers).
     includes = [f for f in ('switch_tables.toml', 'setjmp.toml', 'crt.toml')
@@ -218,8 +218,8 @@ def codegen(work, name, rexglue, max_rounds, log):
         if old.endswith('_manifest.toml') and old != '%s_manifest.toml' % name:
             os.remove(os.path.join(work, old))
     if os.path.exists(done):
-        # Made under another name: codegen writes it again (the hints stay), and its
-        # generated/rexglue.cmake, written once, is rendered again under this name.
+        # Made under another name: codegen writes it again (the hints stay); a
+        # generated/rexglue.cmake of the old SDK goes (v0.11 writes generated/sources.cmake).
         os.remove(done)
         stale = os.path.join(work, 'generated', 'rexglue.cmake')
         if os.path.exists(stale):
@@ -243,6 +243,14 @@ def codegen(work, name, rexglue, max_rounds, log):
         tails = [int(t, 16) for t in re.findall(r'Unresolved b target (0x[0-9A-Fa-f]+) from', text)]
         tails = [t for t in tails if t not in hints]
         false = _false_starts(text, hints)
+        # A hint at a millicode helper (__savegprlr_N and the rest): ReXGlue v0.11 finds every
+        # copy of the helpers (a game can link them twice, as Jet Set Radio does) and refuses a
+        # config function there; a hint from before is dropped.
+        # Codegen stops at the first one: the hints around it go too (a helper run is 18 to 64
+        # entries of 4 or 8 bytes); a real start among them is a target codegen reports again.
+        for a in re.findall(
+                r'function (0x[0-9A-Fa-f]+) is millicode, which no config entry may replace', text):
+            false |= {h for h in hints if abs(h - int(a, 16)) <= 0x200}
         if false:
             for h in false:
                 del hints[h]

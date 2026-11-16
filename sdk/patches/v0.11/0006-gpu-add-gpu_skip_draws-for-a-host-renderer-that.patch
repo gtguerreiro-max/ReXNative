@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:27:01 +0000
+Subject: [PATCH 06/20] 
+ 0031-gpu-add-gpu_skip_draws-for-a-host-renderer-that-draw
+
+---
+ src/gpu/xenos/command_processor.cpp       | 13 ++++++++++++-
+ src/gpu/xenos/d3d12/command_processor.cpp |  9 ++++++++-
+ src/gpu/xenos/xenos_settings.h            |  4 ++++
+ 3 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index 5e58c53d..69ac6ff0 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -1312,7 +1312,8 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader,
+ 
+   if (draw_succeeded) {
+     auto viz_query = register_file_->Get<xenos::reg::PA_SC_VIZ_QUERY>();
+-    if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
++    if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z) &&
++        !GetXenosSettings().skip_draws.Get()) {
+       bool major_mode_explicit =
+           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
+@@ -1454,6 +1455,12 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD(memory::RingBuffer* reader,
+   u32 size_dwords = start_size & 0xFFFF;
+   REX_ASSERT(start == 0);
+ 
++  // With skip_draws the active shaders stay as they were; after it is turned off, draws use them
++  // until the title loads the next shader of each type.
++  if (GetXenosSettings().skip_draws.Get()) {
++    return true;
++  }
++
+   const u32* shader_ucode =
+       GetPhysicalForRead<u32>(physical_memory_, addr, size_dwords * sizeof(u32));
+   if (!shader_ucode) {
+@@ -1488,6 +1495,10 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD_IMMEDIATE(memory::RingBuffer*
+   REX_ASSERT(start == 0);
+   REX_ASSERT(reader->GetReadCount() >= size_dwords * 4);
+   REX_ASSERT(count - 2 >= size_dwords);
++  if (GetXenosSettings().skip_draws.Get()) {
++    reader->AdvanceRead(size_dwords * sizeof(u32));
++    return true;
++  }
+   auto shader = LoadShader(shader_type, static_cast<u32>(reader->GetReadPtr()),
+                            reinterpret_cast<u32*>(reader->GetBuffer() + reader->GetReadOffset()),
+                            size_dwords);
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index 4dd76dd5..ac9ecbdf 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -142,7 +142,8 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
+ 
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                u32 packet, u32 count) {
+-  if (!GetXenosSettings().occlusion_query_enable.Get() || !occlusion_query_resources_available_) {
++  if (!GetXenosSettings().occlusion_query_enable.Get() || !occlusion_query_resources_available_ ||
++      GetXenosSettings().skip_draws.Get()) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+@@ -1807,6 +1808,12 @@ void D3D12CommandProcessor::IssueSwap([[maybe_unused]] u32 frontbuffer_ptr, u32
+     REXGPU_ERROR("IssueSwap: BeginSubmission failed");
+     return;
+   }
++  // Nothing to present with skip_draws, but the frame still ends here so its per-frame resources
++  // are released.
++  if (GetXenosSettings().skip_draws.Get()) {
++    EndSubmission(true);
++    return;
++  }
+ 
+   D3D12_SHADER_RESOURCE_VIEW_DESC swap_texture_srv_desc;
+   xenos::TextureFormat frontbuffer_format;
+diff --git a/src/gpu/xenos/xenos_settings.h b/src/gpu/xenos/xenos_settings.h
+index d8f88a2b..ed177b67 100644
+--- a/src/gpu/xenos/xenos_settings.h
++++ b/src/gpu/xenos/xenos_settings.h
+@@ -73,6 +73,10 @@ class XenosSettings : public SettingOwner {
+               "Refresh the page valid state from GPU written memory at frame end. Turning it off "
+               "lowers CPU cost but may break memory coherency");
+   REX_SETTING(bool, occlusion_query_enable, true, "Enable host occlusion query handling");
++  REX_SETTING(bool, skip_draws, false,
++              "Skip all host GPU work for draws, resolves, shader loads and swaps, for a host "
++              "renderer that draws the guest's frames itself (ReXNative); fences, register and "
++              "memory write-backs and interrupts still run");
+   REX_SETTING(bool, readback_resolve_half_pixel_offset, false,
+               "When draw resolution scaling is active, sample from the center of each scaled block "
+               "during resolve readback downscale");

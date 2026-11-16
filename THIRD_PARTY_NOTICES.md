@@ -9,8 +9,9 @@ What this repository contains from other projects, with their licenses.
   (BSD-3-Clause, below): format packing, texture layouts, resolve conversions, the shader
   translator's use. The files name the ported functions in their headers.
 - `renderer/src/native/fidelityfx.cpp`, `upscaler.cpp` and `frame_generation.cpp` build with the
-  AMD FidelityFX SDK's API headers (MIT); `fsr.cpp` uses the FSR 1 shaders the ReXGlue SDK ships
-  (from Xenia, which takes them from AMD FidelityFX, MIT). The SDK is not in this repository.
+  AMD FidelityFX SDK's API headers (MIT); `fsr.cpp` uses the FSR 1 shaders the ReXGlue v0.10 SDK
+  shipped, prebuilt (`renderer/src/native/shaders/d3d12_5_1`: BSD-3-Clause, from Xenia, which
+  takes them from AMD FidelityFX, MIT), kept here since ReXGlue v0.11 has no FidelityFX. The SDK is not in this repository.
 - `renderer/src/native/dlss.cpp` and `neural*.cpp` build with the NVIDIA DLSS SDK and DLSS 5
   headers, under NVIDIA's license; they are not in this repository.
 - `renderer/src/hud/` draws with Dear ImGui (MIT, Omar Cornut), which the ReXGlue SDK provides.

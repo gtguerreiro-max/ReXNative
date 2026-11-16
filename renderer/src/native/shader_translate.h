@@ -23,13 +23,13 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-#include <rex/graphics/pipeline/shader/dxbc.h>
-#include <rex/graphics/pipeline/shader/dxbc_translator.h>
+#include "gpu/xenos/pipeline/shader/dxbc.h"
+#include "gpu/xenos/pipeline/shader/dxbc_translator.h"
 
 namespace rexnative {
 
-using rex::graphics::DxbcShader;
-using rex::graphics::DxbcShaderTranslator;
+using DxbcShader = rex::gpu::DXBCShader;
+using DxbcShaderTranslator = rex::gpu::DXBCShaderTranslator;
 
 // Raw guest register values that select the translation of a draw's shaders.
 struct ShaderDrawRegs {
@@ -81,9 +81,9 @@ inline uint64_t SpecializePixelTextures(uint64_t pixel, const uint32_t* fetch, u
     if (signs && ((signs & 0x2A8u) || !((signed_is_unsigned_formats >> (f[1] & 63)) & 1)))
       return pixel;
   }
-  DxbcShaderTranslator::Modification m(pixel);
-  m.pixel.textures_unsigned = 1;
-  return m.value;
+  // ReXGlue v0.11 without the textures_unsigned modification (sdk/patches): the pixel shader
+  // keeps converting signed fetches.
+  return pixel;
 }
 // The draw's modifications with motion vectors (Modification::vertex/pixel.motion_vectors), for
 // a draw with a pixel shader.

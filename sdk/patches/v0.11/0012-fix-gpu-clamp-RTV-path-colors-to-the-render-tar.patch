@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:27:07 +0000
+Subject: [PATCH 12/20] 
+ 0053-fix-gpu-clamp-RTV-path-colors-to-the-render-target-format-range
+
+---
+ src/gpu/xenos/d3d12/command_processor.cpp        | 16 ++++++++--------
+ .../xenos/pipeline/shader/dxbc_translator_om.cpp | 11 +++++++++++
+ 2 files changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index 1d918e67..1c0fc625 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -3436,11 +3436,10 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+     auto color_info =
+         regs.Get<xenos::reg::RB_COLOR_INFO>(xenos::reg::RB_COLOR_INFO::kRTRegisterIndices[i]);
+     color_infos[i] = color_info;
+-    if (edram_rov_used) {
+-      RenderTargetCache::GetPSIColorClampsAndKeepMasks(
+-          color_info.color_format, (normalized_color_mask >> (i * 4)) & 0b1111, rt_clamp[i][0],
+-          rt_clamp[i][1], rt_clamp[i][2], rt_clamp[i][3], rt_keep_masks[i][0], rt_keep_masks[i][1]);
+-    }
++    // The clamp for both paths, the keep masks for ROV.
++    RenderTargetCache::GetPSIColorClampsAndKeepMasks(
++        color_info.color_format, (normalized_color_mask >> (i * 4)) & 0b1111, rt_clamp[i][0],
++        rt_clamp[i][1], rt_clamp[i][2], rt_clamp[i][3], rt_keep_masks[i][0], rt_keep_masks[i][1]);
+   }
+ 
+   // Depth and stencil are disabled if they alias a color render target.
+@@ -3652,6 +3651,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+     system_constants_.edram_32bpp_tile_pitch_dwords_scaled = edram_32bpp_tile_pitch_dwords_scaled;
+   }
+ 
++  // Color exponent bias, clamping and ROV render target writing.
+   for (u32 i = 0; i < 4; ++i) {
+     xenos::reg::RB_COLOR_INFO color_info = color_infos[i];
+     // Exponent bias is in bits 20:25 of RB_COLOR_INFO.
+@@ -3668,6 +3668,9 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+         std::bit_cast<f32>(static_cast<i32>(0x3F800000 + (color_exp_bias << 23)));
+     dirty |= system_constants_.color_exp_bias[i] != color_exp_bias_scale;
+     system_constants_.color_exp_bias[i] = color_exp_bias_scale;
++    // Float comparisons would make NaNs always set the dirty flag.
++    dirty |= !AreBitsEqual(system_constants_.edram_rt_clamp[i], rt_clamp[i]);
++    std::memcpy(system_constants_.edram_rt_clamp[i], rt_clamp[i], 4 * sizeof(f32));
+     if (edram_rov_used) {
+       dirty |= system_constants_.edram_rt_keep_mask[i][0] != rt_keep_masks[i][0];
+       system_constants_.edram_rt_keep_mask[i][0] = rt_keep_masks[i][0];
+@@ -3680,9 +3683,6 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+         u32 format_flags = RenderTargetCache::AddPSIColorFormatFlags(color_info.color_format);
+         dirty |= system_constants_.edram_rt_format_flags[i] != format_flags;
+         system_constants_.edram_rt_format_flags[i] = format_flags;
+-        // Float comparisons would make NaNs always set the dirty flag.
+-        dirty |= !AreBitsEqual(system_constants_.edram_rt_clamp[i], rt_clamp[i]);
+-        std::memcpy(system_constants_.edram_rt_clamp[i], rt_clamp[i], 4 * sizeof(f32));
+         u32 blend_factors_ops =
+             regs[xenos::reg::RB_BLENDCONTROL::kRTRegisterIndices[i]] & 0x1FFF1FFF;
+         dirty |= system_constants_.edram_rt_blend_factors_ops[i] != blend_factors_ops;
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+index 07244dec..375cd1c4 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+@@ -887,6 +887,17 @@ void DXBCShaderTranslator::CompletePixelShaderWriteToRTVs() {
+              LoadSystemConstant(SystemConstants::Index::kColorExpBias,
+                                 offsetof(SystemConstants, color_exp_bias) + sizeof(f32) * i,
+                                 dxbc::Src::kXXXX));
++    // Clamp the color to the range of the guest's format before blending, as the ROV path does:
++    // a host target wider than the format, such as R16G16B16A16_FLOAT for 7e3, would otherwise
++    // keep values and NaNs the guest's never holds, and blending can turn an overflow to infinity
++    // into NaNs. NaNs become the low bound (max returns the other operand).
++    dxbc::Src rt_clamp_src(LoadSystemConstant(
++        SystemConstants::Index::kEDRAMRTClamp,
++        offsetof(SystemConstants, edram_rt_clamp) + sizeof(f32) * 4 * i, dxbc::Src::kXYZW));
++    a_.OpMax(dxbc::Dest::R(system_temp_color), dxbc::Src::R(system_temp_color),
++             rt_clamp_src.Swizzle(0b01000000));
++    a_.OpMin(dxbc::Dest::R(system_temp_color), dxbc::Src::R(system_temp_color),
++             rt_clamp_src.Swizzle(0b11101010));
+     if (gamma_render_target_as_unorm8_) {
+       a_.OpAnd(dxbc::Dest::R(gamma_temp, 0b0001), LoadFlagsSystemConstant(),
+                dxbc::Src::LU(kSysFlagConvertColor0ToGamma << i));

@@ -5,9 +5,7 @@
 #include "render_targets.h"
 #include "resolve.h"
 
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -20,7 +18,6 @@ namespace {
 
 namespace xenos = rex::graphics::xenos;
 namespace reg = rex::graphics::reg;
-using enum rex::graphics::Register;  // XE_GPU_REG_*
 
 constexpr uint32_t kMaxQueries = GpuTimer::kMaxSpans + 1;
 

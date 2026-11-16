@@ -3,7 +3,7 @@
 // Ports (BSD-3, Xenia / ReXGlue): d3d12::PipelineCache::GetCurrentStateDescription and
 // CreateD3D12Pipeline (pipeline state), D3D12CommandProcessor::IssueDraw,
 // UpdateFixedFunctionState, UpdateSystemConstantValues and UpdateBindings (host render target
-// path, bindless), draw_util::GetHostViewportInfo / GetScissor / GetNormalizedDepthControl /
+// path, bindless), rex::gpu::draw_state::GetHostViewportInfo / GetScissor / GetNormalizedDepthControl /
 // GetNormalizedColorMask / IsRasterizationPotentiallyDone / GetPreferredFacePolygonOffset /
 // AddMemExportRanges, the memexport readback of IssueDraw (Xenia Canary's snapshot and diff),
 // D3D12TextureCache::GetSamplerParameters / WriteSampler, and the DMA index path of
@@ -29,18 +29,12 @@
 #include "upload_pool.h"
 #include "upscaler.h"
 
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/register_file.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/util/draw.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
+#include "gpu/xenos/draw_state.h"
 #include <rex/cvar.h>
-#include <rex/graphics/integer_fetch.h>
 #include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/graphics/draw_hook.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include "host.h"
+#include <rex/kernel/heap.h>
 
 #include <xxhash.h>
 #include <simde/x86/sse2.h>
@@ -167,25 +161,25 @@ std::vector<MemexportRange> g_memexport_ranges;
 uint32_t g_memexport_logged = 0;
 }  // namespace
 
-void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::graphics::Shader& vs,
-                       const rex::graphics::Shader* ps) {
+void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::gpu::Shader& vs,
+                       const rex::gpu::Shader* ps) {
   namespace rg = rex::graphics;
   std::lock_guard lock(g_memexport_mutex);
-  for (const rg::Shader* sh : {&vs, ps}) {
-    if (!sh || !sh->memexport_eM_written()) continue;
-    const uint32_t base_const = sh->type() == xenos::ShaderType::kVertex
+  for (const rex::gpu::Shader* sh : {&vs, ps}) {
+    if (!sh || !sh->GetMemExportEMWritten()) continue;
+    const uint32_t base_const = sh->GetType() == xenos::ShaderType::kVertex
                                     ? regs.Get<reg::SQ_VS_CONST>().base
                                     : regs.Get<reg::SQ_PS_CONST>().base;
-    for (uint32_t c : sh->memexport_stream_constants()) {
-      const xenos::xe_gpu_memexport_stream_t st = regs.GetMemExportStream(base_const + c);
+    for (uint32_t c : sh->GetMemExportStreamConstants()) {
+      const xenos::MemExportStream st = regs.GetMemExportStream(base_const + c);
       if (st.const_0x1 != 1 || st.const_0x4b0 != 0x4B0 || st.const_0x96 != 0x96 ||
           !st.index_count)
         continue;
       const rg::FormatInfo* fi = rg::FormatInfo::Get(xenos::TextureFormat(st.format));
       const uint32_t bytes = st.index_count * std::max(1u, fi->bits_per_pixel >> 3);
       const MemexportRange r{uint32_t(st.base_address) << 2, bytes, uint32_t(st.format),
-                             uint32_t(st.index_count), vs.ucode_data_hash(),
-                             ps ? ps->ucode_data_hash() : 0};
+                             uint32_t(st.index_count), vs.GetUcodeDataHash(),
+                             ps ? ps->GetUcodeDataHash() : 0};
       bool known = false;
       for (const MemexportRange& k : g_memexport_ranges)
         known |= k.base == r.base && k.bytes == r.bytes;
@@ -194,8 +188,8 @@ void NoteMemexportDraw(const rex::graphics::RegisterFile& regs, const rex::graph
       g_memexport_ranges.push_back(r);
       if (int32_t(g_memexport_logged++) < REXCVAR_GET(rexnative_memexport_log))
         REXLOG_INFO("ReXNative memexport: {} shader {:016X} writes {:08X}..{:08X} ({} x {}, "
-                    "{} bytes){}", sh->type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
-                    sh->ucode_data_hash(), r.base, r.base + r.bytes, r.count, fi->name, r.bytes,
+                    "{} bytes){}", sh->GetType() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
+                    sh->GetUcodeDataHash(), r.base, r.base + r.bytes, r.count, fi->name, r.bytes,
                     ps && sh == &vs ? " (with a pixel shader)" : "");
     }
   }
@@ -215,9 +209,9 @@ bool MemexportRangeOf(uint32_t address, uint32_t* base, uint32_t* bytes) {
 namespace xenos = rex::graphics::xenos;
 namespace reg = rex::graphics::reg;
 using rex::graphics::RegisterFile;
-using rex::graphics::Shader;
-using rex::graphics::draw_util::Scissor;
-using rex::graphics::draw_util::ViewportInfo;
+using rex::gpu::Shader;
+using rex::gpu::draw_state::Scissor;
+using ViewportInfo = rex::gpu::draw_state::HostViewport;
 namespace texture_util = rex::graphics::texture_util;
 
 namespace {
@@ -259,31 +253,29 @@ constexpr D3D12_RESOURCE_STATES kSharedReadState = D3D12_RESOURCE_STATE_NON_PIXE
                                                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                                    D3D12_RESOURCE_STATE_INDEX_BUFFER;
 
-using enum rex::graphics::Register;  // XE_GPU_REG_* (clang-cl, C++20)
-
 // The RTV format of a draw that blends into a k_8_8_8_8_GAMMA target (BuildPipelineKey).
 constexpr DXGI_FORMAT kGammaBlendFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
 // reg::RB_COLOR_INFO / RB_BLENDCONTROL::rt_register_indices live in the plugin DLL (not exported).
-constexpr rex::graphics::Register kColorInfoRegs[4] = {
+constexpr uint32_t kColorInfoRegs[4] = {
     XE_GPU_REG_RB_COLOR_INFO, XE_GPU_REG_RB_COLOR1_INFO, XE_GPU_REG_RB_COLOR2_INFO,
     XE_GPU_REG_RB_COLOR3_INFO};
-constexpr rex::graphics::Register kBlendControlRegs[4] = {
+constexpr uint32_t kBlendControlRegs[4] = {
     XE_GPU_REG_RB_BLENDCONTROL0, XE_GPU_REG_RB_BLENDCONTROL1, XE_GPU_REG_RB_BLENDCONTROL2,
     XE_GPU_REG_RB_BLENDCONTROL3};
 
 // ---- draw_util ports (host render targets, no resolution scale) ----
 
-// draw_util::AddMemExportRanges (the SDK does not export it): the ranges a shader's memexport
+// rex::gpu::draw_state::AddMemExportRanges (the SDK does not export it): the ranges a shader's memexport
 // stream constants name, an existing range grown when a stream has the same base.
 void AppendMemExportRanges(const RegisterFile& regs, const Shader& shader,
-                           std::vector<rex::graphics::draw_util::MemExportRange>& out) {
-  if (!shader.memexport_eM_written()) return;  // eA writes, but no real exports
-  const uint32_t base = shader.type() == xenos::ShaderType::kVertex
+                           std::vector<rex::gpu::draw_state::MemExportRange>& out) {
+  if (!shader.GetMemExportEMWritten()) return;  // eA writes, but no real exports
+  const uint32_t base = shader.GetType() == xenos::ShaderType::kVertex
                             ? regs.Get<reg::SQ_VS_CONST>().base
                             : regs.Get<reg::SQ_PS_CONST>().base;
-  for (uint32_t constant : shader.memexport_stream_constants()) {
-    const xenos::xe_gpu_memexport_stream_t stream = regs.GetMemExportStream(base + constant);
+  for (uint32_t constant : shader.GetMemExportStreamConstants()) {
+    const xenos::MemExportStream stream = regs.GetMemExportStream(base + constant);
     // Constants not set up when the export is not on the control flow path taken (the hardware
     // validates the upper bits of eA).
     if (stream.const_0x1 != 0x1 || stream.const_0x4b0 != 0x4B0 || stream.const_0x96 != 0x96 ||
@@ -308,8 +300,8 @@ void AppendMemExportRanges(const RegisterFile& regs, const Shader& shader,
 }
 
 bool IsRasterizationPotentiallyDone(const RegisterFile& regs, bool primitive_polygonal) {
-  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode != xenos::EdramMode::kColorDepth && edram_mode != xenos::EdramMode::kDepthOnly) {
+  xenos::EDRAMMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+  if (edram_mode != xenos::EDRAMMode::kColorDepth && edram_mode != xenos::EDRAMMode::kDepthOnly) {
     return false;
   }
   if (regs.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode ==
@@ -325,8 +317,8 @@ bool IsRasterizationPotentiallyDone(const RegisterFile& regs, bool primitive_pol
 }
 
 reg::RB_DEPTHCONTROL GetNormalizedDepthControl(const RegisterFile& regs) {
-  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode != xenos::EdramMode::kColorDepth && edram_mode != xenos::EdramMode::kDepthOnly) {
+  xenos::EDRAMMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+  if (edram_mode != xenos::EDRAMMode::kColorDepth && edram_mode != xenos::EDRAMMode::kDepthOnly) {
     reg::RB_DEPTHCONTROL disabled;
     disabled.value = 0;
     return disabled;
@@ -361,7 +353,7 @@ void GetPreferredFacePolygonOffset(const RegisterFile& regs, bool primitive_poly
 }
 
 uint32_t GetNormalizedColorMask(const RegisterFile& regs, uint32_t ps_writes_color_targets) {
-  if (regs.Get<reg::RB_MODECONTROL>().edram_mode != xenos::EdramMode::kColorDepth) return 0;
+  if (regs.Get<reg::RB_MODECONTROL>().edram_mode != xenos::EDRAMMode::kColorDepth) return 0;
   uint32_t normalized = 0;
   uint32_t rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
   for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
@@ -381,7 +373,7 @@ uint32_t GetNormalizedColorMask(const RegisterFile& regs, uint32_t ps_writes_col
 // reverse Z, no float24 conversion, resolution scale 1 and half_pixel_offset on (the plugin's
 // settings), and full_float24_in_0_to_1 = false: the host depth buffers here are not shared
 // with EDRAM ownership transfers, so depth stays in 0...1 (the Clear values RenderTargets uses,
-// and the shader-written depth: the system flags never carry kSysFlag_DepthFloat24).
+// and the shader-written depth: the system flags never carry kSysFlagDepthFloat24).
 void HostViewportInfo(const RegisterFile& regs, bool pixel_shader_writes_depth, ViewportInfo& out) {
   auto clip = regs.Get<reg::PA_CL_CLIP_CNTL>();
   auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
@@ -644,7 +636,7 @@ xenos::ClampMode NormalizeClampMode(xenos::ClampMode m) {
 // draw's SamplerKey::lod_bias.
 SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBinding& binding,
                          xenos::AnisoFilter min_aniso, uint32_t lod_bias) {
-  xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(binding.fetch_constant);
+  xenos::TextureFetch fetch = regs.GetTextureFetch(binding.fetch_constant);
   SamplerKey k{};
   xenos::ClampMode cx, cy, cz;
   texture_util::GetClampModesForDimension(fetch, cx, cy, cz);
@@ -670,7 +662,7 @@ SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBind
                                                                         : binding.mip_filter;
   auto aniso = binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst ? fetch.aniso_filter
                                                                           : binding.aniso_filter;
-  aniso = std::min(aniso, xenos::AnisoFilter::kMax_16_1);
+  aniso = std::min(aniso, xenos::AnisoFilter::kMax161);
   // Linearly filtered textures with mips get at least `min_aniso`; render targets, lookup
   // tables and other point-sampled or single-level textures keep the game's filtering.
   if (mag == xenos::TextureFilter::kLinear && min == xenos::TextureFilter::kLinear &&
@@ -785,7 +777,7 @@ struct CachedCbv {
 // `cb.last`, compared with what was there on the way (one register = 16 bytes = one SSE
 // load/store, no calls); 16 zero bytes for no shader or no constants (a CBV needs some data).
 void PackFloats(CachedCbv& cb, const DxbcShader* shader, const uint32_t* regs, uint32_t reg_base) {
-  const Shader::ConstantRegisterMap* map = shader ? &shader->constant_register_map() : nullptr;
+  const Shader::ConstantRegisterMap* map = shader ? &shader->GetConstantRegisterMap() : nullptr;
   const uint32_t n = map ? map->float_count : 0;  // the bitmap's population count
   if (!n) {
     static constexpr uint8_t kZero[16] = {};
@@ -824,7 +816,7 @@ struct DrawRenderer::Impl {
   NativeRenderer& r;
   DrawRenderer::Stats& stats;
   ID3D12Device* device = nullptr;
-  rex::memory::Memory* memory = nullptr;
+  rex::kernel::GuestAddressSpace* memory = nullptr;
   const uint8_t* membase = nullptr;
   ShaderCache shaders;
   BoolSpecializer vs_bools{shaders}, ps_bools{shaders};
@@ -862,9 +854,9 @@ struct DrawRenderer::Impl {
   // Prepare: the draw after a memexport draw starts a copy segment, so its copies are not
   // recorded ahead of the export.
   bool segment_after_memexport = false;
-  // Destination ranges (draw_util::AddMemExportRanges): RequestMemexport's (guest thread with
+  // Destination ranges (rex::gpu::draw_state::AddMemExportRanges): RequestMemexport's (guest thread with
   // the render thread) and Draw's (render thread).
-  std::vector<rex::graphics::draw_util::MemExportRange> prep_memexport_ranges,
+  std::vector<rex::gpu::draw_state::MemExportRange> prep_memexport_ranges,
       draw_memexport_ranges;
   // Readback batch (render thread). Each range's bytes before the batch's first export to it are
   // copied to memexport_before at `offset` (SnapshotMemexport); FlushMemexport copies the ranges
@@ -1697,13 +1689,13 @@ struct CoherencyJob {
 
 bool DrawRenderer::Impl::Initialize() {
   device = r.d3d12();
-  memory = rex::system::kernel_memory();
+  memory = rexnative::host::Memory();
   if (!memory) {
     REXLOG_ERROR("ReXNative draw: no guest memory");
     return false;
   }
-  membase = memory->physical_membase();
-  guest_physical = memory->physical_membase();
+  membase = memory->GetPhysicalMembase();
+  guest_physical = memory->GetPhysicalMembase();
   vertex_upload.SetDevice(device);
   threaded = REXCVAR_GET(rexnative_render_thread);
   // kMax_N_1 is log2(N) + 1.
@@ -1824,10 +1816,13 @@ bool DrawRenderer::Impl::Initialize() {
                        options16.DynamicDepthBiasSupported;
   REXLOG_INFO("ReXNative draw: dynamic depth bias {}", dynamic_depth_bias ? "on" : "off");
   if (REXCVAR_GET(rexnative_pipeline_cache)) {
-    // The runtime's cache root (userdata\cache unless --cache_root): co_run keeps it.
-    rex::Runtime* runtime =
-        rex::system::kernel_state() ? rex::system::kernel_state()->emulator() : nullptr;
-    std::filesystem::path dir = runtime ? runtime->cache_root() : std::filesystem::path();
+    // The app's cache root (app.cache_root): co_run keeps it.
+    std::filesystem::path dir = rexnative::settings::Path("app.cache_root");
+    // ReXGlue v0.11 has no cache root unless one is set: the player's data folder then.
+    if (dir.empty()) {
+      const std::filesystem::path user = rexnative::settings::Path("app.user_root");
+      if (!user.empty()) dir = user / "cache";
+    }
     if (dir.empty()) {
       REXLOG_WARN("ReXNative pipelines: no cache root, no pipeline cache");
     } else {
@@ -2283,13 +2278,13 @@ void DrawRenderer::Impl::AuditShader(const ShaderRef& ref, const DxbcShader* sha
   const uint32_t* ucode =
       ref.immediate ? ref.immediate : reinterpret_cast<const uint32_t*>(membase + ref.ucode);
   const uint64_t hash = XXH3_64bits(ucode, size_t(ref.dwords) * sizeof(uint32_t));
-  if (hash == shader->ucode_data_hash()) return;
+  if (hash == shader->GetUcodeDataHash()) return;
   ++audit_shaders;
   REXNATIVE_LOG_FIRST(100, WARN,
                  "ReXNative audit: frame {} {} shader {:08X} ({} dwords{}) hashes {:016X} in "
                  "guest memory, the shader memo gave {:016X}",
                  watch_frame.load(std::memory_order_relaxed), type, ref.ucode, ref.dwords,
-                 ref.immediate ? ", immediate" : "", hash, shader->ucode_data_hash());
+                 ref.immediate ? ", immediate" : "", hash, shader->GetUcodeDataHash());
 }
 
 void DrawRenderer::Impl::AuditDraw(CommandStream* list, const DrawPrep& prep) {
@@ -2371,7 +2366,7 @@ void DrawRenderer::Impl::CheckAuditJobs(uint64_t completed_fence) {
         "ReXNative audit: frame {}: {} ranges ({:.1f} MB) read back{}, {} differ from guest "
         "memory when their draw was queued ({} hold it as it is now)",
         job->frame, job->entries.size(), double(job->used) / (1 << 20),
-        job->over ? fmt::format(", {} not (read back full)", job->over) : std::string(), differ,
+        job->over ? std::format(", {} not (read back full)", job->over) : std::string(), differ,
         newer);
     audit_readbacks.push_back(std::move(job->readback));
   }
@@ -2421,7 +2416,7 @@ void DrawRenderer::Impl::CheckLateWrites() {
     auto slots = [&] {
       std::string list;
       for (uint32_t s = 0; s < 256; ++s)
-        if (slot_pages[s]) list += fmt::format(" {}:{}", s == 0xFF ? -1 : int(s), slot_pages[s]);
+        if (slot_pages[s]) list += std::format(" {}:{}", s == 0xFF ? -1 : int(s), slot_pages[s]);
       return list;
     };
     REXNATIVE_LOG_FIRST(400, INFO,
@@ -2519,7 +2514,7 @@ bool DrawRenderer::Impl::CommitCbv(CachedCbv& cb, uint32_t root_index, CommandSt
 
 void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcShader& vs_generic,
                                                const DxbcShader* vs, CommandStream* list) {
-  const uint64_t loose = vs_generic.ucode_data_hash() ^ uint64_t(s.count) ^
+  const uint64_t loose = vs_generic.GetUcodeDataHash() ^ uint64_t(s.count) ^
                          (uint64_t(s.primitive) << 58);
   const uint64_t identity = loose ^ (uint64_t(s.index_address) << 32);
   const MotionHistory::Constants now = {vs, cb_float_vs.gpu, cb_fetch.gpu};
@@ -2656,8 +2651,8 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::GetPipeline(uint64_t hash, con
       REXLOG_INFO(
           "ReXNative pipelines: new at frame {}: vs {:016X}{} ps {:016X}{}{}, state {} "
           "({} pipelines), shader pair {} ({} pipelines)",
-          r.frame_index(), vs.shader().ucode_data_hash(), variant & 1 ? " (bools)" : "",
-          ps ? ps->shader().ucode_data_hash() : 0, variant & 2 ? " (bools)" : "",
+          r.frame_index(), vs.GetShader().GetUcodeDataHash(), variant & 1 ? " (bools)" : "",
+          ps ? ps->GetShader().GetUcodeDataHash() : 0, variant & 2 ? " (bools)" : "",
           variant & 4 ? " (signs)" : "", st == pipeline_states.end() ? "new" : "known",
           st == pipeline_states.end() ? 0 : st->second,
           pr == pipeline_pairs.end() ? "new" : "known",
@@ -2668,21 +2663,21 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::GetPipeline(uint64_t hash, con
     if (store.is_open()) {
       PipelineKey stored = key;
       stored.vs = stored.ps = nullptr;
-      const Shader& vss = vs.shader();
-      store.RecordShader(uint32_t(vss.type()), vss.ucode_data_hash(), vss.ucode_dwords(),
-                         vss.ucode_dword_count());
+      const Shader& vss = vs.GetShader();
+      store.RecordShader(uint32_t(vss.GetType()), vss.GetUcodeDataHash(), vss.GetUcodeDwords(),
+                         vss.GetUcodeDwordCount());
       if (ps) {
-        const Shader& pss = ps->shader();
-        store.RecordShader(uint32_t(pss.type()), pss.ucode_data_hash(), pss.ucode_dwords(),
-                           pss.ucode_dword_count());
+        const Shader& pss = ps->GetShader();
+        store.RecordShader(uint32_t(pss.GetType()), pss.GetUcodeDataHash(), pss.GetUcodeDwords(),
+                           pss.GetUcodeDwordCount());
       }
-      store.RecordPipeline(vss.ucode_data_hash(), vs.modification(),
-                           ps ? ps->shader().ucode_data_hash() : 0, ps ? ps->modification() : 0,
+      store.RecordPipeline(vss.GetUcodeDataHash(), vs.GetModification(),
+                           ps ? ps->GetShader().GetUcodeDataHash() : 0, ps ? ps->GetModification() : 0,
                            &stored);
       // One of the store's older records: mark it used so it stays (fresh records carry this
       // session already).
-      store.TouchRecord(vss.ucode_data_hash(), vs.modification(),
-                        ps ? ps->shader().ucode_data_hash() : 0, ps ? ps->modification() : 0,
+      store.TouchRecord(vss.GetUcodeDataHash(), vs.GetModification(),
+                        ps ? ps->GetShader().GetUcodeDataHash() : 0, ps ? ps->GetModification() : 0,
                         &stored);
     }
   }
@@ -2751,11 +2746,11 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
   d.IBStripCutValue = key.strip_cut == 1   ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF
                       : key.strip_cut == 2 ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF
                                            : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
-  d.VS.pShaderBytecode = vs.translated_binary().data();
-  d.VS.BytecodeLength = vs.translated_binary().size();
+  d.VS.pShaderBytecode = vs.GetTranslatedBinary().data();
+  d.VS.BytecodeLength = vs.GetTranslatedBinary().size();
   if (ps && !key.disable_raster) {
-    d.PS.pShaderBytecode = ps->translated_binary().data();
-    d.PS.BytecodeLength = ps->translated_binary().size();
+    d.PS.pShaderBytecode = ps->GetTranslatedBinary().data();
+    d.PS.BytecodeLength = ps->GetTranslatedBinary().size();
   }
   if (key.gs_key) {
     auto g = geometry_shaders.find(key.gs_key);
@@ -2813,7 +2808,7 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
     b.LogicOp = D3D12_LOGIC_OP_NOOP;
     b.RenderTargetWriteMask = rt.mask;
   }
-  if (ps && DxbcShaderTranslator::Modification(ps->modification()).pixel.motion_vectors) {
+  if (ps && DxbcShaderTranslator::Modification(ps->GetModification()).pixel.motion_vectors) {
     constexpr uint32_t kMotion = DxbcShaderTranslator::kMotionVectorRenderTarget;
     d.NumRenderTargets = kMotion + 1;
     d.RTVFormats[kMotion] = Upscaler::kMotionFormat;
@@ -3003,7 +2998,7 @@ DxbcShader* DrawRenderer::Impl::LoadReplayedShader(const ShaderRef& ref, xenos::
 bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& vs,
                                          std::vector<VertexCopy>& out) {
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
-  const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
+  const Shader::ConstantRegisterMap& vmap = vs.GetConstantRegisterMap();
   // A replayed draw's data from a recorded Begin call: the recording's own memory, rewritten
   // each time the game records again; watching it would fault on every recording.
   const bool replayed = s.fn == HookFn::kRunCommandBuffer;
@@ -3013,7 +3008,7 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
       uint32_t b = uint32_t(std::countr_zero(bits));
       bits &= bits - 1;
       const uint32_t index = w * 32 + b;
-      xenos::xe_gpu_vertex_fetch_t f = regs.GetVertexFetch(index);
+      xenos::VertexFetch f = regs.GetVertexFetch(index);
       if (f.type != xenos::FetchConstantType::kVertex) {
         REXNATIVE_WARN_ONCE("ReXNative draw: vertex fetch {} has type {} ({:08X} {:08X})", index,
                        uint32_t(f.type), f.dword_0, f.dword_1);
@@ -3043,8 +3038,8 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
 bool DrawRenderer::Impl::RequestMemexport(const DrawState& s, const DxbcShader& vs,
                                           const DxbcShader* ps, std::vector<VertexCopy>& out) {
   if (!memexport_on) return true;
-  const bool vertex = vs.memexport_eM_written() != 0;
-  const bool pixel = ps && ps->memexport_eM_written() != 0;
+  const bool vertex = vs.GetMemExportEMWritten() != 0;
+  const bool pixel = ps && ps->GetMemExportEMWritten() != 0;
   if (!vertex && !pixel) return true;
   const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
   auto& ranges = prep_memexport_ranges;
@@ -3433,7 +3428,7 @@ void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
 constexpr uint64_t kGpuMemcpy64Shader = 0x71B69663FD98B9E5ull;
 
 bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs) {
-  if (vs.ucode_data_hash() != kGpuMemcpy64Shader) return false;
+  if (vs.GetUcodeDataHash() != kGpuMemcpy64Shader) return false;
   if (s.indexed || xenos::PrimitiveType(s.primitive) != xenos::PrimitiveType::kPointList ||
       !s.count)
     return false;
@@ -3444,7 +3439,7 @@ bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& 
   if (vc(255, 0) != 0.0f || vc(255, 1) != 1.0f || vc(255, 2) != 4.0f || vc(255, 3) != 8.0f)
     return false;
   // The one vertex fetch.
-  const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
+  const Shader::ConstantRegisterMap& vmap = vs.GetConstantRegisterMap();
   int slot = -1;
   for (uint32_t w = 0; w < 3; ++w)
     for (uint32_t bits = vmap.vertex_fetch_bitmap[w]; bits; bits &= bits - 1) {
@@ -3452,12 +3447,12 @@ bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& 
       slot = int(w * 32 + uint32_t(std::countr_zero(bits)));
     }
   if (slot < 0) return false;
-  const xenos::xe_gpu_vertex_fetch_t f = regs.GetVertexFetch(uint32_t(slot));
+  const xenos::VertexFetch f = regs.GetVertexFetch(uint32_t(slot));
   if (f.type != xenos::FetchConstantType::kVertex) return false;
   // The one export stream.
-  const auto& streams = vs.memexport_stream_constants();
+  const auto& streams = vs.GetMemExportStreamConstants();
   if (streams.size() != 1) return false;
-  const xenos::xe_gpu_memexport_stream_t st =
+  const xenos::MemExportStream st =
       regs.GetMemExportStream(regs.Get<reg::SQ_VS_CONST>().base + *streams.begin());
   if (st.const_0x1 != 0x1 || st.const_0x4b0 != 0x4B0 || st.const_0x96 != 0x96 ||
       rex::graphics::FormatInfo::Get(xenos::TextureFormat(st.format))->bits_per_pixel != 64)
@@ -3635,7 +3630,7 @@ PipelineKey DrawRenderer::Impl::BuildPipelineKey(
     }
     float poly_offset, poly_offset_scale;
     GetPreferredFacePolygonOffset(regs, polygonal, poly_offset_scale, poly_offset);
-    key.depth_bias = rex::graphics::draw_util::GetD3D10IntegerPolygonOffset(
+    key.depth_bias = rex::gpu::draw_state::GetD3D10IntegerPolygonOffset(
         regs.Get<reg::RB_DEPTH_INFO>().depth_format, poly_offset);
     // The slope is per host pixel: scaled like Canary's for its draw resolution scale, by the
     // larger factor (more bias rather than Z fighting).
@@ -3741,8 +3736,8 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       "f=%.2f,%.2f,%.2f,%.2f samples=%u vp=%u,%u,%u,%u z=%.3f-%.3f sc=%u,%u,%u,%u "
       "tex=%zu ci=%08X si=%08X di=%08X su=%08X dc=%08X po=%g/%g,%g/%g bias=%d/%g\n",
       draw_index, uint32_t(s.fn), s.primitive, count, uint32_t(s.indexed),
-      (unsigned long long)vs.ucode_data_hash(), (unsigned long long)mods.vertex,
-      ps ? (unsigned long long)ps->ucode_data_hash() : 0ull, (unsigned long long)mods.pixel,
+      (unsigned long long)vs.GetUcodeDataHash(), (unsigned long long)mods.vertex,
+      ps ? (unsigned long long)ps->GetUcodeDataHash() : 0ull, (unsigned long long)mods.pixel,
       key.num_rts, int(key.rtv[0]), int(key.rtv[1]), int(key.dsv), key.depth_enable,
       key.depth_write, key.depth_func, key.stencil_enable, key.cull, key.rt[0].blend, key.rt[0].src,
       key.rt[0].dst, key.rt[0].op, key.rt[0].src_a, key.rt[0].dst_a, key.rt[0].op_a, key.rt[0].mask,
@@ -3762,11 +3757,11 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
   // Where the draw's data comes from and the float constants each shader reads (hashed, then
   // in full).
   std::fprintf(draw_log, "  ia=%08X", s.indexed ? s.index_address : 0u);
-  const Shader::ConstantRegisterMap& vmap = vs.constant_register_map();
+  const Shader::ConstantRegisterMap& vmap = vs.GetConstantRegisterMap();
   for (uint32_t w = 0; w < 3; ++w)
     for (uint32_t bits = vmap.vertex_fetch_bitmap[w]; bits; bits &= bits - 1) {
       const uint32_t index = w * 32 + uint32_t(std::countr_zero(bits));
-      const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(index);
+      const xenos::VertexFetch vf = regs.GetVertexFetch(index);
       std::fprintf(draw_log, " vf%u=%08X+%X", index, vf.address << 2, vf.size << 2);
       // Small buffers (a UI quad, a rectangle) in full, as guest memory holds them (big-endian
       // dwords, before the fetch's endian swap).
@@ -3782,7 +3777,7 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
   auto float_hash = [&](const Shader* shader, uint32_t base) {
     uint64_t h = 0;
     if (!shader) return h;
-    const Shader::ConstantRegisterMap& map = shader->constant_register_map();
+    const Shader::ConstantRegisterMap& map = shader->GetConstantRegisterMap();
     for (uint32_t w = 0; w < 4; ++w)
       for (uint64_t bits = map.float_bitmap[w]; bits; bits &= bits - 1)
         h = XXH3_64bits_withSeed(&regs[base + (w * 64 + uint32_t(std::countr_zero(bits))) * 4], 16,
@@ -3794,7 +3789,7 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
                (unsigned long long)float_hash(ps, XE_GPU_REG_SHADER_CONSTANT_256_X));
   auto log_floats = [&](const char* name, const Shader& shader, uint32_t base) {
     std::fprintf(draw_log, "  %s", name);
-    const Shader::ConstantRegisterMap& map = shader.constant_register_map();
+    const Shader::ConstantRegisterMap& map = shader.GetConstantRegisterMap();
     for (uint32_t w = 0; w < 4; ++w)
       for (uint64_t bits = map.float_bitmap[w]; bits; bits &= bits - 1) {
         const uint32_t c = w * 64 + uint32_t(std::countr_zero(bits));
@@ -3856,7 +3851,7 @@ ID3D12PipelineState* DrawRenderer::Impl::SelectPipeline(
       gm = WithMotionVectors(gm);
     DxbcShader* gps = gm.pixel_shader_used ? ps_generic : nullptr;
     // The draw's setup so far read the specialized pixel shader's depth output.
-    if (gm.draw && !gps == !ps && (!gps || gps->writes_depth() == ps->writes_depth())) {
+    if (gm.draw && !gps == !ps && (!gps || gps->IsDepthWritten() == ps->IsDepthWritten())) {
       DxbcShader::Translation* gvst = Translated(*vs_generic, gm.vertex);
       DxbcShader::Translation* gpst = gps ? Translated(*gps, gm.pixel) : nullptr;
       if (gvst && (!gps || gpst)) {
@@ -4145,13 +4140,13 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
   auto colorcontrol = regs.Get<reg::RB_COLORCONTROL>();
   auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
   uint32_t flags = 0;
-  if (vte.vtx_xy_fmt) flags |= DxbcShaderTranslator::kSysFlag_XYDividedByW;
-  if (vte.vtx_z_fmt) flags |= DxbcShaderTranslator::kSysFlag_ZDividedByW;
-  if (vte.vtx_w0_fmt) flags |= DxbcShaderTranslator::kSysFlag_WNotReciprocal;
-  if (polygonal) flags |= DxbcShaderTranslator::kSysFlag_PrimitivePolygonal;
-  if (rex::graphics::draw_util::IsPrimitiveLine(false, prim))
-    flags |= DxbcShaderTranslator::kSysFlag_PrimitiveLine;
-  // No kSysFlag_DepthFloat24: without float24 conversion in the shader, its only effect is to
+  if (vte.vtx_xy_fmt) flags |= DxbcShaderTranslator::kSysFlagXYDividedByW;
+  if (vte.vtx_z_fmt) flags |= DxbcShaderTranslator::kSysFlagZDividedByW;
+  if (vte.vtx_w0_fmt) flags |= DxbcShaderTranslator::kSysFlagWNotReciprocal;
+  if (polygonal) flags |= DxbcShaderTranslator::kSysFlagPrimitivePolygonal;
+  if (rex::gpu::draw_state::IsPrimitiveLine(false, prim))
+    flags |= DxbcShaderTranslator::kSysFlagPrimitiveLine;
+  // No kSysFlagDepthFloat24: without float24 conversion in the shader, its only effect is to
   // scale oDepth into the plugin's host 0...0.5 float24 range, while viewports, clears and
   // resolves here keep D24FS8 in 0...1 (HostViewportInfo). Setting it halves the depth that
   // depth-restoring passes write.
@@ -4159,7 +4154,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
       colorcontrol.alpha_test_enable && !(debug_mask & kDebugNoAlphaTest)
           ? colorcontrol.alpha_func
           : xenos::CompareFunction::kAlways;
-  flags |= uint32_t(alpha_func) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
+  flags |= uint32_t(alpha_func) << DxbcShaderTranslator::kSysFlagAlphaPassIfLessShift;
   // Gamma render targets are R8G8B8A8 here (render_targets.cpp). Without blending the pixel
   // shader converts its color to the guest's PWL gamma before the write, the bytes the EDRAM
   // would hold (Iron Brigade's Scaleform draws its intro video into one: without this, half as
@@ -4170,7 +4165,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
       if (targets.color[i] && key.rtv[i] != kGammaBlendFormat &&
           regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
               xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
-        flags |= DxbcShaderTranslator::kSysFlag_ConvertColor0ToGamma << i;
+        flags |= DxbcShaderTranslator::kSysFlagConvertColor0ToGamma << i;
   sys.flags = flags;
   sys.tessellation_factor_range_min = regs.Get<float>(XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
   sys.tessellation_factor_range_max = regs.Get<float>(XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL) + 1.0f;
@@ -4351,7 +4346,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     mods_memo.mods = SelectModifications(shaders.translator(), *vs, ps, sdr);
     mods_memo.ps_textures = 0;
     if (mods_memo.mods.pixel_shader_used)
-      for (const auto& tb : ps->texture_bindings())
+      for (const auto& tb : ps->GetTextureBindings())
         mods_memo.ps_textures |= 1u << tb.fetch_constant;
   }
   ShaderModifications mods = mods_memo.mods;
@@ -4371,7 +4366,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
           : nullptr;
   const bool motion = scene_upscaler && mods.pixel_shader_used && depth_control.z_enable &&
                       (depth_control.z_write_enable ||
-                       ((GetNormalizedColorMask(regs, ps->writes_color_targets()) & 0xF) &&
+                       ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
                         !GetRtBlend(regs, 0).Blends()));
   if (motion) mods = WithMotionVectors(mods);
   const uint64_t generic_pixel_mod = mods.pixel;
@@ -4384,7 +4379,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
   if (!mods.pixel_shader_used) ps = nullptr;
   // Memexport: the shaders write guest memory, through shared memory as a UAV.
-  const bool memexport = vs->memexport_eM_written() || (ps && ps->memexport_eM_written());
+  const bool memexport = vs->GetMemExportEMWritten() || (ps && ps->GetMemExportEMWritten());
   if (memexport) {
     NoteMemexportDraw(regs, *vs, ps);
     if (!memexport_on) {
@@ -4396,8 +4391,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       memexport_draw_logged = true;
       REXLOG_INFO("ReXNative memexport: running memexport draws (first: vertex shader {:016X}{}), "
                   "readback {}",
-                  vs->ucode_data_hash(),
-                  ps && ps->memexport_eM_written() ? ", exporting pixel shader" : "",
+                  vs->GetUcodeDataHash(),
+                  ps && ps->GetMemExportEMWritten() ? ", exporting pixel shader" : "",
                   memexport_readback ? "on" : "off");
     }
   }
@@ -4410,7 +4405,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     return;
   }
   profile::Mark(profile::kShaders);
-  const bool polygonal = rex::graphics::draw_util::IsPrimitivePolygonal(false, prim);
+  const bool polygonal = rex::gpu::draw_state::IsPrimitivePolygonal(false, prim);
   const bool rasterization = IsRasterizationPotentiallyDone(regs, polygonal);
 
   // Host primitive (the plugin's primitive processor on D3D12: points, rectangles and quads go
@@ -4465,7 +4460,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
         (prim == xenos::PrimitiveType::kLineStrip ||
          prim == xenos::PrimitiveType::kTriangleStrip)) {
       uint32_t reset =
-          xenos::GpuSwap(regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx, index_endian);
+          xenos::GPUSwap(regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx, index_endian);
       if (!s.index_32bit) {
         if (reset <= 0xFFFF) {
           if (reset != 0xFFFF) {
@@ -4488,7 +4483,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
 
   // Render targets.
-  const uint32_t color_mask = ps ? GetNormalizedColorMask(regs, ps->writes_color_targets()) : 0;
+  const uint32_t color_mask = ps ? GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) : 0;
   const bool depth_used = rasterization && (depth_control.z_enable || depth_control.stencil_enable);
   uint32_t rt_mask = 0;
   for (uint32_t i = 0; i < 4; ++i)
@@ -4503,7 +4498,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   HostScissor(regs, scissor,
               r.render_targets().WidthFor(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch));
   ViewportInfo vp;
-  HostViewportInfo(regs, ps && ps->writes_depth(), vp);
+  HostViewportInfo(regs, ps && ps->IsDepthWritten(), vp);
   const uint32_t height = std::clamp(scissor.offset[1] + scissor.extent[1], 1u, 2048u);
   profile::Mark(profile::kSetup);
   BoundTargets targets;
@@ -4538,7 +4533,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                     (draw_index >= debug_skip_from && draw_index < debug_skip_to);
   uint32_t snap_now = 0;
   if (debug_hash_count) {
-    const uint64_t vs_hash = vs->ucode_data_hash(), ps_hash = ps ? ps->ucode_data_hash() : 0;
+    const uint64_t vs_hash = vs->GetUcodeDataHash(), ps_hash = ps ? ps->GetUcodeDataHash() : 0;
     uint32_t listed = 0;
     for (uint32_t i = 0; i < debug_hash_count; ++i)
       if (debug_hashes[i] == vs_hash || (ps && debug_hashes[i] == ps_hash)) listed |= 1u << i;
@@ -4603,7 +4598,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   FillSystemConstants(s, regs, prim, polygonal, index_endian, vp, used_textures, signs, targets,
                       key, sys);
   // The shaders' exports, and their vertex fetches, go through the shared memory UAV.
-  if (memexport) sys.flags |= DxbcShaderTranslator::kSysFlag_SharedMemoryIsUAV;
+  if (memexport) sys.flags |= DxbcShaderTranslator::kSysFlagSharedMemoryIsUAV;
   profile::Mark(profile::kSysConst);
 
   // Float constants packed by the shaders' maps (UpdateBindings), compared and staged in place.
@@ -4613,7 +4608,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   if (REXCVAR_GET(rexnative_trace_camera)) {
     // The first full-width draw per frame whose vertex shader reads c8, c11 and c28-c31.
     static uint64_t traced_frame = UINT64_MAX;
-    const uint64_t* vb = vs->constant_register_map().float_bitmap;
+    const uint64_t* vb = vs->GetConstantRegisterMap().float_bitmap;
     const uint32_t* vr = s.regs + XE_GPU_REG_SHADER_CONSTANT_000_X;
     const float width =
         2.0f * std::abs(std::bit_cast<float>(s.regs[XE_GPU_REG_PA_CL_VPORT_XSCALE]));
@@ -4639,11 +4634,11 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   bool hooked = false;
   if (ps) {
     if (const rex::graphics::PixelConstantHook hook = rex::graphics::GetPixelConstantHook()) {
-      const uint64_t* used = ps->constant_register_map().float_bitmap;
-      if (hook(ps->ucode_data_hash(), used, nullptr)) {
+      const uint64_t* used = ps->GetConstantRegisterMap().float_bitmap;
+      if (hook(ps->GetUcodeDataHash(), used, nullptr)) {
         alignas(16) uint32_t constants[256 * 4];
         std::memcpy(constants, s.regs + XE_GPU_REG_SHADER_CONSTANT_256_X, sizeof(constants));
-        if (hook(ps->ucode_data_hash(), used, constants)) {
+        if (hook(ps->GetUcodeDataHash(), used, constants)) {
           PackFloats(cb_float_ps, ps, constants, 0);
           hooked = true;
         }
@@ -4997,7 +4992,7 @@ DrawRenderer::PrepareCounters DrawRenderer::EndFramePrepare(uint64_t done) {
         "shaders differ from the guest's ucode",
         m.watch_frame.load(std::memory_order_relaxed), m.audit_draws, m.audit_ranges,
         double(m.audit_bytes) / (1 << 20),
-        m.audit_over ? fmt::format(", {} not (read back full)", m.audit_over) : std::string(),
+        m.audit_over ? std::format(", {} not (read back full)", m.audit_over) : std::string(),
         m.audit_shaders);
     m.audit_seen.clear();
     m.audit_draws = m.audit_ranges = m.audit_bytes = m.audit_over = m.audit_shaders = 0;
@@ -5070,12 +5065,12 @@ void DrawRenderer::InvalidateListState(ListBreak why) {
 }
 
 std::pair<uint64_t, uint64_t> DrawRenderer::ShaderHashes(const DrawPrep& prep) {
-  return {prep.vs ? prep.vs->ucode_data_hash() : 0, prep.ps ? prep.ps->ucode_data_hash() : 0};
+  return {prep.vs ? prep.vs->GetUcodeDataHash() : 0, prep.ps ? prep.ps->GetUcodeDataHash() : 0};
 }
 
 std::string DrawRenderer::ShaderDisassembly(uint64_t hash) const {
   const DxbcShader* shader = impl_->shaders.Find(hash);
-  return shader ? shader->ucode_disassembly() : std::string();
+  return shader ? shader->GetUcodeDisassembly() : std::string();
 }
 
 void DrawRenderer::LogClear(const ClearCall& c) {

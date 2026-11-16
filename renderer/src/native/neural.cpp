@@ -7,12 +7,12 @@
 #include "upscaler.h"
 
 #include <rex/cvar.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
+#include "native/sdk.h"
 #include <rex/logging.h>
-#include <rex/memory/utils.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/memory/endian.h>
+#include <rex/memory/mapped_ptr.h>
+#include "host.h"
+#include <rex/kernel/heap.h>
 
 #include <algorithm>
 #include <chrono>
@@ -248,7 +248,6 @@ bool NeuralPass::BeforeDraw(CommandStream* list, uint64_t frame, const uint32_t*
   if (!front_ || done_frame_ == frame || !upscaler || !upscaler->upscaled_this_frame())
     [[likely]]
     return false;
-  using enum rex::graphics::Register;
   const SurfaceRegs& f = front_->regs;
   // RT 0 of the draw is the front buffer's surface (pitch, MSAA, EDRAM data), written.
   if (regs[XE_GPU_REG_RB_SURFACE_INFO] != f.surface_info ||

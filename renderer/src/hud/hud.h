@@ -6,24 +6,20 @@
 // are saved into the game's configuration file, keeping its other lines and comments. The title
 // is the game's name from game_layer.h.
 //
-// The game's app calls SetConfigPath (OnConfigurePaths), Initialize (OnCreateDialogs, UI thread)
-// and Shutdown. The pad reaches it through FilterPad, from ReXNative's XInputGetState hook (the
+// The game's app calls Initialize (OnInit) and Shutdown. The pad reaches it through FilterPad, from ReXNative's XInputGetState hook (the
 // layer's REXNATIVE_XINPUT_GET_STATE, rexnative_d3d_hooks.cpp) or the port's own.
 #pragma once
 
 #include <cstdint>
 #include <filesystem>
 
-namespace rex::ui {
-class Window;
-}
-
 namespace rexnative::hud {
 
-// From the game's app: the configuration file (OnConfigurePaths) and the window
-// (OnCreateDialogs, on the UI thread; registers the key and the input listener).
+// From the game's app: the configuration file the menu writes (by default app.config_file), then
+// Initialize once the app's UI is up (OnInit, after rexnative::host::Attach; registers the key
+// and the input handler) and Shutdown.
 void SetConfigPath(const std::filesystem::path& config);
-void Initialize(rex::ui::Window* window);
+void Initialize();
 void Shutdown();
 
 // Whether the menu is up. Any thread.

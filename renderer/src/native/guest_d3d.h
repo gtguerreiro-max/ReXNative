@@ -10,7 +10,7 @@
 #pragma once
 
 #include <rex/cvar.h>
-#include <rex/hook.h>
+#include <rex/ppc/hook.h>
 
 #include <cstdint>
 

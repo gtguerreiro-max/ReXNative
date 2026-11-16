@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:55:28 +0000
+Subject: [PATCH 15/20] 
+ 0004-gpu-add-present_external-for-a-host-renderer-that-presents-itself
+
+---
+ src/gpu/xenos/host/xenos_presentation.cpp    |  7 +++++++
+ src/gpu/xenos/host/xenos_presentation.h      |  6 ++++++
+ src/gpu/xenos/xenos_graphics_driver_base.cpp | 10 +++++++++-
+ src/gpu/xenos/xenos_settings.h               |  4 ++++
+ 4 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/gpu/xenos/host/xenos_presentation.cpp b/src/gpu/xenos/host/xenos_presentation.cpp
+index 92b5acea..dcf0f2ad 100644
+--- a/src/gpu/xenos/host/xenos_presentation.cpp
++++ b/src/gpu/xenos/host/xenos_presentation.cpp
+@@ -60,6 +60,13 @@ bool XenosPresentation::ConnectToWindow() {
+   return attached_;
+ }
+ 
++void XenosPresentation::DisconnectFromWindow() {
++  if (attached_) {
++    presenter_->Attach(nullptr, nullptr);
++    attached_ = false;
++  }
++}
++
+ void XenosPresentation::SetOverlays(ImDrawData& draw_data) {
+   overlay_->UpdateTextures(draw_data);
+   draw_data_ = &draw_data;
+diff --git a/src/gpu/xenos/host/xenos_presentation.h b/src/gpu/xenos/host/xenos_presentation.h
+index e310e856..2045f88c 100644
+--- a/src/gpu/xenos/host/xenos_presentation.h
++++ b/src/gpu/xenos/host/xenos_presentation.h
+@@ -66,6 +66,12 @@ class REX_GPU_XENOS_API XenosPresentation final : public IPresentationHost, publ
+    */
+   bool ConnectToWindow();
+ 
++  /**
++   * Disconnects the presenter from the window, releasing what it holds on the window's surface
++   * (the swap chain), so another presenter can take the window. ConnectToWindow connects again.
++   */
++  void DisconnectFromWindow();
++
+   /**
+    * Uploads the overlay textures and keeps the frame for the next paint.
+    *
+diff --git a/src/gpu/xenos/xenos_graphics_driver_base.cpp b/src/gpu/xenos/xenos_graphics_driver_base.cpp
+index 6fe403e1..9472674f 100644
+--- a/src/gpu/xenos/xenos_graphics_driver_base.cpp
++++ b/src/gpu/xenos/xenos_graphics_driver_base.cpp
+@@ -98,7 +98,15 @@ void XenosGraphicsDriverBase::ResizeSurface(u32 width, u32 height) {
+ }
+ 
+ bool XenosGraphicsDriverBase::BeginPresent() {
+-  return presentation_ && presentation_->ConnectToWindow();
++  if (!presentation_) {
++    return false;
++  }
++  // A host renderer presents into the window itself: free the window's surface for it.
++  if (present_external.Get()) {
++    presentation_->DisconnectFromWindow();
++    return false;
++  }
++  return presentation_->ConnectToWindow();
+ }
+ 
+ void XenosGraphicsDriverBase::RenderOverlays(ImDrawData& draw_data) {
+diff --git a/src/gpu/xenos/xenos_settings.h b/src/gpu/xenos/xenos_settings.h
+index cd211f56..135f9df0 100644
+--- a/src/gpu/xenos/xenos_settings.h
++++ b/src/gpu/xenos/xenos_settings.h
+@@ -80,6 +80,10 @@ class XenosSettings : public SettingOwner {
+               "Skip all host GPU work for draws, resolves, shader loads and swaps, for a host "
+               "renderer that draws the guest's frames itself (ReXNative); fences, register and "
+               "memory write-backs and interrupts still run");
++  REX_SETTING(bool, present_external, false,
++              "A host renderer presents the title into the window itself (ReXNative): while set, "
++              "the driver keeps its presenter off the window, releasing its swap chain, and skips "
++              "its presents");
+   REX_SETTING(bool, readback_resolve_half_pixel_offset, false,
+               "When draw resolution scaling is active, sample from the center of each scaled block "
+               "during resolve readback downscale");

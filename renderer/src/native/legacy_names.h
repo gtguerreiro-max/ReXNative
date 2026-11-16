@@ -8,7 +8,10 @@ namespace rexnative {
 // The name an option had before ReXNative renamed it, or nullptr.
 const char* OldNameOf(std::string_view new_name);
 
-// Logs each old option name used in this run, with the new name and the value it set.
+// Each old name with the (old style) name of the option that replaced it.
+void ForEachOldName(void (*fn)(std::string_view old_name, std::string_view new_name));
+
+// Nothing since ReXGlue v0.11: the settings registry notes each old name used.
 void LogOldNames();
 
 }  // namespace rexnative

@@ -4,8 +4,7 @@
 // untiled data matches the Xenos plugin's uploads byte for byte.
 #include "texture_layout.h"
 
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
+#include "native/sdk.h"
 
 #include <algorithm>
 #include <array>
@@ -31,7 +30,7 @@ size_t TextureKey::Hash() const {
 }
 
 bool TextureKeyFromFetch(const uint32_t fetch_dwords[6], TextureKey* key) {
-  xenos::xe_gpu_texture_fetch_t fetch;
+  xenos::TextureFetch fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
   // ReXGlue rejects kInvalidTexture unless --gpu_allow_invalid_fetch_constants.
   if (fetch.type != xenos::FetchConstantType::kTexture) return false;
@@ -62,11 +61,11 @@ bool TextureKeyFromFetch(const uint32_t fetch_dwords[6], TextureKey* key) {
 
 namespace {
 
-constexpr uint32_t kRGBA = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
-constexpr uint32_t kRGBB = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBB;
-constexpr uint32_t kRGGG = xenos::XE_GPU_TEXTURE_SWIZZLE_RGGG;
-constexpr uint32_t kRRRR = xenos::XE_GPU_TEXTURE_SWIZZLE_RRRR;
-constexpr uint32_t kRBGG = XE_GPU_MAKE_TEXTURE_SWIZZLE(R, B, G, G);
+constexpr uint32_t kRGBA = xenos::REXGPU_SWIZZLE_RGBA;
+constexpr uint32_t kRGBB = xenos::REXGPU_SWIZZLE_RGBB;
+constexpr uint32_t kRGGG = xenos::REXGPU_SWIZZLE_RGGG;
+constexpr uint32_t kRRRR = xenos::REXGPU_SWIZZLE_RRRR;
+constexpr uint32_t kRBGG = REXGPU_SWIZZLE(R, B, G, G);
 
 using C = TextureConversion;
 struct FormatEntry {
@@ -286,20 +285,20 @@ uint32_t GuestToHostComponentMapping(uint32_t guest_swizzle, uint32_t host_swizz
     uint32_t c = (guest_swizzle >> (3 * i)) & 0b111;
     // 4/5 are the constants 0/1 (D3D12 FORCE_VALUE_0/1 have the same values); 6/7 become 4/5.
     uint32_t h =
-        c >= xenos::XE_GPU_TEXTURE_SWIZZLE_0 ? (c & 0b101) : (host_swizzle >> (3 * c)) & 0b111;
+        c >= xenos::REXGPU_SWIZZLE_0 ? (c & 0b101) : (host_swizzle >> (3 * c)) & 0b111;
     mapping |= h << (3 * i);
   }
   // D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES
   return mapping | (1u << 12);
 }
 
-texture_util::TextureGuestLayout GetGuestLayout(const TextureKey& key) {
+xenos::GuestTextureLayout GetGuestLayout(const TextureKey& key) {
   return texture_util::GetGuestTextureLayout(
       key.dimension, key.pitch, key.width, key.height, key.depth_or_array_size, key.tiled,
       key.format, key.packed_mips, key.base_page != 0, key.mip_max_level);
 }
 
-void GetGuestExtents(const TextureKey& key, const texture_util::TextureGuestLayout& layout,
+void GetGuestExtents(const TextureKey& key, const xenos::GuestTextureLayout& layout,
                      uint32_t* base_bytes, uint32_t* mips_bytes) {
   *base_bytes = key.base_page ? layout.base.level_data_extent_bytes : 0;
   *mips_bytes = key.mip_page ? layout.mips_total_extent_bytes : 0;
@@ -320,7 +319,7 @@ uint64_t GetHostFootprints(const TextureKey& key, bool d3d12_placement,
   uint32_t bh = host->block_compressed ? info->block_height : 1;
   // Host bytes per block equal the guest ones for every format in the table (the conversions
   // keep the size).
-  uint32_t bpb = info->bytes_per_block();
+  uint32_t bpb = info->GetBytesPerBlock();
   uint64_t offset = 0;
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
@@ -353,14 +352,14 @@ bool UntileTexture(const TextureKey& key, const GuestTextureMemory& memory,
   return UntileTexture(key, GetGuestLayout(key), memory, subresources, dst, scratch, stats);
 }
 
-bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout& layout,
+bool UntileTexture(const TextureKey& key, const xenos::GuestTextureLayout& layout,
                    const GuestTextureMemory& memory,
                    const std::vector<HostSubresource>& subresources, uint8_t* dst,
                    std::vector<uint8_t>* scratch, UntileStats* stats) {
   const HostFormat* host = GetHostFormat(key.format);
   if (!host) return false;
   const FormatInfo* info = FormatInfo::Get(key.format);
-  const uint32_t bpb = info->bytes_per_block();
+  const uint32_t bpb = info->GetBytesPerBlock();
   const uint32_t bpb_log2 = rex::log2_floor(bpb);
   const bool is_3d = key.is_3d();
 
@@ -389,7 +388,7 @@ bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout
     uint8_t* out = dst + s.offset;
     const bool from_base = s.level == 0;
     const uint32_t stored_level = std::min(s.level, layout.packed_level);
-    const texture_util::TextureGuestLayout::Level& level_layout =
+    const xenos::GuestTextureLayout::Level& level_layout =
         from_base ? layout.base : layout.mips[stored_level];
     const uint8_t* src = from_base ? base : mips;
     const size_t src_size = from_base ? base_size : mips_size;
@@ -400,7 +399,7 @@ bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout
       continue;
     }
     uint64_t level_offset = from_base ? 0 : layout.mip_offsets_bytes[stored_level];
-    level_offset += uint64_t(level_layout.array_slice_stride_bytes) * s.slice;
+    level_offset += uint64_t(level_layout.array_layer_stride_bytes) * s.slice;
     uint32_t ox = 0, oy = 0, oz = 0;
     if (s.level >= layout.packed_level) {
       texture_util::GetPackedMipOffset(key.width, key.height, key.depth(), key.format, s.level, ox,
@@ -408,7 +407,7 @@ bool UntileTexture(const TextureKey& key, const texture_util::TextureGuestLayout
     }
     const uint32_t row_pitch = level_layout.row_pitch_bytes;
     const uint32_t pitch_blocks = row_pitch / bpb;  // tiled: pitch in blocks
-    const uint32_t z_rows = level_layout.z_slice_stride_block_rows;
+    const uint32_t z_rows = level_layout.z_layer_stride_block_rows;
     // Blocks contiguous in tiled 2D memory along X (texture_util.h): 8 at 1 byte per block,
     // otherwise 16 bytes' worth, starting at a multiple of the run length. 3D tiling: per block.
     const uint32_t tiled_run = is_3d ? 1 : (bpb == 1 ? 8 : std::max(16u / bpb, 1u));

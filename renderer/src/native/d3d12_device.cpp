@@ -34,7 +34,6 @@ REXCVAR_DEFINE_BOOL(rexnative_dred, false, "ReXNative",
                     "Debug: D3D12 DRED (auto-breadcrumbs and page-fault data) on the native "
                     "renderer's device; when the GPU removes it (a hang, TDR, or a fault) the last "
                     "commands each command list completed and the faulting address are logged");
-REXCVAR_DECLARE(int32_t, d3d12_queue_priority);
 
 namespace rexnative {
 
@@ -277,7 +276,7 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
       D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME};
   D3D12_COMMAND_QUEUE_DESC qd = {};
   qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-  qd.Priority = kPriorities[std::clamp(REXCVAR_GET(d3d12_queue_priority), 0, 2)];
+  qd.Priority = kPriorities[std::clamp(std::atoi(rex::cvar::GetFlagByName("gpu.d3d12_queue_priority").c_str()), 0, 2)];
   HRESULT hr = device_->CreateCommandQueue(&qd, IID_PPV_ARGS(queue_.GetAddressOf()));
   // Realtime needs a privilege; the plugin falls back to high without it.
   if (FAILED(hr) && qd.Priority == D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME) {
@@ -331,13 +330,13 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
   return true;
 }
 
-bool D3D12Device::AttachSwapchain() {
+bool D3D12Device::AttachSwapchain(bool quiet) {
   stream_.Sync();  // the swapchain is made on the queue the stream's thread submits to
   RECT r = {};
   GetClientRect(game_window_, &r);
   width_ = uint32_t((std::max)(LONG(64), r.right - r.left));
   height_ = uint32_t((std::max)(LONG(64), r.bottom - r.top));
-  if (!CreateSwapchain(game_window_)) return false;
+  if (!CreateSwapchain(game_window_, quiet)) return false;
   REXLOG_INFO("ReXNative: swapchain {}x{} in the game window", width_, height_);
   return true;
 }
@@ -350,7 +349,7 @@ void D3D12Device::DetachSwapchain() {
   REXLOG_INFO("ReXNative: swapchain released");
 }
 
-bool D3D12Device::CreateSwapchain(HWND hwnd) {
+bool D3D12Device::CreateSwapchain(HWND hwnd, bool quiet) {
   DXGI_SWAP_CHAIN_DESC1 sd = {};
   sd.Width = width_;
   sd.Height = height_;
@@ -363,10 +362,10 @@ bool D3D12Device::CreateSwapchain(HWND hwnd) {
   sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   sd.Flags = swapchain_flags_;
   ComPtr<IDXGISwapChain1> sc1;
-  if (Failed(factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd, &sd, nullptr, nullptr,
-                                              sc1.GetAddressOf()),
-             "CreateSwapChainForHwnd"))
-    return false;
+  const HRESULT created =
+      factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd, &sd, nullptr, nullptr, sc1.GetAddressOf());
+  if (quiet && FAILED(created)) return false;
+  if (Failed(created, "CreateSwapChainForHwnd")) return false;
   // Fullscreen is the window's own (SDL's in the game window).
   factory_->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
   if (Failed(sc1.As(&swapchain_), "IDXGISwapChain3") || !SetUpColorSpace()) return false;

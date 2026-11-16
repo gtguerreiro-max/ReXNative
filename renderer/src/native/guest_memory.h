@@ -1,8 +1,9 @@
 // ReXNative renderer: guest memory as the generated code addresses it.
 #pragma once
 
-#include <rex/memory/utils.h>
-#include <rex/system/xmemory.h>
+#include <rex/memory/endian.h>
+#include <rex/memory/mapped_ptr.h>
+#include <rex/kernel/heap.h>
 #undef DrawState  // winuser.h (via rex/platform.h) maps it to DrawStateA/W; d3d_state.h's struct
 
 #include <bit>

@@ -1,5 +1,8 @@
 #include "shader_cache.h"
 
+#include "gpu/xenos/host/graphics_provider.h"
+#include "gpu/xenos/xenos_settings.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -25,7 +28,7 @@ double Us(std::chrono::steady_clock::time_point since) {
 }
 
 const char* Stage(const DxbcShader& shader) {
-  return shader.type() == rex::graphics::xenos::ShaderType::kVertex ? "vs" : "ps";
+  return shader.GetType() == rex::graphics::xenos::ShaderType::kVertex ? "vs" : "ps";
 }
 
 void DumpFile(const char* name, const void* data, size_t size) {
@@ -43,8 +46,19 @@ void DumpFile(const char* name, const void* data, size_t size) {
 // unorm16, 2x MSAA supported, no resolution scale), so a translation here is byte-identical to
 // the plugin's for the same modification. The vendor only changes code for Intel (no switch
 // statements).
+namespace {
+// The translator's gpu.xenos settings: the defaults, never registered (the Xenos driver's own
+// owner is the one the configuration file and the command line set).
+struct TranslatorSettings final : rex::gpu::XenosSettings {};
+const rex::gpu::XenosSettings& DefaultXenosSettings() {
+  static const TranslatorSettings* settings = new TranslatorSettings;
+  return *settings;
+}
+}  // namespace
+
 ShaderCache::ShaderCache()
-    : translator_(rex::ui::GraphicsProvider::GpuVendorID(0x10DE), /*bindless=*/true,
+    : translator_(DefaultXenosSettings(), rex::gpu::DXBCOptions{},
+                  rex::gpu::GraphicsProvider::GPUVendorID(0x10DE), /*bindless=*/true,
                   /*edram_rov_used=*/false, /*gamma_render_target_as_unorm8=*/true,
                   /*msaa_2x_supported=*/true) {}
 
@@ -58,13 +72,13 @@ DxbcShader* ShaderCache::Load(rex::graphics::xenos::ShaderType type, const uint3
   if (it != shaders_.end()) return it->second.get();
   auto t = std::chrono::steady_clock::now();
   auto shader = std::make_unique<DxbcShader>(type, hash, guest_ucode, dword_count);
-  shader->AnalyzeUcode(disasm_buffer_);
+  shader->AnalyzeUcode(disasm_buffer_, std::string());
   stats_.analyze_us += Us(t);
   if (!REXCVAR_GET(rexnative_shader_dump_dir).empty()) {
     char name[40];
     std::snprintf(name, sizeof(name), "%016llX.%s.txt", static_cast<unsigned long long>(hash),
                   Stage(*shader));
-    const std::string& text = shader->ucode_disassembly();
+    const std::string& text = shader->GetUcodeDisassembly();
     DumpFile(name, text.data(), text.size());
   }
   ++stats_.shaders;
@@ -87,22 +101,22 @@ DxbcShader::Translation* ShaderCache::Translate(DxbcShader& shader, uint64_t mod
     stats_.translate_us += us;
     stats_.max_translate_us = std::max(stats_.max_translate_us, us);
     ++stats_.translations;
-    if (!REXCVAR_GET(rexnative_shader_dump_dir).empty() && translation->is_valid()) {
+    if (!REXCVAR_GET(rexnative_shader_dump_dir).empty() && translation->IsValid()) {
       char name[64];
       std::snprintf(name, sizeof(name), "%016llX_%016llX.%s.dxbc",
-                    static_cast<unsigned long long>(shader.ucode_data_hash()),
+                    static_cast<unsigned long long>(shader.GetUcodeDataHash()),
                     static_cast<unsigned long long>(modification), Stage(shader));
-      const std::vector<uint8_t>& binary = translation->translated_binary();
+      const std::vector<uint8_t>& binary = translation->GetTranslatedBinary();
       DumpFile(name, binary.data(), binary.size());
     }
-    if (!translation->is_valid()) {
+    if (!translation->IsValid()) {
       ++stats_.failures;
       REXLOG_ERROR("pgr4 native: {} shader {:016X} modification {:016X} failed to translate",
-                   shader.type() == rex::graphics::xenos::ShaderType::kVertex ? "vertex" : "pixel",
-                   shader.ucode_data_hash(), modification);
+                   shader.GetType() == rex::graphics::xenos::ShaderType::kVertex ? "vertex" : "pixel",
+                   shader.GetUcodeDataHash(), modification);
     }
   }
-  return translation->is_valid() ? translation : nullptr;
+  return translation->IsValid() ? translation : nullptr;
 }
 
 }  // namespace rexnative

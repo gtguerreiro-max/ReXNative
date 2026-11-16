@@ -5,13 +5,12 @@
 #include "clock.h"
 #include "profile.h"
 
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
+#include "native/sdk.h"
 #ifdef REXNATIVE_TEXTURES_OFFLINE
 // Offline build, outside the game: no ReXGlue runtime, no write tracking.
 #include <fmt/format.h>
 #include <cstdio>
-#define TEXLOG(level, ...) std::fprintf(stderr, "%s: %s\n", level, fmt::format(__VA_ARGS__).c_str())
+#define TEXLOG(level, ...) std::fprintf(stderr, "%s: %s\n", level, std::format(__VA_ARGS__).c_str())
 #define REXLOG_INFO(...) TEXLOG("info", __VA_ARGS__)
 #define REXLOG_WARN(...) TEXLOG("warn", __VA_ARGS__)
 #define REXLOG_ERROR(...) TEXLOG("error", __VA_ARGS__)
@@ -19,7 +18,7 @@
 #else
 #include <rex/cvar.h>
 #include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/heap.h>
 
 #include "log.h"
 
@@ -52,7 +51,7 @@ struct TextureCache::Texture {
   const HostFormat* host = nullptr;
   ComPtr<ID3D12Resource> resource;
   D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
-  texture_util::TextureGuestLayout layout{};
+  xenos::GuestTextureLayout layout{};
   uint32_t base_bytes = 0, mips_bytes = 0;
   // Set by the invalidation callback (any thread), cleared before the guest memory is read.
   std::atomic<bool> dirty{true};
@@ -137,20 +136,20 @@ DXGI_FORMAT Family(DXGI_FORMAT f) {
 // Calls f(subresource index, guest physical address) for each subresource a resolve can target
 // on its own: level 0 and the stored mips of each slice (not levels inside a packed mip tail).
 template <typename F>
-void ForEachResolveAddress(const TextureKey& key, const texture_util::TextureGuestLayout& layout,
+void ForEachResolveAddress(const TextureKey& key, const xenos::GuestTextureLayout& layout,
                            F&& f) {
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
       uint32_t address;
       if (level == 0) {
         if (!key.base_page) continue;
-        address = (key.base_page << 12) + layout.base.array_slice_stride_bytes * slice;
+        address = (key.base_page << 12) + layout.base.array_layer_stride_bytes * slice;
       } else {
         if (!key.mip_page) continue;
         uint32_t stored = std::min(level, layout.packed_level);
         if (level > stored) continue;  // inside a packed tail: no resolve targets it alone
         address = (key.mip_page << 12) + layout.mip_offsets_bytes[stored] +
-                  layout.mips[stored].array_slice_stride_bytes * slice;
+                  layout.mips[stored].array_layer_stride_bytes * slice;
       }
       f(size_t(level) + size_t(slice) * key.mip_levels(), address);
     }
@@ -175,8 +174,8 @@ TextureCache::TextureCache(ID3D12Device* device, const uint8_t* physical_membase
 }
 
 #ifndef REXNATIVE_TEXTURES_OFFLINE
-TextureCache::TextureCache(ID3D12Device* device, rex::memory::Memory* memory)
-    : TextureCache(device, memory->physical_membase()) {
+TextureCache::TextureCache(ID3D12Device* device, rex::kernel::GuestAddressSpace* memory)
+    : TextureCache(device, memory->GetPhysicalMembase()) {
   memory_ = memory;
   invalidation_handle_ =
       memory_->RegisterPhysicalMemoryInvalidationCallback(InvalidationThunk, this);
@@ -474,7 +473,7 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
     const uint32_t bw = host.block_compressed ? info->block_width : 1;
     const uint32_t bh = host.block_compressed ? info->block_height : 1;
     const bool small_placement =
-        uint64_t(key.width) * key.height * info->bytes_per_block() / (bw * bh) <=
+        uint64_t(key.width) * key.height * info->GetBytesPerBlock() / (bw * bh) <=
         D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     HRESULT hr = CreateTextureResource(desc, small_placement, &t.resource, &t.placed, &t.bytes);
     if (FAILED(hr)) {
@@ -1002,7 +1001,7 @@ bool TextureCache::Get(const uint32_t fetch_dwords[6], CommandStream* list, uint
   // An alias is in the Resolver's read state, which includes kShaderRead.
   if (!t->alias) Transition(*t, list, kShaderRead);
 
-  xenos::xe_gpu_texture_fetch_t fetch;
+  xenos::TextureFetch fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
   out->resource = t->alias ? t->alias : t->resource.Get();
   out->key = key;

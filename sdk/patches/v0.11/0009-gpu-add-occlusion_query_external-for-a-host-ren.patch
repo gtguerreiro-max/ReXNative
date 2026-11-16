@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:27:04 +0000
+Subject: [PATCH 09/20] 
+ 0049-gpu-add-occlusion_query_external-for-a-host-renderer
+
+---
+ src/gpu/xenos/command_processor.cpp        | 5 +++++
+ src/gpu/xenos/d3d12/command_processor.cpp  | 2 +-
+ src/gpu/xenos/vulkan/command_processor.cpp | 3 ++-
+ src/gpu/xenos/xenos_settings.h             | 3 +++
+ 4 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index 69ac6ff0..a0c41c08 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -1222,6 +1222,11 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+   u32 initiator = reader->ReadAndSwap<u32>();
+   WriteRegister(std::to_underlying(xenos::Register::VGT_EVENT_INITIATOR), initiator & 0x3F);
+ 
++  // The reports, and the D3D's 0xFFFFFEED marking an unfinished one, are the host renderer's.
++  if (GetXenosSettings().occlusion_query_external.Get()) {
++    return true;
++  }
++
+   auto fake_sample_count = GetXenosSettings().query_occlusion_fake_sample_count.Get();
+   if (fake_sample_count >= 0) {
+     auto* sample_counts = GetPhysicalForWrite<DepthSampleCounts>(
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index ac9ecbdf..1d918e67 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -143,7 +143,7 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                u32 packet, u32 count) {
+   if (!GetXenosSettings().occlusion_query_enable.Get() || !occlusion_query_resources_available_ ||
+-      GetXenosSettings().skip_draws.Get()) {
++      GetXenosSettings().skip_draws.Get() || GetXenosSettings().occlusion_query_external.Get()) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index 97d4eff5..1cbcc242 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -605,7 +605,8 @@ void VulkanCommandProcessor::InitializeShaderStorage(const std::filesystem::path
+ 
+ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                 u32 packet, u32 count) {
+-  if (!GetXenosSettings().occlusion_query_enable.Get() || !occlusion_query_resources_available_) {
++  if (!GetXenosSettings().occlusion_query_enable.Get() || !occlusion_query_resources_available_ ||
++      GetXenosSettings().occlusion_query_external.Get()) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+diff --git a/src/gpu/xenos/xenos_settings.h b/src/gpu/xenos/xenos_settings.h
+index ed177b67..cd211f56 100644
+--- a/src/gpu/xenos/xenos_settings.h
++++ b/src/gpu/xenos/xenos_settings.h
+@@ -73,6 +73,9 @@ class XenosSettings : public SettingOwner {
+               "Refresh the page valid state from GPU written memory at frame end. Turning it off "
+               "lowers CPU cost but may break memory coherency");
+   REX_SETTING(bool, occlusion_query_enable, true, "Enable host occlusion query handling");
++  REX_SETTING(bool, occlusion_query_external, false,
++              "A host renderer that draws the guest's frames itself writes the results of its "
++              "occlusion queries: EVENT_WRITE_ZPD leaves the guest's sample count reports alone");
+   REX_SETTING(bool, skip_draws, false,
+               "Skip all host GPU work for draws, resolves, shader loads and swaps, for a host "
+               "renderer that draws the guest's frames itself (ReXNative); fences, register and "

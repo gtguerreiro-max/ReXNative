@@ -82,7 +82,8 @@ class D3D12Device {
   // AttachSwapchain creates the swapchain at the window's client size; no other swapchain may
   // exist on the window. Logs and returns false on failure. DetachSwapchain waits for the GPU
   // and releases it. Frames recorded without a swapchain are submitted but not presented.
-  bool AttachSwapchain();
+  // quiet: a failure is not logged (the caller tries again while the window is in use).
+  bool AttachSwapchain(bool quiet = false);
   void DetachSwapchain();
   bool has_swapchain() const { return swapchain_ != nullptr; }
 
@@ -184,7 +185,7 @@ class D3D12Device {
 
  private:
   bool CreateWindowThread(const wchar_t* title);
-  bool CreateSwapchain(HWND hwnd);
+  bool CreateSwapchain(HWND hwnd, bool quiet = false);
   // Switches the new swapchain to HDR10 if wanted and supported, else to kBackBufferFormat.
   bool SetUpColorSpace();
   using List = ID3D12GraphicsCommandList;

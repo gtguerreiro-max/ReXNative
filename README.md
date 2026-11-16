@@ -100,10 +100,11 @@ Iron Brigade is its CreateDevice.
 ## Using it
 
 Requirements: Python 3.10+ (the tool has no dependencies); for the renderer, Windows with Visual
-Studio 2022 (or its Build Tools) with the C++ workload and its Clang tools, git, CMake and
-Ninja, and the NVIDIA DLSS SDK and DLSS 5 headers (from NVIDIA). The ReXGlue SDK the renderer
-needs (pinned, with its patches: [sdk/README.md](sdk/README.md)) and the AMD FSR (FidelityFX)
-SDK v2.4.0 come from one script:
+Studio 2022 (or its Build Tools) with the C++ workload, LLVM 20 (clang++ and lld: ReXGlue v0.11
+needs clang 20 or later; `REXNATIVE_LLVM` names its `bin` folder), the Vulkan SDK (ReXGlue builds
+its Vulkan driver too), git, CMake and Ninja, and the NVIDIA DLSS SDK and DLSS 5 headers (from
+NVIDIA). The ReXGlue SDK the renderer needs (v0.11.0, pinned, with its patches:
+[sdk/README.md](sdk/README.md)) and the AMD FSR (FidelityFX) SDK v2.4.0 come from one script:
 
 ```powershell
 scripts\build-sdk.ps1
@@ -124,7 +125,8 @@ and messages are in English; `--lang pt` (or `REXNATIVE_LANG=pt`) writes them in
 
 ```cmake
 include(path/to/ReXNative/renderer/rexnative.cmake)
-rexnative_add(mygame
+rexnative_add(mygame_common          # the host library (rexglue_setup_host_library)
+    EXECUTABLE      mygame
     LAYER_DIR       ${CMAKE_CURRENT_SOURCE_DIR}/results/mygame
     REXGLUE_SDK_SRC path/to/rexglue-sdk
     FIDELITYFX_SDK  path/to/FidelityFX-SDK
@@ -132,11 +134,15 @@ rexnative_add(mygame
     DLSS_NR         path/to/dlss_nr)
 ```
 
-and in the game's app call `rexnative::hud::SetConfigPath`, `Initialize` and `Shutdown`
-(`renderer/src/hud/hud.h`). ReXNative then draws the game by default (the layer's
-`kDefaultEnabled`); `--rexnative=false` hands it back to ReXGlue's Xenos plugin. Every option
-is a `rexnative_*` cvar; the names from PGR4Native (`pgr4_native_*`, `pgr4_d3d_*`) still work
-and log their new name.
+and in the game's app (a `rex::app::TitleApp`) call `rexnative::host::Configure()` in
+`OnConfigure`, then `rexnative::host::Attach(*this)` and `rexnative::hud::Initialize()` in
+`OnInit`, and `rexnative::hud::Shutdown()` / `rexnative::host::Detach()` in `OnShutdown`
+(`renderer/src/host.h`, `renderer/src/hud/hud.h`); `rexnative project` writes that app.
+ReXNative then draws the game by default (the layer's `kDefaultEnabled`); `--rexnative=false`
+hands it back to ReXGlue's Xenos GPU driver, and F9 switches between the two while it runs.
+Every option is a `rexnative.*` setting (`[rexnative]` in the game's configuration file); the
+older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*`, `pgr4_d3d_*`) still work as
+aliases.
 
 **3. Measure the scene for DLSS.** Run with `--rexnative_resolve_dump=<dir>`, create
 `<dir>/dump.request` in a 3D scene, then:
@@ -280,7 +286,7 @@ Improving it a little at a time:
     longjmp. Without them a longjmp is recompiled as a register restore and a return into the
     wrong frame: all nine games have them, and the four that stopped at start-up (Jet Set
     Radio's and Super Meat Boy's libjpeg error path, Minecraft, 3D Ultra Minigolf) stopped there.
-    Codegen takes several addresses with `sdk/patches/rexnative/0003` (Super Meat Boy calls
+    Codegen takes several addresses with `sdk/patches/v0.11/0014` (Super Meat Boy calls
     setjmp through two thunks). Games with XAPI fibers (Double Dragon Neon, Dungeons & Dragons:
     Chronicles of Mystara) get their five fiber functions, found by shape (the current fiber at
     +356 of the thread, ERROR_ALREADY_FIBER / ERROR_ALREADY_THREAD, SwitchToFiber's register
