@@ -443,7 +443,9 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
     if bad:
         log('%s: %d hints inside the register save / restore helpers removed: %s' % (
             name, len(bad), ' '.join('%08X' % a for a in sorted(bad))))
-    new = functions.find(gen, image, hints)
+    # Not the hints a codegen run showed to split a function (prepare.not_starts).
+    refused = prepare.not_starts(work)
+    new = [a for a in functions.find(gen, image, hints) if a not in refused]
     log('%s: %d function starts codegen missed%s' % (
         name, len(new), (': ' + ' '.join('%08X' % a for a in new[:12]) +
                          (' ...' if len(new) > 12 else '')) if new else ''))

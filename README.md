@@ -299,7 +299,18 @@ Improving it a little at a time:
     nine games have one (Minecraft up to TU 80); Super Meat Boy plays with its TU 1.
 
     `prepare --title-update --project` runs all of it for a new game, from its archive to a
-    built game that runs (the layer made again once the functions are found).
+    built game that runs (the layer made again once the functions are found). One game's failed
+    build or run no longer stops the games after it. Disc games come as images of the disc
+    (`.iso`, on its own or in an archive): `rexnative/xiso.py` reads its XDVDFS partition (an
+    image of the game partition or of the whole disc, XGD2 or XGD3) and copies the game's files
+    out, without the console's `$SystemUpdate`. What codegen 0.10 lets through is acted on: a
+    tail call (`b`) to an address in no function, which it warns about and writes as a call
+    with no name that does not compile (Orcs Must Die!), becomes a hint; and a hint that splits
+    a function, whose loop then branches back into another function (codegen writes a
+    REX_FATAL there: Brothers - A Tale of Two Sons stopped at its first frames), is removed and
+    kept out (`not-starts.txt`). A CreateDevice that never reads its ppDevice argument (r8) is
+    not Direct3D_CreateDevice (Brothers' D3D 2.0.21250 creates its device in a function of the
+    presentation parameters alone): the renderer then follows the first device the calls use.
 
     Results on the PC (2026-11-16, with the newest title updates): Dungeons & Dragons:
     Chronicles of Mystara plays (menus, chapter select, the first chapter, 60 FPS); Super Meat

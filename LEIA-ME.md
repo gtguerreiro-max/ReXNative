@@ -286,7 +286,19 @@ Melhorar aos poucos:
     nove jogos têm uma (o Minecraft até à TU 80); o Super Meat Boy joga-se com a TU 1.
 
     `prepare --title-update --project` faz tudo isto para um jogo novo, do arquivo ao jogo
-    compilado que corre (a camada é feita de novo depois de encontradas as funções).
+    compilado que corre (a camada é feita de novo depois de encontradas as funções). Um jogo
+    que não compila ou não corre já não pára os seguintes. Os jogos de disco vêm como imagens
+    do disco (`.iso`, solta ou num arquivo): o `rexnative/xiso.py` lê a partição XDVDFS (imagem
+    só da partição do jogo ou do disco inteiro, XGD2 ou XGD3) e copia os ficheiros do jogo, sem
+    o `$SystemUpdate` da consola. O que o codegen 0.10 deixa passar é tratado: um salto de cauda
+    (`b`) para um endereço fora de qualquer função, de que só avisa e que escreve como uma
+    chamada sem nome que não compila (Orcs Must Die!), passa a dica; e uma dica que parte uma
+    função ao meio, cujo ciclo salta depois para dentro de outra função (o codegen escreve ali
+    um REX_FATAL: o Brothers - A Tale of Two Sons parava nos primeiros frames), é retirada e
+    fica de fora (`not-starts.txt`). Um CreateDevice que nunca lê o argumento ppDevice (r8)
+    não é o Direct3D_CreateDevice (o D3D 2.0.21250 do Brothers cria o device numa função só
+    dos parâmetros de apresentação): o renderer segue então o primeiro device que as chamadas
+    usam.
 
     Resultados no PC (2026-11-16, com as title updates mais recentes): Dungeons & Dragons:
     Chronicles of Mystara joga-se (menus, escolha de capítulo, o primeiro capítulo, 60 FPS);

@@ -19,11 +19,12 @@ import subprocess
 import sys
 import time
 
-from . import profile as prof, stfs, xex
+from . import profile as prof, stfs, xex, xiso
 
 BELOW_NORMAL = 0x00004000  # Windows process priority class
 SEVEN_ZIP = [r'C:\Program Files\7-Zip\7z.exe', r'C:\Program Files (x86)\7-Zip\7z.exe', '7z']
 ARCHIVES = ('.7z', '.zip', '.rar')
+IMAGES = ('.iso',)  # disc images (xiso.py)
 OPTIONS = {  # register-as-local codegen, as in PGR4Native, From Dust and Iron Brigade
     'cr_as_local': True, 'ctr_as_local': True, 'xer_as_local': True,
     'non_volatile_as_local': True, 'reserved_as_local': True,
@@ -33,7 +34,7 @@ OPTIONS = {  # register-as-local codegen, as in PGR4Native, From Dust and Iron B
 def slug(name):
     """'Super Meat Boy (World) (XBLA).7z' -> 'super-meat-boy'."""
     base = os.path.basename(name)
-    for ext in ARCHIVES:
+    for ext in ARCHIVES + IMAGES:
         if base.lower().endswith(ext):
             base = base[:-len(ext)]
     base = re.sub(r'\s*\([^)]*\)', '', base)
@@ -98,6 +99,19 @@ def stage_game(source, work, log):
         root = os.path.join(work, 'archive')
         if not os.path.isdir(root) or not os.listdir(root):
             extract_archive(source, root, log)
+    # A disc game: its image, given or in the archive (xiso.py).
+    image = root if os.path.isfile(root) and root.lower().endswith(IMAGES) else None
+    if image is None and os.path.isdir(root) and not find_xex(root):
+        image = next((os.path.join(d, f) for d, _, fs in os.walk(root) for f in sorted(fs)
+                      if f.lower().endswith(IMAGES)), None)
+    if image and xiso.is_image(image):
+        log('  disc image %s' % os.path.basename(image))
+        with xiso.Image(image) as im:
+            im.extract(data, log=log)
+        facts['from'] = 'disc image'
+        if not os.path.exists(os.path.join(data, 'default.xex')):
+            raise RuntimeError('no default.xex in the disc image %s' % image)
+        return facts
     if os.path.isfile(root) and stfs.is_package(root):
         packages = [root]
     else:
@@ -145,6 +159,30 @@ def _hints(work):
     return out
 
 
+def not_starts(work):
+    """Addresses found not to be function starts (not-starts.txt): hints a codegen run showed
+    to split a function (_false_starts), which find_functions must not add again."""
+    p = os.path.join(work, 'not-starts.txt')
+    if not os.path.exists(p):
+        return set()
+    return {int(line.split('#')[0].split()[0], 16) for line in open(p, encoding='utf-8')
+            if line.split('#')[0].split()}
+
+
+def _false_starts(text, hints):
+    """Hints that split a function: codegen reports a conditional branch from one function to
+    an address in no function (and writes a REX_FATAL there) when a hint between the two made
+    the code after it a function of its own. Brothers - A Tale of Two Sons: hint 82F62ED4 (one
+    find_functions took for a start) cut 82F62E68's loop, whose `bne` back to 82F62EA4 ended
+    the game at its first frames. Returns those hints: between the branch's target and it."""
+    bad = set()
+    for x, y in re.findall(r'Unresolved conditional branch to (0x[0-9A-Fa-f]+) from '
+                           r'(0x[0-9A-Fa-f]+)', text):
+        lo, hi = sorted((int(x, 16), int(y, 16)))
+        bad |= {h for h in hints if lo < h <= hi}
+    return bad
+
+
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.10.1"',
@@ -186,6 +224,11 @@ def codegen(work, name, rexglue, max_rounds, log):
         stale = os.path.join(work, 'generated', 'rexglue.cmake')
         if os.path.exists(stale):
             os.remove(stale)
+    # Codegen skips an unchanged module, and its warnings with it (unresolved tail calls and
+    # branches, which the rounds below act on): it runs whole.
+    stamp = os.path.join(gen, 'codegen.stamp')
+    if os.path.exists(stamp):
+        os.remove(stamp)
     for rnd in range(max_rounds):
         manifest = _write_manifest(work, name)
         t0 = time.time()
@@ -193,14 +236,32 @@ def codegen(work, name, rexglue, max_rounds, log):
         text = r.stdout + r.stderr
         with open(os.path.join(work, 'codegen.log'), 'w', encoding='utf-8') as f:
             f.write(text)
-        if r.returncode == 0:
+        hints = _hints(work)
+        # A tail call (b) to an address in no function: codegen 0.10 warns and still succeeds,
+        # writing a call with no name that does not compile (Orcs Must Die!'s
+        # `b 0x824BDB18`). Its target is a function start, as a failed run's targets are.
+        tails = [int(t, 16) for t in re.findall(r'Unresolved b target (0x[0-9A-Fa-f]+) from', text)]
+        tails = [t for t in tails if t not in hints]
+        false = _false_starts(text, hints)
+        if false:
+            for h in false:
+                del hints[h]
+            with open(os.path.join(work, 'not-starts.txt'), 'a', encoding='utf-8',
+                      newline='\n') as f:
+                f.write(''.join('0x%08X\n' % h for h in sorted(false)))
+            with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8', newline='\n') as f:
+                f.write(''.join('0x%08X 0x%X\n' % (a, z) for a, z in sorted(hints.items())))
+            log('  codegen round %d: %d hints that split a function removed: %s' % (
+                rnd, len(false), ' '.join('%08X' % h for h in sorted(false))))
+            if not tails:
+                continue
+        if r.returncode == 0 and not tails:
             open(done, 'w').write('round %d\n' % rnd)
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
-            return {'rounds': rnd + 1, 'hints': len(_hints(work))}
+            return {'rounds': rnd + 1, 'hints': len(hints)}
         targets = [int(t, 16) for t in re.findall(r'^\s+(0x[0-9A-Fa-f]+) from 0x[0-9A-Fa-f]+:',
-                                                    text, re.M)]
-        hints = _hints(work)
-        new = [t for t in targets if t not in hints]
+                                                    text, re.M)] + tails
+        new = sorted({t for t in targets if t not in hints})
         if not new:
             tail = text.strip().splitlines()[-12:]
             raise RuntimeError('codegen failed with nothing to hint:\n' + '\n'.join(tail))

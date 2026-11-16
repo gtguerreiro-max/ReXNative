@@ -1079,7 +1079,9 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
     if constexpr (kId == kFnCreateDevice) {  // CreateDevice(..., ppDevice in r8)
       const uint32_t out = ctx.r8.u32;
       run(ctx, base);
-      t.device = Load32(base, out);
+      // Not a pointer: not Direct3D_CreateDevice's ppDevice (the tool's adapt step checks that
+      // it reads r8); the first device the other calls use then (FollowDevice).
+      t.device = out >= 0x10000 && !(out & 3) ? Load32(base, out) : 0;
       t.cursor = t.device ? Load32(base, t.device + dev::kPush) : 0;
       t.in_packet = false;
       // Only once: a later device would undo the control commands sent since.

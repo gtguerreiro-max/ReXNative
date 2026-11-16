@@ -154,6 +154,7 @@ def adapt(target, refs, overrides=None, log=print):
 
     indexed_up(T, funcs)  # bounded by the DrawVertices matched, whatever it turns out to be
     draw_arity(T, funcs)
+    create_device_arity(T, funcs)
     xinput_get_state(T, target['generated'], funcs)
     unique_addresses(funcs)
 
@@ -367,6 +368,27 @@ def draw_arity(T, funcs):
     if not di.get('address') or di['address'] == a or di['address'] in others:
         di.update(address=a, how='arity', confidence=dv.get('confidence') or 'medium', detail=detail)
     dv.update(address=None, how='not found', confidence=None, detail=detail)
+
+
+def create_device_arity(T, funcs):
+    """Direct3D_CreateDevice(adapter, device type, window, flags, parameters, ppDevice) returns
+    the device through r8, where the hook reads it. A CreateDevice found that never reads r8 is
+    not that function: Brothers - A Tale of Two Sons (D3D 2.0.21250) creates its device in a
+    function of the presentation parameters alone, which keeps it in a global, and the hook read
+    the device from whatever r8 held (0x20: the game crashed on its first call). Without one the
+    renderer takes the first device the D3D calls use (configure_at_first_device)."""
+    cd = funcs.get('CreateDevice')
+    if not cd or not cd.get('address'):
+        return
+    a = cd['address']
+    try:
+        if reads_argument(T, a, 'r8'):
+            return
+    except KeyError:
+        return
+    cd.update(address=None, how='not found', confidence=None,
+              detail='%08X does not read r8 (ppDevice): not Direct3D_CreateDevice; the first '
+                     'device seen instead' % a)
 
 
 def indexed_up(T, funcs):
