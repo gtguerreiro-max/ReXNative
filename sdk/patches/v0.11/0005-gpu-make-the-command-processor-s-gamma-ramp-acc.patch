@@ -1,8 +1,7 @@
 From 367ad9df289426c6ec62c53e459d58134232d745 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:01 +0000
-Subject: [PATCH 05/30] 
- 0030-gpu-make-the-command-processor-s-gamma-ramp-accessor
+Subject: [PATCH] 0030-gpu-make-the-command-processor-s-gamma-ramp-accessor
 
 ---
  src/gpu/xenos/command_processor.h | 10 ++++++----

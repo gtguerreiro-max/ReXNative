@@ -1,7 +1,7 @@
 From 93c014d56233011c4a7d21d52cc321f6eb6e6acd Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:59:26 +0000
-Subject: [PATCH 17/30] 0006-xam-export-XAMIsUIActive-for-a-host-renderer
+Subject: [PATCH] 0006-xam-export-XAMIsUIActive-for-a-host-renderer
 
 ---
  include/rex/xam/ui.h | 19 +++++++++++++++++++

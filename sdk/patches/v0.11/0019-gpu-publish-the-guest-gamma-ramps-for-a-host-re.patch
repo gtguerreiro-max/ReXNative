@@ -1,8 +1,7 @@
 From 92c73d37598ad05c93616cf94f1bc350ee1834f3 Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 17:21:44 +0000
-Subject: [PATCH 19/30] 
- 0008-gpu-publish-the-guest-gamma-ramps-for-a-host-renderer
+Subject: [PATCH] 0008-gpu-publish-the-guest-gamma-ramps-for-a-host-renderer
 
 ---
  include/rex/xenos/draw_hook.h       | 14 ++++++++++++++

@@ -1,7 +1,7 @@
 From dbe733e3698bb27bc02ed726ac55d4153d1a5339 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:05 +0000
-Subject: [PATCH 11/30] 
+Subject: [PATCH] 
  0051-gpu-give-8x-host-render-targets-the-alpha-to-coverage-of-4x
 
 ---

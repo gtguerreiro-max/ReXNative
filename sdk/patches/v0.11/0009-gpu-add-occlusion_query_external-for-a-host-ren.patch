@@ -1,8 +1,7 @@
 From f279f3d1ccac48efef0f0f91c602dc201c75a883 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:04 +0000
-Subject: [PATCH 09/30] 
- 0049-gpu-add-occlusion_query_external-for-a-host-renderer
+Subject: [PATCH] 0049-gpu-add-occlusion_query_external-for-a-host-renderer
 
 ---
  src/gpu/xenos/command_processor.cpp        | 5 +++++

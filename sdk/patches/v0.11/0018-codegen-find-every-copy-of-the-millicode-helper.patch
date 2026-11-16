@@ -1,7 +1,7 @@
 From 835eb78be8d7951825a14872fdce4922c45c38d5 Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 17:08:30 +0000
-Subject: [PATCH 18/30] 0007-codegen-find-every-copy-of-the-millicode-helpers
+Subject: [PATCH] 0007-codegen-find-every-copy-of-the-millicode-helpers
 
 ---
  src/codegen/phase_register.cpp | 7 +++----

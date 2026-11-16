@@ -1,7 +1,7 @@
 From fc192643804e5cc830a72d2f4f83786a3f139c79 Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:27:08 +0000
-Subject: [PATCH 14/30] 0003-codegen-setjmp-and-longjmp-at-several-addresses
+Subject: [PATCH] 0003-codegen-setjmp-and-longjmp-at-several-addresses
 
 ---
  src/codegen/builder/context.cpp |  6 ++--

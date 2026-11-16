@@ -1,8 +1,7 @@
 From 8a1d5e6aa778d0b49554cd31c97bd684568b3abc Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:26:49 +0000
-Subject: [PATCH 04/30] 
- 0005-threading-answer-Win32Thread-priority-from-the-value
+Subject: [PATCH] 0005-threading-answer-Win32Thread-priority-from-the-value
 
 ---
  src/base/threading_win.cpp | 17 ++++++++++++++---

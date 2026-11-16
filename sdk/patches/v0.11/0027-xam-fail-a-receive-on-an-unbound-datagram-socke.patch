@@ -1,7 +1,7 @@
 From b4a083f8c23cdf995cf666d0775896fa87b7cc4d Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 19:20:30 +0000
-Subject: [PATCH 28/30] 
+Subject: [PATCH] 
  0016-xam-fail-a-receive-on-an-unbound-datagram-socket-as-Winsock-does
 
 Winsock, as the console, fails recv and recvfrom on a datagram socket that was never bound with

@@ -1,7 +1,7 @@
 From 7da44782c4d88e9fd81ec5edc2202e55ca5b412e Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:55:28 +0000
-Subject: [PATCH 15/30] 
+Subject: [PATCH] 
  0004-gpu-add-present_external-for-a-host-renderer-that-presents-itself
 
 ---

@@ -1,7 +1,7 @@
 From b0f07f9d8b77af720e7c458d4c47485651ab689c Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 18:00:02 +0000
-Subject: [PATCH 26/30] 
+Subject: [PATCH] 
  0043-perf-audio-flush-the-xmaframes-decoder-instead-of-reopening-it
 
 When a context is released or cleared, ResetDecoderState zeroed the cached sample rate and channel

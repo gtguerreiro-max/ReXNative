@@ -1,7 +1,7 @@
 From 00658357a58c4f2a6029ad2adb5b8acd4668eef5 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 17:54:31 +0000
-Subject: [PATCH 23/30] 
+Subject: [PATCH] 
  0042-perf-audio-do-not-wake-the-XMA-worker-after-an-inline-kick-decode
 
 A context kick decodes the kicked contexts at once on the writing thread, and XMAContext::Work

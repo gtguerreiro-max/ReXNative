@@ -1,7 +1,7 @@
 From e2394425ab33e7d858c2422c940893039f65f0fa Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:27:07 +0000
-Subject: [PATCH 13/30] 0001-renderer-support
+Subject: [PATCH] 0001-renderer-support
 
 ---
  include/rex/kernel/function_dispatcher.h      |  6 +-

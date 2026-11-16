@@ -1,7 +1,7 @@
 From fbd00713e9098f704115dda1ce0deacdefc1c77f Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 16 Nov 2026 16:56:00 +0000
-Subject: [PATCH 16/30] 0005-gpu-integer-fetch-without-the-getenv-toggle
+Subject: [PATCH] 0005-gpu-integer-fetch-without-the-getenv-toggle
 
 ---
  include/rex/xenos/integer_fetch.h | 7 -------

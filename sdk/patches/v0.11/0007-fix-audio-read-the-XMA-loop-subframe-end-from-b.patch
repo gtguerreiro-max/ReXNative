@@ -1,8 +1,7 @@
 From bfb9ca81ea5fa62506ea9179e78ded1425399ebb Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:02 +0000
-Subject: [PATCH 07/30] 
- 0040-fix-audio-read-the-XMA-loop-subframe-end-from-bits-1
+Subject: [PATCH] 0040-fix-audio-read-the-XMA-loop-subframe-end-from-bits-1
 
 ---
  src/kernel/xma/context.h | 7 ++++---

@@ -1,8 +1,7 @@
 From 0d9dda5983f00892a2651bed831f8150419f1fc8 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:26:49 +0000
-Subject: [PATCH 03/30] 
- 0004-kernel-compare-ObCreateSymbolicLink-s-prefix-as-a-pl
+Subject: [PATCH] 0004-kernel-compare-ObCreateSymbolicLink-s-prefix-as-a-pl
 
 ---
  src/kernel/xboxkrnl/xboxkrnl_ob.cpp | 4 ++--

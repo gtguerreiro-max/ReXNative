@@ -1,8 +1,7 @@
 From cba158bd5ca7db0118ea9c391c5a81a28abceaf3 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:03 +0000
-Subject: [PATCH 08/30] 
- 0041-fix-audio-count-an-XMA-frame-whose-header-straddles-
+Subject: [PATCH] 0041-fix-audio-count-an-XMA-frame-whose-header-straddles-
 
 ---
  src/kernel/xma/context.cpp | 10 ++++++++++

@@ -1,8 +1,7 @@
 From 605da7f4c7b87a3e301086d2af75ad9f1105b397 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:26:48 +0000
-Subject: [PATCH 01/30] 
- 0002-codegen-leave-the-manifest-untouched-when-its-sdk_ve
+Subject: [PATCH] 0002-codegen-leave-the-manifest-untouched-when-its-sdk_ve
 
 ---
  src/codegen/manifest.cpp | 4 ++++

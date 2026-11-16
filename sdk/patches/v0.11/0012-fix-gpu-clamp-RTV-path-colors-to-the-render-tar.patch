@@ -1,7 +1,7 @@
 From bd5daec069a585d7cc80992fc7dd4b7c8bc758b2 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:07 +0000
-Subject: [PATCH 12/30] 
+Subject: [PATCH] 
  0053-fix-gpu-clamp-RTV-path-colors-to-the-render-target-format-range
 
 ---

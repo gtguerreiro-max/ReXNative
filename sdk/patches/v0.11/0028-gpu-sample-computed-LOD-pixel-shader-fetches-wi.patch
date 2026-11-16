@@ -1,7 +1,7 @@
 From 348541305864369f9c3b6988773dde1cfa202d0b Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 19:20:49 +0000
-Subject: [PATCH 29/30] 
+Subject: [PATCH] 
  0021-gpu-sample-computed-LOD-pixel-shader-fetches-with-sample_b
 
 A texture fetch with computed LOD in a pixel shader, without register gradients, was translated

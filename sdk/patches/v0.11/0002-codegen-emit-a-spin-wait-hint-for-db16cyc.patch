@@ -1,7 +1,7 @@
 From e580fad4ab03fb16a39228fa4f87ba4e5d48236e Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:26:48 +0000
-Subject: [PATCH 02/30] 0003-codegen-emit-a-spin-wait-hint-for-db16cyc
+Subject: [PATCH] 0003-codegen-emit-a-spin-wait-hint-for-db16cyc
 
 ---
  src/codegen/builder/system.cpp | 5 +++--

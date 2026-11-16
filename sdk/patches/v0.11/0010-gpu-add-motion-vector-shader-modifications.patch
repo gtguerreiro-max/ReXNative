@@ -1,7 +1,7 @@
 From 119bd0a848b1bf8d1b3b49fd72bc779ee5ce8fb0 Mon Sep 17 00:00:00 2001
 From: shaurizard <contact@nyoom.engineering>
 Date: Mon, 16 Nov 2026 16:27:05 +0000
-Subject: [PATCH 10/30] 0050-gpu-add-motion-vector-shader-modifications
+Subject: [PATCH] 0050-gpu-add-motion-vector-shader-modifications
 
 ---
  .../xenos/pipeline/shader/dxbc_translator.cpp | 274 +++++++++++++++---
