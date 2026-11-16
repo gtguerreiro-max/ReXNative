@@ -66,6 +66,12 @@ void FrameGeneration::OnSwap(uint32_t front_base) {
 bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs) {
   using enum rex::graphics::Register;
   const SurfaceRegs& f = front_->regs;
+  // A game whose front buffer is resolved from the scene's surface itself (Jet Set Radio: its
+  // characters, their outlines and its HUD all drawn into the scene, blended after opaque
+  // draws): the early resolve would be the scene's, which runs the upscaler there, before the
+  // draws after it (headless characters in every frame). No HUD-less copy: its HUD is generated
+  // with the rest of the image. PGR4 composites into a surface of its own.
+  if (IsSceneSurface(f.surface_info)) return false;
   // RT 0 of the draw is the front buffer's surface (pitch, MSAA, EDRAM data), written.
   if (regs[XE_GPU_REG_RB_SURFACE_INFO] != f.surface_info ||
       ColorStorage(regs[XE_GPU_REG_RB_COLOR_INFO]) != ColorStorage(f.color_info[front_->source]) ||
