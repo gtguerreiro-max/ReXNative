@@ -39,12 +39,18 @@ q = shlex.quote
 # sections): its 1280x800 panel, full screen, and the native renderer's anisotropic filtering.
 # The video mode the game is told about stays the console's 720p: told 1280x800, a mode no Xbox
 # 360 has, Castlevania: Symphony of the Night and 3D Ultra Minigolf stopped at their first frames.
+# The scene's antialiasing is AMD's FSR 4 (GE-Proton's FSR 4 upgrade, play.sh; FSR 3.1 where it
+# is missing) at the game's own resolution (Native AA): on both Overlords' first levels it kept
+# their 30 FPS, the GPU at 13 and 18 ms of 33, and looked better than the console's MSAA, which
+# Quality mode saves only 1-3 ms over (2026-11-17). The settings menu (Back+Start) changes it.
 DECK_SETTINGS = [
     ('ui', 'window_width', '1280'),
     ('ui', 'window_height', '800'),
     ('ui', 'fullscreen', 'true'),
     ('ui', 'resolution', '"720p"'),
     ('rexnative', 'anisotropy', '8'),
+    ('rexnative', 'upscaler', 'true'),
+    ('rexnative', 'upscaler_mode', '"native"'),
 ]
 
 
@@ -234,6 +240,10 @@ def package(work):
     items += dlc.deck_items(work)
     for f in ('play.sh', 'install.sh', 'steam_shortcuts.py'):
         items.append((os.path.join(KIT, f), f))
+    # The shortcut's artwork (python -m rexnative art), which install.sh gives Steam.
+    art = os.path.join(work, 'deck', 'art')
+    if os.path.isdir(art):
+        items += walk(art, 'art/')
     # The game's settings for the Deck: the PC's, with the Deck's screen in place of a window.
     toml = os.path.join(run, name + '.toml')
     text = open(toml, encoding='utf-8').read() if os.path.exists(toml) else ''

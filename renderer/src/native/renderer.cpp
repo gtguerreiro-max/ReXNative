@@ -388,6 +388,7 @@ uint32_t FrameHeight() {
 }
 
 std::string NativeRenderer::UpscalerStatus() { return Upscaler::Status(); }
+uint32_t NativeRenderer::GpuVendor() { return D3D12Device::GpuVendor(); }
 
 NativeRenderer* NativeRenderer::Get() {
   if (!(REXCVAR_GET(rexnative_beside_xenos) || REXCVAR_GET(rexnative)) || g_failed) return nullptr;

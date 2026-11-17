@@ -44,6 +44,9 @@ class GpuTimer;
 
 class D3D12Device {
  public:
+  // The PCI vendor of the GPU the renderer took (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel); 0
+  // before the device exists. For any thread (the settings HUD hides what the GPU cannot run).
+  static uint32_t GpuVendor() { return gpu_vendor_.load(std::memory_order_relaxed); }
   static constexpr uint32_t kFramesInFlight = 2;
   static constexpr uint32_t kBackBuffers = 3;
   static constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -184,6 +187,7 @@ class D3D12Device {
   GpuTimer* gpu_timer() const { return gpu_timer_.get(); }
 
  private:
+  static inline std::atomic<uint32_t> gpu_vendor_{0};
   bool CreateWindowThread(const wchar_t* title);
   bool CreateSwapchain(HWND hwnd, bool quiet = false);
   // Switches the new swapchain to HDR10 if wanted and supported, else to kBackBufferFormat.

@@ -496,7 +496,10 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
         ident = ident_of(name)
         status['steps']['codegen'] = codegen(work, ident, rexglue, max_rounds, log)
         save()
-        target = {'name': name, 'title': name, 'xex': os.path.join(work, 'game-data', 'default.xex'),
+        # The title (the settings menu's): the archive's name, as the Deck's shortcut has it.
+        from .deck import title_of
+        target = {'name': name, 'title': title_of(work) or name,
+                  'xex': os.path.join(work, 'game-data', 'default.xex'),
                   'generated': os.path.join(work, 'generated', 'default')}
         res = run_adapt(target, refs, os.path.join(work, 'layer'), log=lambda *a: None)
         found = {k: '%08X' % v['address'] for k, v in res['functions'].items() if v.get('address')}

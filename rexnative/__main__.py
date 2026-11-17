@@ -12,6 +12,7 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative title-update WORK...                the title updates XboxUnity lists
   python -m rexnative dlc WORK/GAME SOURCE...             install downloadable content
   python -m rexnative deck WORK/GAME... [--steam] [--try S]  copy built games to the Steam Deck
+  python -m rexnative art WORK/GAME CAPTURE.png [--title T]   Steam artwork for its shortcut
   python -m rexnative survey --work DIR                   table of the prepared games
 
 Reports and messages are in English; --lang pt (before or after the command) or
@@ -248,6 +249,11 @@ def cmd_deck(a):
         print(open(report, encoding='utf-8').read())
 
 
+def cmd_art(a):
+    from . import art
+    art.make(os.path.abspath(a.work), a.capture, a.title)
+
+
 def cmd_title_update(a):
     from . import title_update as tu, xex
     works = []
@@ -376,6 +382,13 @@ def main(argv=None):
                    help='start each game from Steam, read its log and take a capture after '
                         'SECONDS, then close it')
     s.set_defaults(fn=cmd_deck)
+    s = sub.add_parser('art', parents=[lang_opt],
+                       help="Steam artwork for a game's Deck shortcut (<work>/deck/art), from one "
+                            'of its captures (best its title screen); needs Pillow')
+    s.add_argument('work', help="the game's folder in prepare's --work")
+    s.add_argument('capture', help='a capture of the game (live.ps1 frame or shot, deck/try-*.png)')
+    s.add_argument('--title', help="the name under the picture (default: the archive's)")
+    s.set_defaults(fn=cmd_art)
     s = sub.add_parser('project', parents=[lang_opt],
                        help='a game `prepare` made -> a ReXGlue project with ReXNative that runs '
                             '(--build: built into build/, laid out in run/)')

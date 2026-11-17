@@ -47,6 +47,7 @@ def from_result(res):
         'resolve_stencil_reg': ra.get('stencil_reg', 0),
         'call_args': {k: v['args'] for k, v in (res.get('call_args') or {}).items()},
         'scene': res['scene'], 'defaults': res['defaults'], 'devices': res['devices'],
+        'xinput_state_reg': res['functions'].get('XInputGetState', {}).get('state_reg', 4),
     }
 
 
@@ -117,6 +118,10 @@ def game_layer_h(layer, comments=True):
         a = layer['functions'][canon][0]
         w('#define %s %s' % (macro, ('%08X' % a) if a else '00000000'))
         w('#define %s_FOUND %d' % (macro, 1 if a else 0))
+    if comments:
+        w("// Where XInputGetState's hook finds the state: r4 (user, state), or r5 when it is the")
+        w('// XamInputGetState thunk (user, flags, state).')
+    w('#define REXNATIVE_XINPUT_STATE_REG %d' % int(layer.get('xinput_state_reg', 4)))
     w('#define REXNATIVE_SUB_(a) sub_##a')
     w('#define REXNATIVE_SUB(a) REXNATIVE_SUB_(a)')
     w('#define REXNATIVE_IMP_(a) __imp__sub_##a')

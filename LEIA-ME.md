@@ -211,7 +211,7 @@ o `adapt`.
 
 | Tecla | Comando | |
 |---|---|---|
-| F1 | Back + Start | o HUD de definições |
+| F1 | Back + Start (na Deck: View + Menu) | o HUD de definições |
 | F9 | | troca entre o ReXNative e a emulação da GPU Xenos do ReXGlue (não no Proton) |
 | F7 | | liga ou desliga o upscaler |
 | F8 | | mostra as entradas do upscaler |
@@ -256,11 +256,19 @@ arranca cada um a partir do Steam, lê o log e tira uma captura ao fim desse tem
 `<work>/<jogo>/deck/`, e escreve o `deck-report.md`. A Deck precisa de SSH com chave (o
 `REXNATIVE_DECK` e o `REXNATIVE_DECK_KEY` podem substituir o `--host` e o `--key`).
 
-As definições do jogo na Deck são as do PC com o ecrã da Deck (1280x800, ecrã inteiro); o
+As definições do jogo na Deck são as do PC com o ecrã da Deck (1280x800, ecrã inteiro) e o FSR 4
+da AMD como antialiasing da cena à resolução do próprio jogo (Native AA; o FSR 4 do GE-Proton, ou
+o FSR 3.1 sem ele): nos dois Overlord manteve os 30 FPS e ficou melhor do que o MSAA da consola.
+As definições mudadas na Deck (o HUD: View + Menu) ficam nas instalações seguintes. O
 `<work>/<jogo>/deck.toml` junta ou substitui definições só para a Deck, como `[rexnative]
 enabled = false` para um jogo que o renderer do ReXGlue desenha melhor (um renderer para a sessão
 inteira: o F9 e o `auto_handover` ficam desligados no Proton). Na Deck, um `deck.env` ao lado do
 `play.sh` dá variáveis ao Proton (`PROTON_LOG=1`), e o `REXNATIVE_PROTON` escolhe outro Proton.
+
+O `python -m rexnative art <work>/<jogo> <captura.png>` faz as imagens do jogo no Steam (capa da
+biblioteca, capa larga, faixa, ícone) a partir de uma captura dele, de preferência do ecrã-título
+(`live.ps1 frame` ou `shot`, ou um `deck/try-*.png` do `--try`), para `<work>/<jogo>/deck/art/`,
+que o `deck` seguinte envia e dá ao Steam com o atalho.
 
 ## Depurar um jogo
 

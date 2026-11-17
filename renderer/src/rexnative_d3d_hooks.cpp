@@ -34,6 +34,9 @@
 //                          focus needed
 //   renderer native|stock  as the renderer switch (F9): the native renderer or the Xenos plugin
 //                          draws from the next Swap on, without the window in front
+//   watch <address> [nan|any] [count]   a hardware breakpoint on one guest dword (native/watch.h):
+//                          logs the recompiled functions that write it (a NaN, or any value);
+//                          watch off clears it
 // --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
@@ -42,6 +45,7 @@
 //
 // Built into every game by rexnative_add() (renderer/rexnative.cmake), with the game's layer.
 
+#include "native/watch.h"
 #include "native/clock.h"
 #include "native/cmd_replay.h"
 #include "native/d3d_state.h"
@@ -1012,6 +1016,16 @@ void PollControl(Tap& t, uint8_t* base) {
       }
       g_pad_state.store(state, std::memory_order_relaxed);
       g_pad_until_ns.store(rexnative::NowNs() + ms * 1000000ull, std::memory_order_release);
+    } else if (cmd == "watch") {
+      if (arg == "off") {
+        rexnative::watch::Clear();
+      } else {
+        std::string mode = "nan";
+        uint32_t count = 16;
+        if (!(ss >> mode)) mode = "nan";
+        if (!(ss >> count)) count = 16;
+        rexnative::watch::Set(uint32_t(std::strtoul(arg.c_str(), nullptr, 16)), mode, count);
+      }
     } else if (cmd == "renderer") {
       rexnative::NativeRenderer* r = rexnative::NativeRenderer::Get();
       if (!r || (arg != "native" && arg != "stock")) {
@@ -1843,9 +1857,14 @@ float RexNativeMotionBlurStep(float step) {
 // REXNATIVE_GAME_HOOKS_XINPUT (From Dust: frame_rate.cpp).
 #if defined(REXNATIVE_XINPUT_GET_STATE_FOUND) && REXNATIVE_XINPUT_GET_STATE_FOUND && \
     !defined(REXNATIVE_GAME_HOOKS_XINPUT)
+#ifndef REXNATIVE_XINPUT_STATE_REG  // layers before it: XInputGetState(user, state)
+#define REXNATIVE_XINPUT_STATE_REG 4
+#endif
 REX_EXTERN(REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE));
 REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_XINPUT_GET_STATE)) {
-  const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
+  // XInputGetState(user, state), or the XamInputGetState thunk (user, flags, state).
+  const uint32_t user = ctx.r3.u32,
+                 state = REXNATIVE_XINPUT_STATE_REG == 5 ? ctx.r5.u32 : ctx.r4.u32;
   REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE)(ctx, base);
   // The control file's `pad` (g_pad_state): on user 0, connected for it if no pad is, with a new
   // packet number each read (games read a pad again only when it changed).

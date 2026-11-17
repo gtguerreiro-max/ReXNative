@@ -205,7 +205,7 @@ HDR format is not found that way: measure it once by running with
 
 | Key | Pad | |
 |---|---|---|
-| F1 | Back + Start | the settings HUD |
+| F1 | Back + Start (the Deck: View + Menu) | the settings HUD |
 | F9 | | switch between ReXNative and ReXGlue's Xenos GPU emulation (not under Proton) |
 | F7 | | the upscaler on or off |
 | F8 | | show the upscaler's inputs |
@@ -245,11 +245,19 @@ from Steam, reads its log and takes a capture after that long, into `<work>/<gam
 writes `deck-report.md`. The Deck needs SSH with a key (`REXNATIVE_DECK` and
 `REXNATIVE_DECK_KEY` can stand for `--host` and `--key`).
 
-The game's settings on the Deck are its PC ones with the Deck's screen (1280x800, full screen);
-`<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as `[rexnative]
+The game's settings on the Deck are its PC ones with the Deck's screen (1280x800, full screen)
+and AMD's FSR 4 as the scene's antialiasing at the game's own resolution (Native AA; GE-Proton's
+FSR 4 upgrade, FSR 3.1 without it): on both Overlords it kept their 30 FPS and looked better
+than the console's MSAA. Settings changed on the Deck (the HUD: View + Menu) are kept by later
+installs. `<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as `[rexnative]
 enabled = false` for a game ReXGlue's renderer draws better (one renderer for the whole run: F9
 and `auto_handover` stay off under Proton). On the Deck, `deck.env` beside `play.sh` gives
 Proton variables (`PROTON_LOG=1`), and `REXNATIVE_PROTON` picks another Proton.
+
+`python -m rexnative art <work>/<game> <capture.png>` makes the game's Steam artwork (library
+capsule, wide capsule, banner, icon) from one of its captures, best its title screen
+(`live.ps1 frame` or `shot`, or a `deck/try-*.png` of `--try`), into `<work>/<game>/deck/art/`,
+which the next `deck` sends and gives Steam with the shortcut.
 
 ## Debugging a game
 

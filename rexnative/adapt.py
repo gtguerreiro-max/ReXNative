@@ -70,9 +70,12 @@ def run_matcher(R, T, p):
 
 def xinput_get_state(T, generated, funcs):
     """XInputGetState(user, state), the XDK's pad read: three instructions, `mr r5,r4`,
-    `li r4,1` (XINPUT_FLAG_GAMEPAD) and a branch to the XamInputGetState import, whose address
-    the generated code's import table gives (`{ 0x82B08504, __imp__XamInputGetState }`). The
-    settings HUD hooks it (rexnative_d3d_hooks.cpp) to keep its Back+Start chord from the game."""
+    `li r4,1` (XINPUT_FLAG_GAMEPAD; `li r4,0` in older XDKs: Overlord, Castlevania, Minigolf)
+    and a branch to the XamInputGetState import, whose address the generated code's import table
+    gives (`{ 0x82B08504, __imp__XamInputGetState }`). Without one, the import's own thunk, a
+    lone branch to it (user, flags, state: the state in r5; Unreal Engine 3's Brothers), if there
+    is only one. The settings HUD hooks it (rexnative_d3d_hooks.cpp) to keep its Back+Start chord
+    from the game; the row's state_reg says where the state is (4, or 5 for the thunk)."""
     row = funcs['XInputGetState']
     imports = set()
     for path in glob.glob(os.path.join(generated, '*.cpp')):
@@ -86,23 +89,34 @@ def xinput_get_state(T, generated, funcs):
     if not imports:
         row.update(detail='no XamInputGetState import in the generated code')
         return
-    found = []
+    found = {1: [], 0: [], 'thunk': []}  # by the flags it passes; the import's thunk
     for f, insns in T.funcs.items():
+        texts = [t.replace(' ', '') for _, t in insns]
+        if len(texts) == 1 and texts[0].startswith('b0x') and int(texts[0][3:], 16) in imports                 and f not in imports:
+            found['thunk'].append(f)
+            continue
         if len(insns) != 3:
             continue
-        texts = [t.replace(' ', '') for _, t in insns]
-        if texts[0] != 'mrr5,r4' or texts[1] != 'lir4,1' or not texts[2].startswith('b0x'):
+        if texts[0] != 'mrr5,r4' or texts[1] not in ('lir4,1', 'lir4,0') or                 not texts[2].startswith('b0x'):
             continue
         if int(texts[2][3:], 16) in imports:
-            found.append(f)
-    if len(found) == 1:
-        row.update(address=found[0], how='pattern', confidence='high',
-                   detail='mr r5,r4; li r4,1; b XamInputGetState')
-    elif found:
-        row.update(detail='%d functions of its shape: %s' % (
-            len(found), ', '.join('%08X' % f for f in sorted(found))))
-    else:
-        row.update(detail='no function of its shape (mr r5,r4; li r4,1; b XamInputGetState)')
+            found[int(texts[1][-1])].append(f)
+    # The gamepad-flag one first; the others only when there is none of it.
+    shapes = {1: ('mr r5,r4; li r4,1; b XamInputGetState', 4),
+              0: ('mr r5,r4; li r4,0; b XamInputGetState', 4),
+              'thunk': ('b XamInputGetState (user, flags, state)', 5)}
+    for kind in (1, 0, 'thunk'):
+        shape, state_reg = shapes[kind]
+        if len(found[kind]) == 1:
+            row.update(address=found[kind][0], how='pattern', confidence='high', detail=shape,
+                       state_reg=state_reg)
+            return
+        if found[kind]:
+            row.update(detail='%d functions of its shape (%s): %s' % (
+                len(found[kind]), shape, ', '.join('%08X' % f for f in sorted(found[kind]))))
+            return
+    row.update(detail='no function of its shape (mr r5,r4; li r4,0|1; b XamInputGetState, '
+                      'or a lone b XamInputGetState)')
 
 
 def adapt(target, refs, overrides=None, log=print):

@@ -4,6 +4,7 @@
 #include "hud/hud.h"
 
 #include "game_layer.h"
+#include "native/d3d12_device.h"
 #include "native/legacy_names.h"
 #include "native/overlay.h"
 #include "native/renderer.h"
@@ -29,7 +30,8 @@
 
 
 REXCVAR_DEFINE_BOOL(rexnative_hud_hint, true, "ReXNative",
-                    "Show how to open the settings menu (Back + Start, F1) for the first seconds");
+                    "Show how to open the settings menu (Back + Start, F1; View + Menu on the "
+                    "Steam Deck) for the first seconds");
 
 namespace rexnative::hud {
 namespace {
@@ -63,6 +65,7 @@ struct Option {
   Assignments (*assign)(const std::string& v);   // its cvars
   void (*applied)() = nullptr;                   // after a live option's cvars were set
   const char* help = nullptr;
+  bool (*shown)() = nullptr;                     // null: always; false hides the row
 };
 
 std::string Flag(std::string_view cvar) { return rex::cvar::GetFlagByName(cvar); }
@@ -78,6 +81,13 @@ std::string Nearest(const Option& o, double n) {
 }
 
 Assignments Bool(std::string_view cvar, const std::string& v) { return {{cvar, v}}; }
+
+// NVIDIA's options (DLSS, DLSS 5) only on an NVIDIA GPU, or while the GPU is not known yet: the
+// Steam Deck's 800 lines then hold the rest without scrolling.
+bool NvidiaGpu() {
+  const uint32_t vendor = NativeRenderer::GpuVendor();
+  return vendor == 0 || vendor == 0x10DE;
+}
 
 // The display refresh the native renderer paces the frames on (60 Hz: the Steam Deck's panel
 // and most displays; the frame rate choices are its divisors).
@@ -162,7 +172,8 @@ std::vector<Option> MakeOptions() {
                },
                remake,
                "Automatic: DLSS on an NVIDIA RTX GPU, FSR on the others (the Steam Deck, AMD, "
-               "Intel). FSR runs on every GPU."});
+               "Intel). FSR runs on every GPU.",
+               NvidiaGpu});
   o.push_back({"Upscaler", "fsr_version", "FSR version",
                {{"Newest", "auto"}, {"FSR 4", "4"}, {"FSR 3.1", "3"}}, false,
                [] { return Flag("rexnative_fsr_version"); },
@@ -199,7 +210,8 @@ std::vector<Option> MakeOptions() {
                [] { return Flag("rexnative_dlss5"); },
                [](const std::string& v) { return Bool("rexnative_dlss5", v); }, nullptr,
                "NVIDIA DLSS 5 on the scene, with the upscaler on: an RTX GPU, its driver and "
-               "nvngx_dlssnr.dll beside the executable."});
+               "nvngx_dlssnr.dll beside the executable.",
+               NvidiaGpu});
   o.push_back({"DLSS 5", "dlss5_intensity", "DLSS 5 intensity",
                {{"Low", "0.5"}, {"Medium", "0.75"}, {"Full", "1"}, {"Strong", "1.25"}}, false,
                [] {
@@ -209,7 +221,7 @@ std::vector<Option> MakeOptions() {
                [](const std::string& v) {
                  return Assignments{{"rexnative_dlss5_intensity", v}};
                },
-               nullptr, "How strongly DLSS 5 changes the picture."});
+               nullptr, "How strongly DLSS 5 changes the picture.", NvidiaGpu});
   o.push_back({"Developer", "occlusion", "Occlusion queries", on_off, true,
                [] { return Flag("rexnative_occlusion"); },
                [](const std::string& v) { return Bool("rexnative_occlusion", v); }, nullptr,
@@ -218,7 +230,10 @@ std::vector<Option> MakeOptions() {
   o.push_back({"Developer", "log_level", "Log level",
                {{"Errors", "error"}, {"Warnings", "warn"}, {"Info", "info"}, {"Debug", "debug"}},
                false, [] { return Flag("log_level"); },
-               [](const std::string& v) { return Assignments{{"log_level", v, true}}; }});
+               [](const std::string& v) { return Assignments{{"log_level", v, true}}; },
+               nullptr,
+               "How much the game writes to its log (the logs folder beside the executable): Info "
+               "normally, Debug for a bug report."});
   return o;
 }
 
@@ -406,6 +421,8 @@ OverlayFont g_font;
 
 // The pads' buttons and pad 0's left stick, raw (guest thread -> UI thread).
 std::atomic<uint32_t> g_pad_buttons[4];
+// The game's pad reads reach FilterPad (the layer hooks XInputGetState): the chord works.
+std::atomic<bool> g_pad_seen{false};
 std::atomic<int32_t> g_pad_lx{0}, g_pad_ly{0};
 
 // Makes the menu's context current for the scope (UI thread).
@@ -598,7 +615,21 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   const Option* focused = nullptr;
   std::string_view page;
   bool first = true;
+  // The rows scroll in a region that leaves the help and the footer on the screen: the Steam
+  // Deck's 800 lines (720 on a TV) hold fewer rows than the menu has. The region's height: the
+  // screen less the window's title, padding and a margin, less what follows the rows (two lines
+  // of help, the footer's button, the separators and spacing between them).
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float below = style.ItemSpacing.y * 6.0f + 2.0f +
+                      ImGui::GetTextLineHeightWithSpacing() * 2.0f + ImGui::GetFrameHeight();
+  const float rows_max = io.DisplaySize.y - style.WindowPadding.y * 4.0f -
+                         ImGui::GetFrameHeight() - below;
+  ImGui::SetNextWindowSizeConstraints(
+      ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(rows_max, ImGui::GetFrameHeight() * 3.0f)));
+  ImGui::BeginChild("##rows", ImVec2(0.0f, 0.0f),
+                    ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
   for (const Option& o : Options()) {
+    if (o.shown && !o.shown()) continue;
     if (o.page != page) {
       page = o.page;
       ImGui::SeparatorText(std::string(page).c_str());
@@ -616,6 +647,7 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
     first = false;
     Row(o, &focused);
   }
+  ImGui::EndChild();
   ImGui::Spacing();
   ImGui::Separator();
   // The focused option's help (the pad has no hover tooltips), in a space kept for two lines so
@@ -652,6 +684,22 @@ float HintAlpha(std::chrono::steady_clock::time_point now) {
   return std::clamp(std::chrono::duration<float>(at - now).count(), 0.0f, 1.0f);
 }
 
+// On the Steam Deck (Steam sets SteamDeck=1 for its games) the pad's Back and Start are View and
+// Menu and there is no F1; without the pad hook only F1 opens the menu.
+bool SteamDeck() {
+  static const bool deck = [] {
+    const char* v = std::getenv("SteamDeck");
+    return v && std::strcmp(v, "1") == 0;
+  }();
+  return deck;
+}
+
+const char* HintText() {
+  if (!g_pad_seen.load(std::memory_order_relaxed))
+    return SteamDeck() ? "Settings: keyboard F1" : "Settings:  F1";
+  return SteamDeck() ? "Settings:  View + Menu" : "Settings:  Back + Start   (F1)";
+}
+
 void DrawHint(ImGuiIO& io, float alpha) {
   const float margin = ImGui::GetStyle().WindowPadding.x;
   ImGui::SetNextWindowPos(ImVec2(margin, io.DisplaySize.y - margin), ImGuiCond_Always,
@@ -662,7 +710,7 @@ void DrawHint(ImGuiIO& io, float alpha) {
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
                    ImGuiWindowFlags_NoFocusOnAppearing);
-  ImGui::TextUnformatted("Settings:  Back + Start   (F1)");
+  ImGui::TextUnformatted(HintText());
   ImGui::End();
   ImGui::PopStyleVar();
 }
@@ -858,6 +906,8 @@ bool FilterPad(uint32_t user, uint8_t* pad) {
   const auto now = std::chrono::steady_clock::now();
   const uint16_t buttons = uint16_t(pad[0] << 8 | pad[1]);
   g_pad_buttons[user].store(buttons, std::memory_order_relaxed);
+  if (!g_pad_seen.exchange(true, std::memory_order_relaxed))
+    REXLOG_INFO("ReXNative HUD: the game's pad reads pass here (Back+Start opens the menu)");
   if (user == 0) {
     g_pad_lx.store(int16_t(pad[4] << 8 | pad[5]), std::memory_order_relaxed);
     g_pad_ly.store(int16_t(pad[6] << 8 | pad[7]), std::memory_order_relaxed);
