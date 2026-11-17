@@ -65,7 +65,7 @@ deixa um executável compilado que corre.
 | Super Meat Boy (TU 1) | joga-se: menus, o mapa do mundo, o nível 1-1 | 60 FPS |
 | Minecraft: Xbox 360 Edition (TU 80) | joga-se: menus, os modelos de mundo do update, um mundo novo | 60 FPS |
 | Castlevania: Symphony of the Night (TU 2) | joga-se: o menu com o texto, o nome, o prólogo | 60 FPS |
-| Orcs Must Die! (TU 1) | joga-se o primeiro nível, 30 FPS; o título, os menus e os carregamentos são desenhados pelo renderer do ReXGlue (`rexnative.auto_handover`: o jogo pô-los em código inline, fora das funções ligadas) | renderer do ReXGlue: o título (no Proton a janela não pode mudar de renderer) |
+| Orcs Must Die! (TU 1) | joga-se: título, menus, a história da campanha e o primeiro nível com o HUD, 30 FPS (a compilação pôs muitos desenhos inline, fora das funções ligadas: `rexnative.inline_draws`) | 30 FPS |
 | Double Dragon Neon | joga-se a primeira missão | 60 FPS |
 | Brothers - A Tale of Two Sons | menu e abertura, desenhados como no renderer original | 30 FPS (renderer do ReXGlue) |
 | Bionic Commando Rearmed (TU 2) | a introdução a 60 FPS, o mapa das missões | 60 FPS |
@@ -214,13 +214,14 @@ As teclas também são definições (`bind_rexnative_hud`, `bind_renderer_switch
 (`--rexnative_upscaler`, os `pgr4_native_*` e `pgr4_d3d_*` do PGR4Native) continuam a funcionar
 como aliases.
 
-Um jogo cuja compilação pôs alguns ecrãs em código inline, fora das funções D3D ligadas (o título,
-os menus e os carregamentos do Orcs Must Die!), mostra-os a preto: com `rexnative.auto_handover =
-30`, ao fim de 30 frames em que o ReXNative não vê nenhuma chamada de desenho, o renderer do ReXGlue
-desenha até as chamadas do jogo voltarem, como faria o F9. Fica desligado no Wine: no vkd3d-proton a
-janela não pode passar da cadeia de troca de um renderer para a do outro (o Present do driver Xenos
-fica à espera para sempre), por isso na Steam Deck esse jogo usa um só renderer
-(`<work>/deck.toml`).
+Um jogo cuja compilação pôs desenhos em código inline, fora das funções D3D ligadas (o título,
+os menus, os carregamentos e o HUD do Orcs Must Die!), mostra-os a preto. Com
+`rexnative.inline_draws = true` o ReXNative percorre o push buffer que o jogo escreveu entre duas
+chamadas ligadas, como percorre um command buffer gravado, e desenha o que lá encontra.
+`rexnative.auto_handover = 30` é a outra saída: ao fim de 30 frames em que o ReXNative não vê
+nenhuma chamada de desenho, o renderer do ReXGlue desenha até as chamadas do jogo voltarem, como
+faria o F9. Fica desligado no Wine: no vkd3d-proton a janela não pode passar da cadeia de troca de
+um renderer para a do outro (o Present do driver Xenos fica à espera para sempre).
 
 ## Depurar um jogo
 

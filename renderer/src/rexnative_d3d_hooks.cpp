@@ -67,10 +67,15 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <thread>
 #include <vector>
 
 REXCVAR_DEFINE_BOOL(rexnative_d3d_tap, false, "ReXNative",
                     "Decode the guest D3D push buffer at each hooked D3D call (trace/oracle)");
+REXCVAR_DEFINE_BOOL(rexnative_inline_draws, false, "ReXNative",
+                    "Draws the game wrote past the hooked D3D functions (inlined by its build: "
+                    "Orcs Must Die!'s title and menus): the push buffer between two hooked "
+                    "calls is walked as a command buffer and its draws drawn");
 REXCVAR_DEFINE_STRING(rexnative_d3d_control, "", "ReXNative",
                       "Command file polled once per frame (trace/skip/tap commands)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_trace_dir, "", "ReXNative", "Directory for frame traces");
@@ -449,6 +454,13 @@ inline bool MayDropPackets(uint32_t device) {
 // Pass-through hooks (IsPassThrough) take OnHook's path only while the tap decodes the stream or
 // the profiler times the guest D3D; otherwise they jump straight to the original.
 std::atomic<bool> g_hook_all{false};
+// rexnative.inline_draws, read once (with g_hook_all: the pass-through hooks must run OnHook).
+std::atomic<bool> g_inline_draws{false};
+bool InlineDraws() {
+  const bool on = REXCVAR_GET(rexnative_inline_draws);
+  g_inline_draws.store(on, std::memory_order_relaxed);
+  return on;
+}
 std::atomic<uint64_t> g_tap_counts[3];  // draws, aux, resolves (cumulative, for stream stats)
 
 struct CallFrame {
@@ -1041,7 +1053,7 @@ void EndFrame(Tap& t, uint8_t* base) {
     t.configured = true;
     t.enabled = REXCVAR_GET(rexnative_d3d_tap);
     t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
-    g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+    g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile) || InlineDraws(), std::memory_order_relaxed);
     g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
   }
 }
@@ -1088,7 +1100,7 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
         t.configured = true;
         t.enabled = REXCVAR_GET(rexnative_d3d_tap);
         t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
-        g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+        g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile) || InlineDraws(), std::memory_order_relaxed);
         g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
       }
       REXLOG_INFO("ReXNative D3D: device {:08X}, push {:08X}, tap {}{}, {} hooked functions", t.device,
@@ -1365,7 +1377,7 @@ void TapMirrorWrite(uint32_t reg, uint32_t v) { WriteReg(g_tap, reg, v); }
 // run it and nothing is tracked then. Everything that depends on the function is resolved at
 // compile time: each hook holds only its own path.
 template <FnId kId, GuestFn kOriginal>
-inline void OnHook(PPCContext& ctx, uint8_t* base) {
+inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
   namespace nat = rexnative;
   constexpr uint32_t kAddr = kFns[kId].addr;
   constexpr NativeClass kClass = NativeClassOf(kFns[kId].cat);
@@ -1504,6 +1516,64 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
       NoteFrameBegin();
       if (nat::profile::On()) LogGuestD3dTimes();
     }
+  }
+}
+
+// rexnative.inline_draws (cmd_replay.h ReplayGap): the push buffer the game wrote between the
+// exit of one outermost hooked call on the presenting device and the entry of the next. After a
+// Begin call it is vertex data, not packets: no walk then. The cursor is the device's last
+// written dword (dev::kPush), so the stream between is (cursor, push].
+thread_local uint32_t t_gap_depth = 0;
+thread_local uint32_t t_gap_cursor = 0;
+thread_local bool t_gap_valid = false;
+// The device Swap presents with: the layer may follow every device (kFollowSwapDeviceOnly
+// false, g_main_device stays 0), but only that one's stream is walked.
+std::atomic<uint32_t> g_gap_device{0};
+// Only on the thread that calls Swap: the state tracker has no locks (Orcs Must Die! drives its
+// device from a second thread while it loads).
+std::atomic<uint64_t> g_gap_thread{0};
+uint64_t GapThreadId() {
+  static thread_local const uint64_t id = std::hash<std::thread::id>{}(std::this_thread::get_id());
+  return id;
+}
+
+[[gnu::noinline]] void GapEntry(uint8_t* base, uint32_t device) {
+  const uint32_t push = Load32(base, device + rexnative::dev::kPush);
+  if (!t_gap_valid || push <= t_gap_cursor || push - t_gap_cursor > (4u << 20)) return;
+  rexnative::NativeRenderer* r = rexnative::NativeRenderer::Live();
+  if (!r) return;
+  rexnative::cmdbuf::RunContext rc;
+  rc.device = device;
+  rc.renderer = r;
+  rc.main_device = device;
+  rc.follow_swap_device_only = true;
+  rc.in_native_call = t_native_depth != 0;
+  rexnative::cmdbuf::ReplayGap(base, rc, t_gap_cursor + 4, push + 4);
+}
+
+template <FnId kId, GuestFn kOriginal>
+inline void OnHook(PPCContext& ctx, uint8_t* base) {
+  if (!g_inline_draws.load(std::memory_order_relaxed)) [[likely]]
+    return OnHookInner<kId, kOriginal>(ctx, base);
+  const uint32_t device = ctx.r3.u32;
+  if constexpr (kId == kFnSwap) {
+    uint32_t none = 0;
+    g_gap_device.compare_exchange_strong(none, device, std::memory_order_relaxed);
+    if (device == g_gap_device.load(std::memory_order_relaxed))
+      g_gap_thread.store(GapThreadId(), std::memory_order_relaxed);
+  }
+  const bool outer = t_gap_depth == 0 && device &&
+                     device == g_gap_device.load(std::memory_order_relaxed) &&
+                     GapThreadId() == g_gap_thread.load(std::memory_order_relaxed);
+  if (outer) GapEntry(base, device);
+  ++t_gap_depth;
+  OnHookInner<kId, kOriginal>(ctx, base);
+  --t_gap_depth;
+  if (outer) {
+    t_gap_cursor = Load32(base, device + rexnative::dev::kPush);
+    t_gap_valid = kId != kFnBeginVertices && kId != kFnBeginIndexedVertices;
+    if constexpr (kId == kFnSwap)
+      rexnative::cmdbuf::OnSwapGaps(REXCVAR_GET(rexnative_d3d_stats_frames));
   }
 }
 }  // namespace

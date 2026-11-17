@@ -60,6 +60,14 @@ bool OnSwapThread();
 // After the guest RunCommandBuffer returned, on the Swap thread (OnSwapThread), whenever the
 // tracker's AfterCall ran for it.
 void AfterRun(const uint8_t* base, const RunContext& c);
+// rexnative.inline_draws: the push buffer the game wrote between two hooked calls, [first, end)
+// (guest virtual addresses), walked as a buffer is: its register writes into the tracker, its
+// shader loads, its draws to the renderer. A game whose build inlined some draws past the hooked
+// D3D functions (Orcs Must Die!'s title and menus, DRAW_INDX packets no hook saw) has them drawn.
+// On the Swap thread, on the presenting device.
+void ReplayGap(const uint8_t* base, const RunContext& c, uint32_t first, uint32_t end);
+// At each Swap with inline draws on: their counts every `stats_every` frames.
+void OnSwapGaps(int32_t stats_every);
 // The same on any other thread: the tracker's EndCommandBuffer, and a count. Touches no state of
 // this module but one atomic.
 void AfterRunOtherThread(const uint8_t* base, uint32_t device, uint32_t cb);

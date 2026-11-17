@@ -117,6 +117,21 @@ the replay first refused and then drew 512 rows up:
 
 `cmdbuf dump tag:N` dumps the next N calls (a whole frame of Midnight Club's is 67).
 
+## Inline draws
+
+Orcs Must Die!'s build inlined DrawIndexedVertices into its title, menus, loading screens and
+HUD: its DRAW_INDX packets, with the state and the immediate vertex shaders before them, were
+written straight into the push buffer, where the trace shows them as `fn=-`, and the native
+renderer drew one quad a frame. With `rexnative.inline_draws` (a game's setting), every hooked
+call on the presenting device, from the Swap thread, first walks the stream written since the
+previous outermost hooked call returned (the device's push cursor then and now) with the
+recorded-buffer walker: register writes into the tracker, shader loads, draws to the renderer.
+After a Begin call that stream is vertex data and is skipped. A stream that runs into a hole
+the D3D reserved is walked up to the packet the check refused. The shaders a stream loaded are
+the inlined draw's: the next hooked draw reloads the bound ones, and an ImmediateVs that the
+inlined code called is not left pending for it ("Press Start", drawn by DrawVerticesUP, got the
+inlined draw's vertex shader and showed one letter).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

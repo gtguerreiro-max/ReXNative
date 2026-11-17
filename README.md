@@ -63,7 +63,7 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |
 | Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world | 60 FPS |
 | Castlevania: Symphony of the Night (TU 2) | plays: the menu with its text, the name entry, the prologue | 60 FPS |
-| Orcs Must Die! (TU 1) | plays its first level, 30 FPS; the title, menus and loading screens are drawn by ReXGlue's renderer (`rexnative.auto_handover`: the game inlined them past the hooks) | ReXGlue's renderer: title and menus (under Proton the window cannot change hands) |
+| Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS (its build inlined many draws past the hooks: `rexnative.inline_draws`) | 30 FPS |
 | Double Dragon Neon | plays its first mission | 60 FPS |
 | Brothers - A Tale of Two Sons | menu and opening, drawn as the stock renderer draws them | 30 FPS (ReXGlue's renderer) |
 | Bionic Commando Rearmed (TU 2) | the intro at 60 FPS, the mission map | 60 FPS |
@@ -208,12 +208,13 @@ section of the game's configuration file (`run/<game>.toml`) or on the command l
 `--rexnative=false` starts the game on ReXGlue's renderer. The older names
 (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still work as aliases.
 
-A game whose build inlined some screens past the hooked D3D functions (Orcs Must Die!'s title, menus
-and loading screens) shows them black: with `rexnative.auto_handover = 30`, after 30 frames in which
-ReXNative sees no draw call, ReXGlue's renderer draws until the game's draw calls come back, as F9
-would. It stays off under Wine: under vkd3d-proton the window cannot go from one renderer's swap
-chain to the other's (the Xenos driver's Present then waits for good), so on the Steam Deck such a
-game runs on one renderer (`<work>/deck.toml`).
+A game whose build inlined draws past the hooked D3D functions (Orcs Must Die!'s title, menus,
+loading screens and HUD) shows them black. With `rexnative.inline_draws = true` ReXNative walks the
+push buffer the game wrote between two hooked calls, as it walks a recorded command buffer, and
+draws what it finds there. `rexnative.auto_handover = 30` is the other way out: after 30 frames in
+which ReXNative sees no draw call, ReXGlue's renderer draws until the game's draw calls come back,
+as F9 would. It stays off under Wine: under vkd3d-proton the window cannot go from one renderer's
+swap chain to the other's (the Xenos driver's Present then waits for good).
 
 ## Debugging a game
 

@@ -258,6 +258,9 @@ class GuestStateTracker {
   // ends a replay (the next game draw reloads the bound shaders unless the buffer keeps them)
   // and writes the window scissor RunCommandBuffer re-emits after the buffer.
   void EndCommandBuffer(const uint8_t* base, uint32_t device, const CommandBufferHeader& h);
+  // A draw of the stream between two hooked calls (cmd_replay ReplayGap) used the immediate
+  // vertex shader an ImmediateVs call made for it: no later draw takes it.
+  void DropPendingImmediateVs() { vs_imm_pending_valid_ = false; }
 
   // For the trace tap (--rexnative_d3d_tap): compares the registers the tap has seen written in the
   // push buffer (`tap_written[r] != 0`) with this view at the current draw. Returns the number
