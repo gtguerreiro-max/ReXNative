@@ -34,7 +34,7 @@
 // With --rexnative_beside_xenos the draw, clear, resolve and Swap hooks also call the native D3D12
 // renderer (src/native/renderer.h) after the guest function returned.
 //
-// Built only into the PGR4 game project (games/pgr4, scripts/build.sh).
+// Built into every game by rexnative_add() (renderer/rexnative.cmake), with the game's layer.
 
 #include "native/clock.h"
 #include "native/cmd_replay.h"
@@ -63,6 +63,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -946,7 +947,8 @@ void PollControl(Tap& t, uint8_t* base) {
       }
       t.enabled = on;
       if (!on) t.trace_left = 0;
-      g_hook_all.store(on || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+      g_hook_all.store(on || REXCVAR_GET(rexnative_profile) || g_inline_draws.load(std::memory_order_relaxed),
+                       std::memory_order_relaxed);
     } else if (cmd == "cmdbuf") {
       if (kFnRunCommandBuffer == kFnCount) {
         REXNATIVE_WARN_ONCE("ReXNative D3D control: '{}' ignored: no RunCommandBuffer hook", l);
@@ -1053,7 +1055,7 @@ void EndFrame(Tap& t, uint8_t* base) {
     t.configured = true;
     t.enabled = REXCVAR_GET(rexnative_d3d_tap);
     t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
-    g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile) || InlineDraws(), std::memory_order_relaxed);
+    g_hook_all.store(InlineDraws() || t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
     g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
   }
 }
@@ -1100,7 +1102,7 @@ inline void OnCall(PPCContext& ctx, uint8_t* base, Run run) {
         t.configured = true;
         t.enabled = REXCVAR_GET(rexnative_d3d_tap);
         t.check = t.enabled && REXCVAR_GET(rexnative_d3d_tap_check);
-        g_hook_all.store(t.enabled || REXCVAR_GET(rexnative_profile) || InlineDraws(), std::memory_order_relaxed);
+        g_hook_all.store(InlineDraws() || t.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
         g_skip.store(ParseSkip(REXCVAR_GET(rexnative_d3d_skip)));
       }
       REXLOG_INFO("ReXNative D3D: device {:08X}, push {:08X}, tap {}{}, {} hooked functions", t.device,
@@ -1525,9 +1527,11 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
 // written dword (dev::kPush), so the stream between is (cursor, push].
 thread_local uint32_t t_gap_depth = 0;
 thread_local uint32_t t_gap_cursor = 0;
+thread_local uint32_t t_gap_cursor_device = 0;  // the device t_gap_cursor is a push of
 thread_local bool t_gap_valid = false;
-// The device Swap presents with: the layer may follow every device (kFollowSwapDeviceOnly
-// false, g_main_device stays 0), but only that one's stream is walked.
+// The device Swap presents with, the last one (a game may create its device again): the layer
+// may follow every device (kFollowSwapDeviceOnly false, g_main_device stays 0), but only that
+// one's stream is walked.
 std::atomic<uint32_t> g_gap_device{0};
 // Only on the thread that calls Swap: the state tracker has no locks (Orcs Must Die! drives its
 // device from a second thread while it loads).
@@ -1536,10 +1540,41 @@ uint64_t GapThreadId() {
   static thread_local const uint64_t id = std::hash<std::thread::id>{}(std::this_thread::get_id());
   return id;
 }
+// The hooked calls another thread made on the gap device (a loader's draws), (entry, exit] push
+// values: their packets lie inside the Swap thread's next gap and their hooks drew them already,
+// so the walk leaves them out. Past kMaxForeign the gap is not walked at all.
+struct GapForeign {
+  std::mutex mutex;
+  std::vector<std::pair<uint32_t, uint32_t>> calls;
+  bool overflow = false;
+  std::atomic<bool> any{false};
+};
+GapForeign g_gap_foreign;
+constexpr size_t kMaxForeign = 4096;
+
+[[gnu::noinline]] void NoteForeignCall(uint32_t entry, uint32_t exit) {
+  std::lock_guard lock(g_gap_foreign.mutex);
+  if (g_gap_foreign.calls.size() < kMaxForeign)
+    g_gap_foreign.calls.emplace_back(entry, exit);
+  else
+    g_gap_foreign.overflow = true;
+  g_gap_foreign.any.store(true, std::memory_order_relaxed);
+}
 
 [[gnu::noinline]] void GapEntry(uint8_t* base, uint32_t device) {
   const uint32_t push = Load32(base, device + rexnative::dev::kPush);
-  if (!t_gap_valid || push <= t_gap_cursor || push - t_gap_cursor > (4u << 20)) return;
+  std::vector<std::pair<uint32_t, uint32_t>> foreign;
+  bool overflow = false;
+  if (g_gap_foreign.any.load(std::memory_order_relaxed)) {
+    std::lock_guard lock(g_gap_foreign.mutex);
+    foreign.swap(g_gap_foreign.calls);
+    overflow = std::exchange(g_gap_foreign.overflow, false);
+    g_gap_foreign.any.store(false, std::memory_order_relaxed);
+  }
+  const uint32_t cursor = t_gap_cursor;
+  if (!t_gap_valid || t_gap_cursor_device != device || overflow || push <= cursor ||
+      push - cursor > (4u << 20))
+    return;
   rexnative::NativeRenderer* r = rexnative::NativeRenderer::Live();
   if (!r) return;
   rexnative::cmdbuf::RunContext rc;
@@ -1548,7 +1583,15 @@ uint64_t GapThreadId() {
   rc.main_device = device;
   rc.follow_swap_device_only = true;
   rc.in_native_call = t_native_depth != 0;
-  rexnative::cmdbuf::ReplayGap(base, rc, t_gap_cursor + 4, push + 4);
+  // (cursor, push] without the other threads' calls in it: dword addresses [first, end).
+  std::sort(foreign.begin(), foreign.end());
+  uint32_t from = cursor;
+  for (const auto& [entry, exit] : foreign) {
+    if (exit <= from || entry >= push) continue;  // another gap's (or a wrapped ring's)
+    if (entry > from) rexnative::cmdbuf::ReplayGap(base, rc, from + 4, entry + 4);
+    from = std::max(from, exit);
+  }
+  if (from < push) rexnative::cmdbuf::ReplayGap(base, rc, from + 4, push + 4);
 }
 
 template <FnId kId, GuestFn kOriginal>
@@ -1557,23 +1600,30 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     return OnHookInner<kId, kOriginal>(ctx, base);
   const uint32_t device = ctx.r3.u32;
   if constexpr (kId == kFnSwap) {
-    uint32_t none = 0;
-    g_gap_device.compare_exchange_strong(none, device, std::memory_order_relaxed);
-    if (device == g_gap_device.load(std::memory_order_relaxed))
+    if (device) {
+      g_gap_device.store(device, std::memory_order_relaxed);
       g_gap_thread.store(GapThreadId(), std::memory_order_relaxed);
+    }
   }
-  const bool outer = t_gap_depth == 0 && device &&
-                     device == g_gap_device.load(std::memory_order_relaxed) &&
-                     GapThreadId() == g_gap_thread.load(std::memory_order_relaxed);
+  const bool gap_device = t_gap_depth == 0 && device &&
+                          device == g_gap_device.load(std::memory_order_relaxed);
+  const bool outer =
+      gap_device && GapThreadId() == g_gap_thread.load(std::memory_order_relaxed);
+  const bool foreign = gap_device && !outer;
+  const uint32_t foreign_entry = foreign ? Load32(base, device + rexnative::dev::kPush) : 0;
   if (outer) GapEntry(base, device);
   ++t_gap_depth;
   OnHookInner<kId, kOriginal>(ctx, base);
   --t_gap_depth;
   if (outer) {
     t_gap_cursor = Load32(base, device + rexnative::dev::kPush);
+    t_gap_cursor_device = device;
     t_gap_valid = kId != kFnBeginVertices && kId != kFnBeginIndexedVertices;
     if constexpr (kId == kFnSwap)
       rexnative::cmdbuf::OnSwapGaps(REXCVAR_GET(rexnative_d3d_stats_frames));
+  } else if (foreign) {
+    if (const uint32_t exit = Load32(base, device + rexnative::dev::kPush); exit != foreign_entry)
+      NoteForeignCall(foreign_entry, exit);
   }
 }
 }  // namespace

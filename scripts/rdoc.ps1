@@ -6,6 +6,7 @@
 #   scripts\rdoc.ps1 mesh <capture.rdc> -Event 1234         # its vertex shader's output positions
 #   scripts\rdoc.ps1 disasm <capture.rdc> -Event 1234       # its shaders, disassembled
 #   scripts\rdoc.ps1 cbuffers <capture.rdc> -Event 1234     # its shaders' constant buffers
+#   scripts\rdoc.ps1 state <capture.rdc> -Event 1234        # its depth, stencil, bias, viewport
 #   scripts\rdoc.ps1 buffer <capture.rdc> -Offset 15494000 -Size 1000 [-Event 0] [-Texture 0]
 #                    bytes (hex offset and size) of a buffer; 0: the largest, the renderer's
 #                    copy of guest physical memory
@@ -44,4 +45,5 @@ switch ($Cmd) {
     'mesh' { Join-Path $out "mesh-e$Event.txt" }
     'disasm' { Join-Path $out "disasm-e$Event-ps.txt" }
     'cbuffers' { Join-Path $out "cbuffers-e$Event.txt" }
+    'state' { Get-Content (Join-Path $out "state-e$Event.txt") }
 }

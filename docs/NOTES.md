@@ -46,7 +46,7 @@ addresses with an SDK patch (Super Meat Boy calls setjmp through two thunks).
 Double Dragon Neon and Dungeons & Dragons: Chronicles of Mystara use XAPI fibers. Their five fiber
 functions are found by shape (the current fiber at +356 of the thread, `ERROR_ALREADY_FIBER` /
 `ERROR_ALREADY_THREAD`, SwitchToFiber's register save, the start-up code CreateFiber points at)
-and replaced by the SDK's host-fiber versions (`[rexcrt]` in `crt.toml`): recompiled,
+and replaced by the SDK's host-fiber versions (`[shim]` in `crt.toml`; `[rexcrt]` before v0.11): recompiled,
 SwitchToFiber's stack switch cannot work (Double Dragon Neon's Play wrote into another fiber's
 stack).
 
@@ -91,7 +91,8 @@ shadow and depth passes, and the push-buffer trace showed two large INDIRECT_BUF
 ordinary memory: command buffers recorded on a second device and run each frame with
 RunCommandBuffer, whose draws no hook saw.
 
-RunCommandBuffer is now hooked (`overrides.json` `functions.RunCommandBuffer`), and
+RunCommandBuffer is now hooked (`adapt` finds it and turns the replay on when it is sure of it;
+`overrides.json` `functions.RunCommandBuffer` and `defaults.cmdbuf` correct it), and
 `renderer/src/native/cmd_replay.cpp` reads the object's chunk list and walks its PM4: register
 writes, constants, shader loads, predication, and DRAW_INDX packets as native draws, with the
 state the call inherits and keeps as the GPU has it. A buffer is checked whole before anything

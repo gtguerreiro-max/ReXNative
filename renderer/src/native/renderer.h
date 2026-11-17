@@ -237,10 +237,15 @@ class NativeRenderer {
   // Swap. A key rather than a pad combination: the game reads every button of the pad.
   // HandOver: the Xenos plugin draws from the next frame on (also after a failed frame, Fail);
   // TakeBack: native again.
+  // F9, once a press; never under Wine (UnderWine), where it is logged and dropped.
   bool SwitchRequested() {
     return switch_requested_.load(std::memory_order_relaxed) &&
-           switch_requested_.exchange(false, std::memory_order_relaxed);
+           switch_requested_.exchange(false, std::memory_order_relaxed) && !SwitchRefusedUnderWine();
   }
+  // Under Wine (the Steam Deck's Proton) the window does not change hands: once one renderer's
+  // swap chain was released, the other's Present waited in vkd3d-proton for good.
+  static bool UnderWine();
+  static bool SwitchRefusedUnderWine();
   // SwitchRequested, while the native renderer draws: false (logged) when the frame is one the
   // plugin does not draw (frame_height.h).
   bool HandOverRequested();

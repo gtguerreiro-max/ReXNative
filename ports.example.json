@@ -15,5 +15,12 @@
     "layer": "src/rexnative",
     "generated": "generated/default",
     "xex": "game-data/Default.xex"
+  },
+  "ironbrigade": {
+    "title": "Iron Brigade",
+    "root": "C:/ports/IronBrigadeRecomp",
+    "layer": "src/rexnative",
+    "generated": "generated/default",
+    "xex": "game-data/default.xex"
   }
 }

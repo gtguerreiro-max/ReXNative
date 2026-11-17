@@ -54,7 +54,7 @@ class MotionHistory {
     // the vertex fetch constants of its shader's first kVertexBases bindings: where its vertices
     // were (DrawRenderer's BindPreviousConstants).
     uint32_t vertex_index_offset = 0;
-    static constexpr uint32_t kVertexBases = 4;
+    static constexpr uint32_t kVertexBases = 8;  // more bindings than that: the rest not moved
     uint32_t vertex_base[kVertexBases] = {};
   };
   // How the last Match found the previous constants.

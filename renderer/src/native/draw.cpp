@@ -155,11 +155,9 @@ using BYTE = unsigned char;
 #include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_round_ps.h"
 #include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_truncate_ps.h"
 
-namespace rexnative {
-
-}  // namespace rexnative
 // thirdparty/dxbc/DXBCChecksum.cpp (rexnative_shader_xlate).
 void CalculateDXBCChecksum(unsigned char* pData, unsigned int dwSize, unsigned int dwHash[4]);
+
 namespace rexnative {
 namespace {
 // "ok", "BAD" (the stored DXBC checksum is not the bytecode's) or "-" (no shader).
@@ -2582,14 +2580,13 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
                          (uint64_t(s.primitive) << 58);
   const uint64_t identity = loose ^ (uint64_t(s.index_address) << 32);
   MotionHistory::Constants now = {vs, cb_float_vs.gpu, cb_fetch.gpu};
-  // Where its vertices are: a vertex fetch constant's dword 0 is its base address and type.
+  // Where its vertices are: a vertex fetch constant's dword 0 is its base address and type
+  // (vertex fetch k is 2 dwords at 2k: three of them a 6-dword fetch constant).
   const std::vector<rex::gpu::Shader::VertexBinding>& bindings =
       ShaderVertexBindings::Of(vs_generic);
   const uint32_t bases =
       std::min<uint32_t>(uint32_t(bindings.size()), MotionHistory::Constants::kVertexBases);
-  auto fetch_dword0 = [](uint32_t fetch_constant) {
-    return (fetch_constant / 3) * 6 + (fetch_constant % 3) * 2;
-  };
+  auto fetch_dword0 = [](uint32_t fetch_constant) { return 2 * fetch_constant; };
   now.vertex_index_offset = vertex_index_offset;
   for (uint32_t i = 0; i < bases; ++i)
     now.vertex_base[i] = fetch_constants[fetch_dword0(bindings[i].fetch_constant)];
@@ -4503,8 +4500,10 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       (debug_mask & kDebugNoMotion) &&
       (debug_skip_from >= debug_skip_to ||
        (frame_draws >= debug_skip_from && frame_draws < debug_skip_to));
+  // Not for a vertex shader that writes memory: the motion pass runs its ucode a second time,
+  // memexport included, with the temporaries of the first pass freed (patch 0010 only asserts).
   const bool motion = scene_upscaler && !no_motion && mods.pixel_shader_used &&
-                      depth_control.z_enable &&
+                      !vs->GetMemExportEMWritten() && depth_control.z_enable &&
                       (depth_control.z_write_enable ||
                        ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
                         !GetRtBlend(regs, 0).Blends()));

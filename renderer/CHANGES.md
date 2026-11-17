@@ -1,8 +1,8 @@
-# renderer/: o src/native neutro
+# renderer/: the game-neutral src/native, as first made
 
-Gerado por `python -m rexnative neutral --port ironbrigade` a partir do `src/native` e do `ib_d3d_trace.cpp` desse port.
+The record of 2026-11-14: `python -m rexnative neutral --port ironbrigade` made `renderer/src/native` from that port's `src/native` and `ib_d3d_trace.cpp` with the edits below. The renderer has been edited in this repository since (its git history); `neutral` no longer overwrites it without `--force`.
 
-## Edições aplicadas (63)
+## Edits applied (63)
 
 - hook_args.h: kBeginVertices (1)
 - hook_args.h: kDrawVerticesUP (1)
@@ -68,10 +68,10 @@ Gerado por `python -m rexnative neutral --port ironbrigade` a partir do `src/nat
 - rexnative_d3d_hooks.cpp: counter names (1)
 - rexnative_d3d_hooks.cpp: immediate VS hook (1)
 
-## Edições que falharam (0)
+## Edits that failed (0)
 
-- nenhuma
+- none
 
-## Endereços de guest que ficaram no código
+## Guest addresses left in the code
 
-- nenhum
+- none

@@ -12,6 +12,7 @@ The external programs run at below-normal priority (the PC stays usable) and not
 game is run. <work>/<game>/prepare.json records each step's outcome; `survey` tabulates them.
 """
 import bisect
+import glob
 import json
 import os
 import re
@@ -289,6 +290,7 @@ def _epilogue_starts(work, hints):
 
 
 NON_VOLATILE = {'r%d' % i for i in range(14, 32)}
+_GPR = re.compile(r'r\d+')
 
 
 def _reads_saved_register(instructions):
@@ -301,23 +303,41 @@ def _reads_saved_register(instructions):
         parts = text.replace(',', ' ').replace('(', ' ').replace(')', ' ').split()
         if not parts:
             continue
-        op = parts[0]
-        regs = [p for p in parts[1:] if re.fullmatch(r'r\d+', p)]
+        op, operands = parts[0], parts[1:]
         if op.startswith('b'):
             return False
         if op.startswith('st'):
             # The register stored is saved, not used (a prologue, or a context save such as
-            # SwitchToFiber's: Double Dragon Neon's 826250F0); only the address registers count.
-            sources, dest = regs[1:], None
-        elif op.startswith(('cmp', 'tw', 'td', 'mt')):
-            sources, dest = regs, None
+            # SwitchToFiber's: Double Dragon Neon's 826250F0); only the address registers count
+            # (`stfs f0,12(r31)` reads r31).
+            sources, dest = [p for p in operands[1:] if _GPR.fullmatch(p)], None
+        elif op.startswith(('cmp', 'tw', 'td', 'mt', 'dcb', 'icb')):
+            sources, dest = [p for p in operands if _GPR.fullmatch(p)], None
         else:
-            dest, sources = (regs[0] if regs else None), regs[1:]
+            # The first operand is written when it is a GPR (`lfs f1,0(r31)` writes f1 and reads
+            # r31); rlwimi and rldimi also read it.
+            dest = operands[0] if operands and _GPR.fullmatch(operands[0]) else None
+            sources = [p for p in operands[1:] if _GPR.fullmatch(p)]
+            if dest and op.startswith(('rlwimi', 'rldimi')):
+                sources.append(dest)
         if any(r in NON_VOLATILE and r not in written for r in sources):
             return True
         if dest:
             written.add(dest)
     return False
+
+
+def _generated_starts(gen):
+    """The function starts of the generated code in `gen` (its DEFINE_REX_FUNC lines), or none."""
+    starts = set()
+    for path in glob.glob(os.path.join(gen, '*_recomp.*.cpp')):
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if line.startswith('DEFINE_REX_FUNC(sub_'):
+                    m = re.match(r'DEFINE_REX_FUNC\(sub_([0-9A-Fa-f]{8})\)', line)
+                    if m:
+                        starts.add(int(m.group(1), 16))
+    return starts
 
 
 def codegen(work, name, rexglue, max_rounds, log):
@@ -403,15 +423,20 @@ def codegen(work, name, rexglue, max_rounds, log):
         # Commando Rearmed: hint 821DB4F8 (r31 used unset, then `b 0x821DB404`) is
         # sub_821DB258's; the hint codegen asked for at 821DB404 split sub_821DB258's loop, was
         # removed, and was asked for again, round after round. That source hint goes instead.
+        # The source's own function is the start nearest below it among every start codegen
+        # knows, .pdata's too (from the last generated code): only a hint is blamed, not the hint
+        # before a .pdata function, which would go round after round.
         known_false = not_starts(work)
-        starts = sorted(hints)
         fragments = set()
-        for t, src in pairs:
-            if t not in known_false:
-                continue
-            i = bisect.bisect_right(starts, src) - 1
-            if i >= 0 and src - starts[i] < 0x200 and starts[i] != t:
-                fragments.add(starts[i])
+        if any(t in known_false for t, _ in pairs):
+            starts = sorted(set(hints) | _generated_starts(gen))
+            for t, src in pairs:
+                if t not in known_false:
+                    continue
+                i = bisect.bisect_right(starts, src) - 1
+                if (i >= 0 and starts[i] in hints and src - starts[i] < 0x200 and
+                        starts[i] != t):
+                    fragments.add(starts[i])
         targets = [t for t, _ in pairs] + tails
         new = sorted({t for t in targets if t not in hints and t not in known_false})
         if not new and not fragments:

@@ -13,7 +13,8 @@ update's id, number, base version, size and the package's SHA-1) and download
 (TitleUpdate.php?tuid=), as Aurora, X360-TU-Manager and skate3recomp's installer use them. Its
 HTTPS endpoint can hang (IPv6, skate3recomp's notes): HTTP is used, and every package is checked
 against the listing's SHA-1 and opened as an STFS title update of the game's title before any
-file of it is installed. Nothing is fetched unless asked (`rexnative title-update --fetch`).
+file of it is installed. Nothing is fetched unless asked (`rexnative prepare --title-update`;
+`rexnative title-update <work>` only lists them).
 """
 import hashlib
 import json

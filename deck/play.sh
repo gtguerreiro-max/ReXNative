@@ -4,7 +4,8 @@
 # with the game's files in game/; Steam runs it as a non-Steam game with NO compatibility tool
 # (install.sh adds it): it starts Proton itself, with a prefix of its own in this folder.
 #   play.sh [game flags...]
-# REXNATIVE_PROTON picks another Proton (default: GE-Proton, the newest, else Valve's Proton).
+# REXNATIVE_PROTON picks another Proton (default: GE-Proton, the newest, else Valve's Proton
+# Experimental, else its newest numbered Proton, in any Steam library: the SD card's too).
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # deck.env beside this script, if present: this Deck's own environment for Proton, one
 # VAR=value a line, e.g. PROTON_LOG=1.
@@ -21,13 +22,28 @@ export PROTON_FSR4_UPGRADE=${PROTON_FSR4_UPGRADE:-1}
 steam=$HOME/.local/share/Steam
 proton=${REXNATIVE_PROTON:-}
 if [[ -z $proton ]]; then
-  for p in $(ls -1d "$steam"/compatibilitytools.d/GE-Proton*/ 2>/dev/null | sort -V -r) \
-           "$steam/steamapps/common/Proton - Experimental/" "$steam/steamapps/common/Proton 11.0/"; do
+  # Steam's libraries: the internal one and those libraryfolders.vdf lists (an SD card's).
+  libs=("$steam")
+  while IFS= read -r lib; do libs+=("$lib"); done < <(
+    sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' \
+      "$steam/steamapps/libraryfolders.vdf" 2>/dev/null)
+  candidates=()
+  while IFS= read -r p; do candidates+=("$p"); done < <(
+    ls -1d "$steam"/compatibilitytools.d/GE-Proton*/ 2>/dev/null | sort -V -r)
+  for lib in "${libs[@]}"; do candidates+=("$lib/steamapps/common/Proton - Experimental/"); done
+  while IFS= read -r p; do candidates+=("$p"); done < <(
+    for lib in "${libs[@]}"; do
+      for p in "$lib"/steamapps/common/Proton\ [0-9]*/; do
+        [[ -d $p ]] && printf '%s\t%s\n' "$(basename "$p")" "$p"
+      done
+    done | sort -t$'\t' -k1,1 -V -r | cut -f2)
+  for p in "${candidates[@]}"; do
     [[ -x $p/proton ]] && { proton=${p%/}; break; }
   done
 fi
 [[ -n $proton ]] || { echo "no Proton found (set REXNATIVE_PROTON)" >&2; exit 1; }
-exe=$(ls -1 "$here"/*.exe 2>/dev/null | head -1)
+# The newest executable, should an older build's still be in the folder.
+exe=$(ls -1t "$here"/*.exe 2>/dev/null | head -1)
 [[ -n $exe ]] || { echo "no game executable in $here" >&2; exit 1; }
 name=$(basename "$exe" .exe)
 export STEAM_COMPAT_DATA_PATH=$here/prefix STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam

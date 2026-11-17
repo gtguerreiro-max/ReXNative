@@ -32,7 +32,7 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 
 - [Features](#features) · [Games](#games) · [Quick start](#quick-start) ·
   [How it works](#how-it-works) · [Adding it to a ReXGlue project](#adding-it-to-a-rexglue-project) ·
-  [Keys and settings](#keys-and-settings) · [Debugging a game](#debugging-a-game) ·
+  [Keys and settings](#keys-and-settings) · [Steam Deck](#steam-deck) · [Debugging a game](#debugging-a-game) ·
   [Layout](#repository-layout) · [Roadmap](#roadmap) · [License](#license-and-credits)
 
 ## Features
@@ -63,12 +63,12 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |
 | Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world | 60 FPS |
 | Castlevania: Symphony of the Night (TU 2) | plays: the menu with its text, the name entry, the prologue | 60 FPS |
-| Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS (its build inlined many draws past the hooks: `rexnative.inline_draws`) | 30 FPS |
+| Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS, with `rexnative.inline_draws = true` (its build inlined many draws past the hooks) | 30 FPS |
 | Double Dragon Neon | plays its first mission | 60 FPS |
 | Brothers - A Tale of Two Sons | menu and opening, drawn as the stock renderer draws them | 30 FPS (ReXGlue's renderer) |
 | Bionic Commando Rearmed (TU 2) | the intro at 60 FPS, the mission map | 60 FPS |
 | Midnight Club: Los Angeles - Complete Edition | plays: the city, its cars (from recorded command buffers), 30 FPS | 30 FPS |
-| Dark Souls II (TU 10) | plays: menus, a new game into Things Betwixt, 30 FPS as on the console (60 without the cap, `rexnative.menu_fps`); the prologue video is garbled (also on ReXGlue's renderer: its WMV decoding) | 30 FPS (Things Betwixt) |
+| Dark Souls II (TU 10) | plays: menus, a new game into Things Betwixt, 60 FPS (the console's 30 with `rexnative.menu_fps = 30`); the prologue video is garbled (also on ReXGlue's renderer: its WMV decoding) | 30 FPS (Things Betwixt) |
 | Halo: Combat Evolved Anniversary (TU 2) | campaign menu and the opening cutscene; some surfaces dark or striped | 60 FPS (the intro) |
 | Spelunky (TU 1) | menus, with no text (also on ReXGlue's renderer, and in Xenia: [game-compatibility#97](https://github.com/xenia-project/game-compatibility/issues/97)) | 60 FPS, no text |
 | Perfect Dark (TU 3) | reaches its levels, but draws them broken (ReXGlue's renderer now reaches the menus, to compare) | 60 FPS (menus) |
@@ -76,13 +76,14 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
 TU: the title update installed (always the newest). Every result is from ReXGlue v0.11 builds of
-2026-11-16; the Steam Deck ones from `python -m rexnative deck --steam --try 70` (the frame rate
-of the screen a game reaches by itself in 70 seconds, under GE-Proton). What each game needed is
-in [docs/NOTES.md](docs/NOTES.md).
+2026-11-16 and 17; the Steam Deck ones from `python -m rexnative deck <work>/<game>... --steam
+--try 70` (the frame rate of the screen a game reaches by itself in 70 seconds, under GE-Proton;
+see [Steam Deck](#steam-deck)). What each game needed is in [docs/NOTES.md](docs/NOTES.md).
 
 ## Quick start
 
-**Requirements:** Windows 10 or 11; Python 3.10+ (the tool has no dependencies); Visual Studio
+**Requirements:** Windows 10 or 11; Python 3.10+ (the tool has no dependencies; the debugging
+scripts `snaps.py` and `resolves.py` need Pillow and numpy); Visual Studio
 2022 or its Build Tools with the C++ workload; LLVM 20 (clang++ and lld: ReXGlue v0.11 needs
 clang 20 or later); CMake, Ninja and git; the Vulkan SDK (ReXGlue builds its Vulkan driver too);
 the NVIDIA DLSS SDK and DLSS 5 headers (from NVIDIA). To fit the renderer to a new game, the tool
@@ -120,14 +121,14 @@ checked against the listing), runs ReXGlue's codegen until it is clean, generate
 layer (`layer/report.md` says what was found, how and how sure), writes a ReXGlue project with
 ReXNative and the settings HUD, builds it, finds the functions codegen missed, and builds again.
 The game is then in `D:\rexnative-work\<game>\run\`: run its executable. Reports are in English;
-`--lang pt` writes them in Portuguese.
+`--lang pt` (or `REXNATIVE_LANG=pt`) writes them in Portuguese.
 
 Other commands: `info <xex>` (title, version, XDK libraries), `title-update <work>` (the title
 updates listed, nothing downloaded), `project <work>/<game> --build` (rebuild one game), `survey
---work <work>` (a table of the prepared games), `adapt` (only the layer, for a ReXGlue project of
-your own), `scene` (the scene surface from a resolve dump), `validate <port>` (regenerate a
-known port and compare), `extract`, `neutral`. `python -m rexnative <command> --help` gives each
-one's options.
+--work <work>` (a table of the prepared games), `deck <work>/<game>...` (built games onto a Steam
+Deck: [Steam Deck](#steam-deck)), `adapt` (only the layer, for a ReXGlue project of your own),
+`scene` (the scene surface from a resolve dump), `validate <port>` (regenerate a known port and
+compare), `extract`, `neutral`. `python -m rexnative <command> --help` gives each one's options.
 
 ## How it works
 
@@ -140,7 +141,7 @@ What changes from game to game is small:
 | Which Resolve function to hook and where its arguments are (LTCG builds inline the wrapper and drop arguments) | follows each argument's uses in both listings |
 | Resolve's default clear colour | its code pattern: one float (XDK 6132) or a 16-byte vector (XDK 20353) |
 | The pad the HUD reads | the game's XInputGetState (the XDK's three-instruction wrapper, found by its shape) |
-| The scene surface the upscaler works on | at run time, from one frame's resolves (`rexnative scene`) |
+| The scene surface the upscaler works on | learned at run time from the game's resolves; measured once (`rexnative scene`) for a scene with neither MSAA nor an HDR format |
 | Engine behaviour (a second D3D device, setting defaults) | your choice, in `overrides.json` |
 
 The tool writes all of it into a header, `game_layer.h`, and a list of hooks, `d3d_surface.inc`
@@ -189,32 +190,61 @@ and call it from the game's app (a `rex::app::TitleApp`): `rexnative::host::Conf
 `rexnative::hud::Shutdown()` and `rexnative::host::Detach()` in `OnShutdown`
 (`renderer/src/host.h`, `renderer/src/hud/hud.h`). `rexnative project` writes such an app.
 
-For the upscalers, measure the scene once: run with `--rexnative_resolve_dump=<dir>`, create
-`<dir>/dump.request` during a 3D scene, run `python -m rexnative scene <dir>/f<N>-resolves.jsonl`,
-put its result in `results/mygame/overrides.json` and run `adapt` again.
+The upscalers find the game's 3D scene by themselves: the renderer learns it from the game's
+resolves (the log says `ReXNative scene: learned at frame ...`;
+[docs/GAME_LAYER.md](docs/GAME_LAYER.md#the-scene-at-run-time)). A scene with neither MSAA nor an
+HDR format is not found that way: measure it once by running with
+`--rexnative_resolve_dump=<dir>`, creating `<dir>/dump.request` during a 3D scene and running
+`python -m rexnative scene <dir>/f<N>-resolves.jsonl`; put its result in
+`results/mygame/overrides.json` and run `adapt` again.
 
 ## Keys and settings
 
 | Key | Pad | |
 |---|---|---|
 | F1 | Back + Start | the settings HUD |
-| F9 | | switch between ReXNative and ReXGlue's Xenos GPU emulation |
+| F9 | | switch between ReXNative and ReXGlue's Xenos GPU emulation (not under Proton) |
 | F7 | | the upscaler on or off |
 | F8 | | show the upscaler's inputs |
 
 The keys are settings too (`bind_rexnative_hud`, `bind_renderer_switch`, `bind_upscaler`,
 `bind_upscaler_debug`). Every renderer option is a `rexnative.*` setting, in the `[rexnative]`
 section of the game's configuration file (`run/<game>.toml`) or on the command line;
-`--rexnative=false` starts the game on ReXGlue's renderer. The older names
-(`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still work as aliases.
+`--rexnative=false` starts the game on ReXGlue's renderer. `rexnative.menu_fps` limits the frame
+rate (60 by default, so menus made for a console's 60 Hz keep their speed on a faster display;
+30 for a game the console ran at 30; 0 for no limit). The older names (`--rexnative_upscaler`,
+PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still work as aliases.
 
 A game whose build inlined draws past the hooked D3D functions (Orcs Must Die!'s title, menus,
 loading screens and HUD) shows them black. With `rexnative.inline_draws = true` ReXNative walks the
 push buffer the game wrote between two hooked calls, as it walks a recorded command buffer, and
 draws what it finds there. `rexnative.auto_handover = 30` is the other way out: after 30 frames in
-which ReXNative sees no draw call, ReXGlue's renderer draws until the game's draw calls come back,
-as F9 would. It stays off under Wine: under vkd3d-proton the window cannot go from one renderer's
-swap chain to the other's (the Xenos driver's Present then waits for good).
+which ReXNative sees at most one draw call, ReXGlue's renderer draws until the game's draw calls
+come back, as F9 would. It stays off under Wine, as F9 does: under vkd3d-proton the window cannot
+go from one renderer's swap chain to the other's (the Xenos driver's Present then waits for good).
+
+## Steam Deck
+
+A game built on the PC runs on the Steam Deck under Proton (D3D12 through vkd3d-proton):
+
+```powershell
+python -m rexnative deck D:\rexnative-work\<game> --host deck@192.168.1.10 --key ~\.ssh\deck_key --steam --try 70
+```
+
+copies it over SSH to `~/Games/ReXNative/<game>/` on the Deck (its executable and DLLs without
+NVIDIA's, its files, its title update; only what changed is sent again), with
+[deck/](deck/)`play.sh` (starts it with Proton: GE-Proton, else Valve's, with a prefix of the
+game's own), `install.sh` and `steam_shortcuts.py`. `--steam` adds each game to Steam's library
+as a non-Steam game (Steam is closed meanwhile and started again); `--try SECONDS` starts each one
+from Steam, reads its log and takes a capture after that long, into `<work>/<game>/deck/`, and
+writes `deck-report.md`. The Deck needs SSH with a key (`REXNATIVE_DECK` and
+`REXNATIVE_DECK_KEY` can stand for `--host` and `--key`).
+
+The game's settings on the Deck are its PC ones with the Deck's screen (1280x800, full screen);
+`<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as `[rexnative]
+enabled = false` for a game ReXGlue's renderer draws better (one renderer for the whole run: F9
+and `auto_handover` stay off under Proton). On the Deck, `deck.env` beside `play.sh` gives
+Proton variables (`PROTON_LOG=1`), and `REXNATIVE_PROTON` picks another Proton.
 
 ## Debugging a game
 
@@ -246,6 +276,7 @@ renderer/src/host.{h,cpp}             the renderer's side of the ReXGlue app: wi
 renderer/src/glue_defaults.cpp        game-side functions, for a game with nothing special
 renderer/rexnative.cmake              rexnative_add()
 rexnative/                            the tool (python -m rexnative)
+deck/                                 a game's scripts on the Steam Deck (python -m rexnative deck)
 sdk/                                  the ReXGlue SDK the renderer needs: lock and patches
 scripts/build-sdk.ps1                 fetch, patch, build and install that SDK
 scripts/live.ps1, snaps.py            a running game for experiments, snapshots as images
@@ -256,19 +287,21 @@ docs/NOTES.md                         what each game needed, and how it was foun
 
 ## Roadmap
 
-- Find the scene surface at run time, so the upscalers work without measuring it.
 - Find the HDR pass before the game's tone mapping, for DLSS 5.
 - The open problems above: Perfect Dark's broken levels, Spelunky's missing text, Halo's dark
-  and striped surfaces.
+  and striped surfaces, the WMV videos of Dark Souls II and Jet Set Radio.
+- The upscalers' history started over at a camera cut in a game without a camera matrix (Jet
+  Set Radio transforms its vertices on the CPU).
 - Memexport: a game whose picture needs it, and no GPU wait when nothing on the CPU reads its
   results.
-- The Steam Deck on ReXGlue v0.11, and the games above on it.
+- Inline draws found by the tool, so a game such as Orcs Must Die! needs no setting.
 - Build a game end to end from `scripts\build-sdk.ps1` on a clean machine.
 - Every new game becomes a reference and makes the next one easier.
 
-Done: the renderer built from this repository for From Dust and Iron Brigade (2026-11-14);
-recorded command buffers, memexport, pipelines compiled ahead, and thirteen more games end to end
-(2026-11-15 and 16); the move to ReXGlue v0.11.0 (2026-11-16).
+Done: the renderer built from this repository for From Dust and Iron Brigade, and the scene
+surface learned at run time (2026-11-14); recorded command buffers, memexport, pipelines compiled
+ahead, and thirteen more games end to end (2026-11-15 and 16); the move to ReXGlue v0.11.0 and
+the Steam Deck on it (2026-11-16); Midnight Club's cars and Dark Souls II (2026-11-17).
 
 ## License and credits
 

@@ -144,7 +144,9 @@ APP_CPP = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by 
 #include "host.h"     // ReXNative's connection to the app
 #include "hud/hud.h"  // ReXNative's settings HUD
 
+#ifndef WIN32_LEAN_AND_MEAN  // the SDK's headers may define it
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 
 REXCVAR_DEFINE_STRING(rexnative_dump_image, "", "ReXNative",

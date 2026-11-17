@@ -25,7 +25,8 @@
 #   test off, 16 log the next frame's draws, 32 upload every draw, 64 depth bias off, 128 only the
 #   listed shaders, 256 snapshot the targets after the first draw of each listed shader (or after
 #   draw skip_from), 512 stencil off (depth kept), 1024 depth test always passes (writes and
-#   stencil kept), 2048 the same for draws that test depth without writing it, 16384 the
+#   stencil kept), 2048 the same for draws that test depth without writing it, 4096 skip the
+#   draws replayed from recorded command buffers, 8192 skip all the others, 16384 the
 #   upscaler's scene without its jitter, 32768 without its motion vector pipelines (with a
 #   range: only the draws in it, none skipped, to bisect). Draws in
 #   [skip_from, skip_to) are skipped. 16 and 256 act when they are set,

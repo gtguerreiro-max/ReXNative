@@ -1,7 +1,8 @@
 @echo off
-rem Runs a command inside the Visual Studio 2022 x64 developer environment (clang-cl, lld-link,
-rem Windows SDK), found with vswhere: any edition or the Build Tools, with the C++ workload and
-rem its "C++ Clang tools for Windows" component. From pgr4-native's scripts/windows/vcenv.cmd.
+rem Runs a command inside the Visual Studio 2022 x64 developer environment (the Windows SDK and
+rem the MSVC libraries; clang++ and lld come from LLVM 20, REXNATIVE_LLVM), found with vswhere:
+rem any edition or the Build Tools, with the C++ workload. From pgr4-native's
+rem scripts/windows/vcenv.cmd.
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (echo vcenv: vswhere.exe not found: install Visual Studio 2022 or its Build Tools & exit /b 1)
 set "VSDIR="

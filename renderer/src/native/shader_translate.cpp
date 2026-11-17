@@ -186,8 +186,8 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
 
   if (!ps) return out;
 
-  // Pixel shader, host render targets, no float24 conversion in the shader (the plugin's
-  // default: depth_float24_convert_in_pixel_shader off).
+  // Pixel shader, host render targets; float24 depth converted in the shader only with
+  // rexnative.depth_float24 (below).
   Modification pm(translator.GetDefaultPixelShaderModification(
       ps->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
   pm.pixel.interpolator_mask = interpolator_mask;

@@ -6,11 +6,14 @@
 # play.sh runnable and adds the game to Steam's library as a non-Steam game that runs play.sh
 # with no compatibility tool, with the artwork in art/ if there is one (portrait.png, grid.png,
 # hero.png, logo.png, icon.png). Steam must not be running: it rewrites its shortcuts file when
-# it exits (in Game Mode, `steam -shutdown` over SSH; Game Mode starts it again).
+# it exits. In Game Mode Steam is started again at once after `steam -shutdown`
+# (steam-launcher.service), so `python -m rexnative deck --steam` masks that unit while it runs
+# this; by hand, run it from Desktop Mode with Steam closed.
 set -euo pipefail
 dest=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 title=${1:?usage: install.sh "Game name"}
-exe=$(ls -1 "$dest"/*.exe 2>/dev/null | head -1)
+# The newest executable, as play.sh takes it (|| true: no match is reported below, not by set -e).
+exe=$(ls -1t "$dest"/*.exe 2>/dev/null | head -1 || true)
 [[ -n $exe ]] || { echo "no game executable in $dest" >&2; exit 1; }
 name=$(basename "$exe" .exe)
 [[ -e $dest/game/default.xex || -e $dest/game/Default.xex ]] ||

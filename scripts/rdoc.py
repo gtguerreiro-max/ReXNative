@@ -12,6 +12,10 @@
 #   {"capture": ..., "out": ..., "cmd": "save", "event": 1234, "texture": 0}
 #       the texture (0: the event's first colour output, else a resource id) as PNG, as it is
 #       after that event
+#   "inputs", "mesh", "disasm", "cbuffers", "state" (with "event"): the draw's textures as PNG,
+#       its vertex shader's output positions, its shaders disassembled, its constant buffers,
+#       its depth, stencil, depth bias and viewport; "buffer" ("offset", "size" in hex): bytes
+#       of a buffer
 # Writes <out>/<cmd>*.txt / .png and <out>/rdoc.log ("ok" or the traceback).
 import json
 import os

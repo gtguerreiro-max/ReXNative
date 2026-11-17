@@ -39,11 +39,13 @@ does; in short:
 | 0027 | A receive on a datagram socket that was never bound fails with `WSAEINVAL`, as on Windows and the console: under Proton it waited forever (Castlevania: Symphony of the Night and 3D Ultra Minigolf stopped at their first frames on the Steam Deck) |
 | 0028, 0029 | Pixel shaders (pgr4-native): computed-LOD fetches sampled with `sample_b` instead of derivatives and `sample_d`; `Modification::pixel.textures_unsigned`, set by the renderer when every texture the shader reads is unsigned (`SpecializePixelTextures`): the signed sampling and the sign, gamma and exponent conversions go |
 | 0030 | XAM gets a title workspace that follows the current heap: the one it kept a reference to was replaced when the executable asks for another workspace size, and Brothers - A Tale of Two Sons crashed in `XamAlloc` |
+| 0031 | A fetch constant written again with its own value still drops its vertex buffer's residency (0021's early return had kept it: a buffer the title refilled in place was drawn with the previous draw's vertices on ReXGlue's renderer) |
+| 0032 | An overlapped receive (`WSARecvFrom` with an `OVERLAPPED`) on a datagram socket never bound fails too, as 0027's blocking ones do |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
 prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).
-Not needed on v0.11: pgr4-native's other Deck pacing and lock patches (0009, 0011-0013,
-0015-0017, 0020) and the key bind repeat (0019), which v0.11 handles itself. Fixed upstream
+Not needed on v0.11, which has equivalents of its own: pgr4-native's other Deck pacing and lock
+patches (0009, 0011-0013, 0015-0017, 0020) and the key bind repeat (0019). Fixed upstream
 since: the `XThread::Resume` and timer queue patches, the physical write fault race, the
 achievement toast's repaint, the shared memory cleanup on Linux.
 
@@ -57,6 +59,9 @@ presenter (BSD-3-Clause), built from AMD's FidelityFX FSR 1 (MIT). No game data 
 
 ## Updating
 
-To move to another ReXGlue commit: change `rexglue.lock`, run `scripts\build-sdk.ps1 -NoBuild`
-into a fresh `-Dest`, and fix the patches that no longer apply; then regenerate them from the
-patched tree (`git format-patch <lock>..HEAD`).
+To move to another ReXGlue commit: change `rexglue.lock`, check that commit out in a clone of
+your own and apply the patches there as commits (`git am --3way sdk/patches/v0.11/*.patch`),
+fixing each one that no longer applies (`git am --continue`); then write them again from that
+tree (`git format-patch <lock>..HEAD`) and build it with `scripts\build-sdk.ps1 -SdkSrc <clone>`.
+`build-sdk.ps1` itself applies them with `git apply` (no commits) and stops at the first that
+fails: a stopped run's tree is half patched, so delete it before running again.

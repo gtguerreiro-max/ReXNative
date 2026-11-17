@@ -1,0 +1,38 @@
+From aeb8fb5650613312ee2f6accf6ce69eea957ae05 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 08:10:12 +0000
+Subject: [PATCH 32/32] xam: fail an overlapped receive on an unbound datagram
+ socket too
+
+WSARecvFrom with an OVERLAPPED went through TryRecvFrom and StartReceive,
+which did not check UnboundDatagram as Recv and RecvFrom do: on a UDP socket
+that was never bound, Wine reported would-block and the pending receive never
+completed. It now fails with WSAEINVAL, as on Windows and the console.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/xam/socket_object.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/xam/socket_object.cpp b/src/xam/socket_object.cpp
+index 4bc7ad78..91dc3dd1 100644
+--- a/src/xam/socket_object.cpp
++++ b/src/xam/socket_object.cpp
+@@ -656,6 +656,14 @@ int SocketObject::RecvFrom(u8* buf, u32 buf_len, u32 flags, N_XSOCKADDR_IN* from
+ 
+ ReceiveResult SocketObject::TryRecvFrom(u8* buf, u32 buf_len, u32 flags) const {
+   ReceiveResult result;
++  // An overlapped receive on an unbound datagram socket fails as a blocking one does
++  // (UnboundDatagram): pending, it would never complete under Wine.
++  if (UnboundDatagram(*this)) {
++    result.received = -1;
++    result.would_block = false;
++    result.error = rex::platform::GetSocketError();
++    return result;
++  }
+   sockaddr_in nfrom{};
+   i32 nfromlen = sizeof(nfrom);
+   result.received =
+-- 
+2.55.0.windows.5
+

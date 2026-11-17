@@ -19,7 +19,9 @@
 #include <rex/ui/ui_system.h>
 #include <rex/xam/ui.h>
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 
 REXCVAR_DEFINE_STRING(bind_rexnative_hud, "F1", "ReXNative",

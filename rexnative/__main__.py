@@ -139,7 +139,8 @@ def cmd_prepare(a):
                 p = os.path.join(s, n)
                 if os.path.normcase(os.path.abspath(p)) == work:
                     continue
-                if n.lower().endswith(prepare.ARCHIVES + prepare.IMAGES) or os.path.isdir(p) or                         prepare.stfs.is_package(p):
+                if (n.lower().endswith(prepare.ARCHIVES + prepare.IMAGES) or os.path.isdir(p) or
+                        prepare.stfs.is_package(p)):
                     sources.append(p)
         else:
             sources.append(s)
@@ -216,8 +217,13 @@ def cmd_deck(a):
     from . import deck
     d = deck.Deck(a.host, a.key)
     games = [deck.install(d, w) for w in a.work]
-    if a.steam and not deck.add_to_steam(d, games):
-        return
+    if a.steam:
+        added = deck.add_to_steam(d, games)
+        if added is None:
+            sys.exit('the Deck stayed in use: no shortcut added, no game tried')
+        if not added:
+            # The games whose shortcut was added are still tried (try_game looks each one up).
+            print('some shortcuts were not added')
     if a.try_seconds:
         rows = []
         for g in games:

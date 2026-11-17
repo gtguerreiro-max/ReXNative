@@ -1,0 +1,73 @@
+From 5bfaf1ad4d56797aa116916a691cca20a75ff74a Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 08:10:12 +0000
+Subject: [PATCH 31/32] gpu: a fetch constant written again drops its vertex
+ buffer's residency
+
+The early return for a shader constant rewritten with its current value (the
+Steam Deck patch that takes constant writes off the special register path) also
+skipped InvalidateVertexBufferResidency for fetch constants. Vertex buffers have
+no memory watch of their own: a title that refills a buffer in place and sends
+the same fetch constant for its next draw had that draw requested again by the
+write, and now read the previous draw's vertices until the next swap. The
+constant buffers and texture bindings still stay; only the residency bits go,
+for one register or a range.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/d3d12/command_processor.cpp | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index 3c75be01..bc2b55fe 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -1666,7 +1666,10 @@ void D3D12CommandProcessor::ShutdownContext() {
+ 
+ void D3D12CommandProcessor::WriteRegister(u32 index, u32 value) {
+   // Rewriting a shader constant with its current value changes no binding: keep the constant
+-  // buffers, texture bindings and vertex buffer residency that depend on it.
++  // buffers and texture bindings that depend on it. A fetch constant written again still drops
++  // its vertex buffer's residency: the title may have refilled the buffer in place (vertex
++  // buffers have no memory watch of their own), and the write is what made the next draw request
++  // the range again before the early return.
+   if (((index >= std::to_underlying(xenos::Register::SHADER_CONSTANT_000_X) &&
+        index <= std::to_underlying(xenos::Register::SHADER_CONSTANT_511_W)) ||
+       (index >= std::to_underlying(xenos::Register::SHADER_CONSTANT_BOOL_000_031) &&
+@@ -1674,6 +1677,11 @@ void D3D12CommandProcessor::WriteRegister(u32 index, u32 value) {
+       (index >= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0) &&
+        index <= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_31_5))) &&
+       register_file_->values[index] == value) {
++    if (index >= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0) &&
++        index <= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_31_5)) {
++      InvalidateVertexBufferResidency(
++          (index - std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0)) / 2);
++    }
+     return;
+   }
+   CommandProcessor::WriteRegister(index, value);
+@@ -1797,15 +1805,17 @@ void D3D12CommandProcessor::WriteRegistersFromMem(u32 start_index, u32* base, u3
+ 
+   if (start_index >= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0) &&
+       end_index <= std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_31_5)) {
++    u32 first_fetch_dword =
++        start_index - std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0);
++    u32 last_fetch_dword =
++        end_index - std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0);
+     if (range_unchanged()) {
++      // The vertex buffers' residency goes all the same (WriteRegister).
++      InvalidateVertexBufferResidencyRange(first_fetch_dword / 2, last_fetch_dword / 2);
+       return;
+     }
+     memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
+     cbuffer_binding_fetch_.up_to_date = false;
+-    u32 first_fetch_dword =
+-        start_index - std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0);
+-    u32 last_fetch_dword =
+-        end_index - std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0);
+     if (texture_cache_) {
+       texture_cache_->TextureFetchConstantsWritten(first_fetch_dword / 6, last_fetch_dword / 6);
+     }
+-- 
+2.55.0.windows.5
+

@@ -47,6 +47,7 @@ struct RunContext {
   NativeRenderer* renderer = nullptr;  // NativeRenderer::Live(); null: count at most
   uint32_t main_device = 0;            // the presenting device (0: not known yet)
   bool follow_swap_device_only = false, in_native_call = false;
+  bool gap = false;  // ReplayGap's: the main stream, whose writes stay by design
   std::string* trace = nullptr;  // the tap's frame trace while it traces this device
   void (*tap_write)(uint32_t reg, uint32_t value) = nullptr;  // tap register mirror (tap on)
   uint64_t frame = 0;                                          // for dump names

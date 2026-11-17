@@ -31,8 +31,9 @@ REXCVAR_DEFINE_INT32(rexnative_hdr_peak_nits, 0, "ReXNative",
                      "HDR output: the peak luminance in nits the image is fitted to; 0: the "
                      "display's, or 1000 when it reports none");
 REXCVAR_DEFINE_BOOL(rexnative_d3d12_debug, false, "ReXNative",
-                    "Debug: the D3D12 debug layer on the native renderer's device (slow); its "
-                    "errors and warnings go to the log (the first 64)");
+                    "Debug: the D3D12 debug layer's errors and warnings on the native renderer's "
+                    "device go to the log (the first 64); with --gpu.d3d12.debug=true, which "
+                    "turns the layer on before ReXGlue's device (slow)");
 REXCVAR_DEFINE_BOOL(rexnative_dred, false, "ReXNative",
                     "Debug: D3D12 DRED (auto-breadcrumbs and page-fault data) on the native "
                     "renderer's device; when the GPU removes it (a hang, TDR, or a fault) the last "
@@ -262,15 +263,14 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
       REXLOG_WARN("ReXNative: --rexnative_dred: no DRED settings interface");
     }
   }
-  const bool debug_layer = REXCVAR_GET(rexnative_d3d12_debug);
-  if (debug_layer) {
-    ComPtr<ID3D12Debug> debug;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
-      debug->EnableDebugLayer();
-      REXLOG_INFO("ReXNative: D3D12 debug layer on");
-    } else {
-      REXLOG_WARN("ReXNative: --rexnative_d3d12_debug: no debug layer (Graphics Tools?)");
-    }
+  // The debug layer must be on before the process's first D3D12 device: enabled now, after
+  // ReXGlue's Xenos driver made its own, it would remove that device. ReXGlue's gpu.d3d12.debug
+  // turns it on in time; here its messages for this device are logged.
+  bool debug_layer = REXCVAR_GET(rexnative_d3d12_debug);
+  if (debug_layer && rex::cvar::GetFlagByName("gpu.d3d12.debug") != "true") {
+    REXLOG_WARN("ReXNative: --rexnative_d3d12_debug needs --gpu.d3d12.debug=true too (the layer "
+                "must be on before ReXGlue's device): no debug layer");
+    debug_layer = false;
   }
   if (Failed(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
                                IID_PPV_ARGS(device_.ReleaseAndGetAddressOf())),

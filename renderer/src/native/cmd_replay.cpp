@@ -306,7 +306,9 @@ Reason CollectChunks(const uint8_t* base, const CommandBufferHeader& h, std::vec
   uint32_t nodes = 0;
   for (uint32_t node = h.chunks; node; node = Load32(base, node)) {
     *where = node;
-    if (node < 0xA0000000u || (node & 3) || ++nodes > kMaxNodes)
+    // A node's 136 bytes inside the views (the 0xE0000000 one maps 4 KiB on: its last page
+    // reaches past physical memory).
+    if (node < 0xA0000000u || node > 0xFFFFE000u || (node & 3) || ++nodes > kMaxNodes)
       return Reason::kBadChunkList;
     const uint32_t count = Load32(base, node + 4);
     if (count < 1 || count > kMaxNodeEntries) return Reason::kBadChunkList;
@@ -401,7 +403,7 @@ struct Walker {
         return;
       case GuestStateTracker::ReplayWrite::kKept:
         ++f[kKeptWrites];
-        if (reg < 0x4000) {
+        if (reg < 0x4000 && !c.gap) {
           // Iron Brigade keeps only float constants; a kept register block would change
           // render state for the game's own draws after the buffer.
           ++f[kKeptBlockWrites];
@@ -419,21 +421,35 @@ struct Walker {
   // that tile's bins, moving the window (PA_SC_WINDOW_OFFSET) and its scissor onto the tile.
   // The GPU runs the buffer once per tile with one bin selected; the replay draws once over
   // the whole surface, so those writes become offset 0 and the scissor of all the tiles
-  // together. Midnight Club: Los Angeles's cars: tile 2's offset of -512 rows, the last write,
-  // drew them 512 rows up.
+  // together (the window scissor is in the surface's coordinates, before the offset). Midnight
+  // Club: Los Angeles's cars: tile 2's offset of -512 rows, the last write, drew them 512 rows
+  // up. The tiles of one draw are together: a draw, or a scissor written for every tile, starts
+  // the next group (a later draw's own scissor, a light's quad, is not widened to the earlier).
   bool tile_write = false;  // the current packet is predicated on some of the selected bins
-  uint32_t tile_br = 0;     // the tiles' scissor bottom-right so far (x | y << 16)
+  uint32_t tile_tl = 0, tile_br = 0;  // the group's scissor so far (x | y << 16)
+  bool tile_tl_set = false, tile_br_set = false;
+  void EndTileGroup() { tile_tl_set = tile_br_set = false; }
+  static uint32_t Corner(uint32_t v, uint32_t so_far, bool set, bool smallest) {
+    uint32_t x = v & 0x7FFF, y = (v >> 16) & 0x7FFF;
+    if (set) {
+      const uint32_t sx = so_far & 0x7FFF, sy = so_far >> 16;
+      x = smallest ? std::min(x, sx) : std::max(x, sx);
+      y = smallest ? std::min(y, sy) : std::max(y, sy);
+    }
+    return x | y << 16;
+  }
   uint32_t TileValue(uint32_t reg, uint32_t v) {
     switch (reg) {
       case 0x2080:  // PA_SC_WINDOW_OFFSET
         return 0;
-      case 0x2081:  // PA_SC_WINDOW_SCISSOR_TL: window_offset_disable kept, the corner at 0, 0
-        return v & 0x80000000u;
-      case 0x2082: {  // PA_SC_WINDOW_SCISSOR_BR: the largest corner so far
-        const uint32_t x = std::max(v & 0x7FFF, tile_br & 0x7FFF);
-        const uint32_t y = std::max((v >> 16) & 0x7FFF, (tile_br >> 16) & 0x7FFF);
-        return tile_br = x | y << 16;
-      }
+      case 0x2081:  // PA_SC_WINDOW_SCISSOR_TL: the smallest corner; window_offset_disable kept
+        tile_tl = Corner(v, tile_tl, tile_tl_set, true);
+        tile_tl_set = true;
+        return (v & 0x80000000u) | tile_tl;
+      case 0x2082:  // PA_SC_WINDOW_SCISSOR_BR: the largest corner
+        tile_br = Corner(v, tile_br, tile_br_set, false);
+        tile_br_set = true;
+        return tile_br;
       default:
         return v;
     }
@@ -441,7 +457,12 @@ struct Walker {
 
   template <bool kApply>
   void Write(uint32_t reg, uint32_t v) {
-    if (tile_write && reg >= 0x2080 && reg <= 0x2082) v = TileValue(reg, v);
+    if (reg >= 0x2080 && reg <= 0x2082) {
+      if (tile_write)
+        v = TileValue(reg, v);
+      else if (reg != 0x2080)
+        EndTileGroup();
+    }
     if constexpr (kApply) {
       if (reg == kFetch95) up = {};  // Execute sets it again after a Begin call's own run
       Apply(reg, v);
@@ -480,6 +501,7 @@ struct Walker {
   template <bool kApply>
   bool Walk(const std::vector<Ib>& ibs) {
     bool ok = true;
+    EndTileGroup();  // each pass from the buffer's start
     for (const Ib& ib : ibs) {
       if (!ib.dwords) continue;
       if (Execute<kApply>(ib.phys, ib.dwords, 0)) continue;
@@ -547,6 +569,7 @@ bool Walker::Execute(uint32_t phys, uint32_t n, uint32_t depth) {
     const uint32_t op = (hdr >> 8) & 0x7F;
     const bool pred = (hdr & 1) != 0;
     tile_write = pred && (select & mask) != select;
+    if (op == 0x22 || op == 0x36) EndTileGroup();  // the tile setups after it are the next draw's
     ++ops[op];
     if (pred) {
       // The CP's rule, for every opcode: a predicated packet runs only if select & mask != 0;
@@ -969,9 +992,11 @@ struct GapCounters {
 };
 GapCounters g_gaps;
 
-void ReplayGap(const uint8_t* base, const RunContext& c, uint32_t first, uint32_t end) {
+void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint32_t end) {
   State& s = g_state;
   Init(s);
+  RunContext c = run;
+  c.gap = true;
   if (end <= first || ((end - first) & 3) || !c.renderer || c.in_native_call) return;
   const uint32_t dwords = (end - first) / 4;
   if (dwords > kMaxIbDwords) return;
@@ -981,8 +1006,11 @@ void ReplayGap(const uint8_t* base, const RunContext& c, uint32_t first, uint32_
   ++g_gaps.gaps;
   g_gaps.dwords += dwords;
   GuestStateTracker& gs = GuestState();
-  // The bin state the GPU has there: the segment start's SET_BIN_MASK from the device and
-  // SET_BIN_SELECT 0x00000000FFFFFFFF, as a buffer starts from.
+  // The bin state the GPU has there: the device's SET_BIN_MASK and SET_BIN_SELECT
+  // 0x00000000FFFFFFFF, as a buffer starts from. Inside a tiling bracket the select is the
+  // tile's, which the stream does not say: a gap there may skip its predicated packets. The mask
+  // is at the layer's kCmdBufBinMaskOffset (an XDK other than 20353's needs a layer from adapt
+  // since 2bf3c49).
   constexpr uint32_t kBinMask = rexnative::game::kCmdBufBinMaskOffset;
   const uint64_t mask = (uint64_t(Load32(base, c.device + kBinMask + 4)) << 32) |
                         Load32(base, c.device + kBinMask);

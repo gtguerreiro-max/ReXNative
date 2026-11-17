@@ -12,7 +12,8 @@ install.sh makes its settings unless the Deck has some already. Only files whose
 differ are sent again, so a rebuilt game sends its executable alone.
 
 --steam adds every game given to Steam's library (Steam is closed for it, `steam -shutdown`:
-it writes its shortcuts file back when it exits; Game Mode starts it again). --try SECONDS
+it writes its shortcuts file back when it exits; in Game Mode its unit is masked meanwhile, and
+Steam started again after). --try SECONDS
 starts each game from Steam in turn, as a player would (the game then has Game Mode's focus),
 and after SECONDS reads its log (the frame times, errors, a crash) and takes a capture of the
 screen through the renderer (--rexnative_capture_dir), copied back beside the game's work folder
@@ -21,21 +22,18 @@ in deck/, then closes it.
 The Deck's address and SSH key: --host / --key, or REXNATIVE_DECK ("deck@192.168.1.10:22")
 and REXNATIVE_DECK_KEY. Nothing of the game leaves the computer but for the Deck.
 """
-import io
 import json
 import os
 import re
 import shlex
 import subprocess
-import sys
 import tarfile
 import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KIT = os.path.join(HERE, 'deck')
 REMOTE_ROOT = 'Games/ReXNative'  # under the deck user's home
-SKIP_RUN = {'crash.txt', 'image.bin', 'discover.log'}
-SKIP_DIRS = {'logs', 'live', 'userdata', 'game', 'title-update'}
+q = shlex.quote
 
 # The Deck's settings, as Iron Brigade's deck/ironbrigade-deck.toml has them (ReXGlue v0.11
 # sections): its 1280x800 panel, full screen, and the native renderer's anisotropic filtering.
@@ -118,22 +116,26 @@ class Deck:
             cmd += ['-i', os.path.expanduser(self.key)]
         return cmd + [self.host, command]
 
+    def call(self, command, timeout=600):
+        """The command's CompletedProcess (returncode, stdout, stderr as text)."""
+        return subprocess.run(self.ssh_cmd(command), capture_output=True, text=True,
+                              errors='replace', timeout=timeout)
+
     def run(self, command, check=True, timeout=600):
-        r = subprocess.run(self.ssh_cmd(command), capture_output=True, text=True,
-                           errors='replace', timeout=timeout)
+        r = self.call(command, timeout)
         if check and r.returncode != 0:
             raise SystemExit('the Deck: `%s` failed (%d): %s' % (command, r.returncode,
                                                                    (r.stderr or r.stdout)[-600:]))
         return r.stdout
 
-    def read(self, path):
-        r = subprocess.run(self.ssh_cmd('cat %s' % shlex.quote(path)), capture_output=True)
+    def read(self, path, timeout=120):
+        r = subprocess.run(self.ssh_cmd('cat %s' % q(path)), capture_output=True, timeout=timeout)
         return r.stdout if r.returncode == 0 else None
 
     def files(self, dest):
         """{relative path: (size, mtime)} under dest on the Deck."""
         out = self.run('mkdir -p %s && cd %s && find . -type f -printf "%%P\\t%%s\\t%%T@\\n"' % (
-            dest, dest))
+            q(dest), q(dest)))
         have = {}
         for line in out.splitlines():
             parts = line.split('\t')
@@ -143,8 +145,19 @@ class Deck:
 
     def send(self, dest, items, log=print):
         """items: [(local path, relative path on the Deck)]; those the Deck has (same size and
-        time) are left out. Sent as one tar stream; returns the bytes sent."""
+        time) are left out, and what an older install left there that would be taken for the
+        game's goes (another executable, which play.sh could start, or its deck settings; an
+        older title update's files, mounted as update:). Sent as one tar stream; returns the
+        bytes sent."""
         have = self.files(dest)
+        wanted = {rel for _, rel in items}
+        stale = sorted(rel for rel in have if rel not in wanted and (
+            ('/' not in rel and rel.lower().endswith(('.exe', '-deck.toml'))) or
+            rel.startswith('title-update/')))
+        if stale:
+            log('  %d files of an older install removed' % len(stale))
+            for i in range(0, len(stale), 200):
+                self.run('cd %s && rm -f -- %s' % (q(dest), ' '.join(q(r) for r in stale[i:i + 200])))
         todo = []
         for src, rel in items:
             st = os.stat(src)
@@ -154,7 +167,7 @@ class Deck:
             return 0
         total = sum(t[2] for t in todo)
         log('  %d files, %.0f MB' % (len(todo), total / 1e6))
-        p = subprocess.Popen(self.ssh_cmd('tar -xf - -C %s' % dest), stdin=subprocess.PIPE,
+        p = subprocess.Popen(self.ssh_cmd('tar -xf - -C %s' % q(dest)), stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         with tarfile.open(fileobj=p.stdin, mode='w|', format=tarfile.GNU_FORMAT) as tar:
             for src, rel, _ in todo:
@@ -208,7 +221,7 @@ def package(work):
     items = []
     for f in sorted(os.listdir(run)):
         p = os.path.join(run, f)
-        if (os.path.isfile(p) and f not in SKIP_RUN and not f.lower().startswith('nvngx_') and
+        if (os.path.isfile(p) and not f.lower().startswith('nvngx_') and
                 (f.lower().endswith('.dll') or f == name + '.exe')):
             items.append((p, f))
     data = os.path.join(work, 'game-data')
@@ -250,7 +263,7 @@ def install(deck, work, log=print):
     dest = '%s/%s' % (REMOTE_ROOT, slug)
     log('%s -> ~/%s' % (title, dest))
     deck.send(dest, items, log=log)
-    out = deck.run('cd %s && bash install.sh %s' % (dest, shlex.quote(title)))
+    out = deck.run('cd %s && bash install.sh %s' % (q(dest), q(title)))
     for line in out.strip().splitlines()[-2:]:
         log('  ' + line)
     return {'work': work, 'slug': slug, 'title': title, 'name': name, 'dest': dest}
@@ -276,22 +289,24 @@ def wait_idle(deck, log=print, minutes=120):
 
 
 def add_to_steam(deck, games, log=print):
-    """Every game's shortcut, with Steam closed for it (Game Mode starts it again)."""
+    """Every game's shortcut, with Steam closed for it (Game Mode starts it again): True when
+    all were added, False when some were not, None when the Deck stayed in use."""
     if not wait_idle(deck, log):
         log('the Deck stayed in use: the shortcuts are not added')
-        return False
+        return None
     # In Game Mode gamescope-session.target upholds steam-launcher.service: Steam closed with
     # `steam -shutdown` is started again at once, before the shortcuts could be written (and
     # steam_shortcuts.py refuses while it runs). The unit is masked for this script alone
     # (--runtime: gone at a reboot too), and the trap unmasks it and starts Steam again whatever
     # happens. Steam is left 60 s after it started first: SteamOS's short session tracker
     # re-bootstraps a Steam that ends three times within a minute of its start.
-    adds = '\n'.join('cd ~/%s && bash install.sh %s' % (g['dest'], shlex.quote(g['title']))
+    adds = '\n'.join('(cd ~/%s && bash install.sh %s) || failed=1' % (q(g['dest']), q(g['title']))
                      for g in games)
     script = '''
 export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
 masked=
 desktop=
+failed=
 restore() {
   if [ -n "$masked" ]; then
     systemctl --user unmask --runtime steam-launcher.service >/dev/null 2>&1
@@ -306,8 +321,8 @@ trap restore EXIT
 if pgrep -x steam >/dev/null; then
   systemctl --user is-active --quiet gamescope-session.target 2>/dev/null || desktop=1
   pid=$(pgrep -o -x steam)
-  age=$(( $(date +%%s) - $(stat -c %%Y /proc/$pid) ))
-  [ "$age" -lt 70 ] && sleep $(( 70 - age ))
+  age=$(ps -o etimes= -p "$pid" | tr -d ' ')
+  [ "${age:-0}" -lt 70 ] && sleep $(( 70 - ${age:-0} ))
   if systemctl --user is-active --quiet gamescope-session.target 2>/dev/null; then
     systemctl --user mask --runtime steam-launcher.service >/dev/null && masked=1
   fi
@@ -317,23 +332,26 @@ if pgrep -x steam >/dev/null; then
   if pgrep -x steam >/dev/null; then echo "Steam did not close"; exit 1; fi
 fi
 %s
+[ -z "$failed" ]
 ''' % adds
-    out = deck.run('bash -s <<"REXNATIVE_EOF"\n%s\nREXNATIVE_EOF' % script, check=False,
-                   timeout=300)
-    for line in out.strip().splitlines():
+    r = deck.call('bash -s <<"REXNATIVE_EOF"\n%s\nREXNATIVE_EOF' % script, timeout=300)
+    for line in (r.stdout.strip() + '\n' + r.stderr.strip()).strip().splitlines():
         log('  ' + line)
+    ok = r.returncode == 0
+    if not ok:
+        log('the shortcuts were not all added (exit %d)' % r.returncode)
     # Game Mode starts Steam again (the trap above, or by itself); a desktop session does not.
     for _ in range(90):
         if deck.run('pgrep -x steam >/dev/null && echo yes || echo no').strip() == 'yes':
             time.sleep(45)  # its library up before a game is started from it
-            return True
+            return ok
         time.sleep(2)
     log('Steam is not running again (a desktop session?): start it to see the games')
-    return True
+    return ok
 
 
 def app_id(deck, g):
-    out = deck.run('python3 %s/steam_shortcuts.py list' % g['dest'], check=False)
+    out = deck.run('python3 %s/steam_shortcuts.py list' % q(g['dest']), check=False)
     for line in out.splitlines():
         parts = line.split(None, 1)
         if len(parts) == 2 and parts[1].startswith(g['title'] + '  '):
@@ -354,38 +372,47 @@ def try_game(deck, g, seconds, log=print):
         log('%s: not in Steam (--steam first)' % g['title'])
         return None
     home = deck.run('echo $HOME').strip()
+    dest = q(g['dest'])
     cap = '%s/%s/capture' % (home, g['dest'])
     wine_cap = 'Z:' + cap.replace('/', '\\')
-    deck.run('rm -rf %s && mkdir -p %s' % (cap, cap))
+    deck.run('rm -rf %s && mkdir -p %s' % (q(cap), q(cap)))
     # The capture folder for this try: try.flags, which play.sh passes on.
     gameid = (appid << 32) | 0x02000000
     # The renderer's frame statistics every 120 frames (FRAME_LINE reads the last of them).
     flags = ('--rexnative_capture_dir=%s --rexnative_capture_xenos=false '
              '--rexnative_d3d_stats_frames=120' % wine_cap)
-    deck.run('cd %s && printf "%%s\\n" %s > try.flags' % (g['dest'], shlex.quote(flags)))
-    deck.run('DISPLAY=:0 nohup steam steam://rungameid/%d >/dev/null 2>&1 &' % gameid, check=False)
-    log('%s: started (%d s)' % (g['title'], seconds))
-    time.sleep(seconds)
-    deck.run('touch %s/capture.request' % cap, check=False)
-    time.sleep(4)
     exe_re = re.escape(g['name']) + r'\.exe --log'
-    running = deck.run('pgrep -f %s >/dev/null && echo yes || echo no' % shlex.quote(exe_re),
-                       check=False).strip() == 'yes'
-    logtext = deck.run('cd %s && l=$(ls -1t logs/*.log 2>/dev/null | head -1) && cat "$l"' %
-                       g['dest'], check=False)
-    deck.run('p=$(pgrep -f %s); [ -n "$p" ] && kill $p; rm -f %s/try.flags; true' % (
-        shlex.quote(exe_re), g['dest']), check=False)
+    deck.run('cd %s && printf "%%s\\n" %s > try.flags' % (dest, q(flags)))
+    try:
+        deck.run('DISPLAY=:0 nohup steam steam://rungameid/%d >/dev/null 2>&1 &' % gameid,
+                 check=False)
+        log('%s: started (%d s)' % (g['title'], seconds))
+        time.sleep(seconds)
+        deck.run('touch %s/capture.request' % q(cap), check=False)
+        time.sleep(4)
+        running = deck.run('pgrep -f %s >/dev/null && echo yes || echo no' % q(exe_re),
+                           check=False).strip() == 'yes'
+        # The newest log this launch wrote (newer than try.flags): a game that did not start
+        # leaves the last run's, which would report its frame times as this one's.
+        logtext = deck.run(
+            'cd %s && l=$(find logs -maxdepth 1 -name "*.log" -newer try.flags -printf "%%T@ %%p\\n" '
+            '2>/dev/null | sort -n | tail -1 | cut -d" " -f2-) && [ -n "$l" ] && cat "$l"' % dest,
+            check=False)
+    finally:
+        # Also on Ctrl+C: try.flags left behind would go with every later start from Steam.
+        deck.run('p=$(pgrep -f %s); [ -n "$p" ] && kill $p; rm -f %s/try.flags; true' % (
+            q(exe_re), dest), check=False)
     time.sleep(10)  # Steam sees the game end before the next one starts
     frames = FRAME_LINE.findall(logtext)
     errors = [l for l in logtext.splitlines() if '[error]' in l or '[critical]' in l]
     fatal = [l for l in errors if 'FATAL' in l or 'access violation' in l or 'crash' in l.lower()]
-    shots = deck.run('ls %s/*.png 2>/dev/null' % cap, check=False).split()
+    shots = deck.run('cd %s && ls *.png 2>/dev/null' % q(cap), check=False).split()
     out_dir = os.path.join(g['work'], 'deck')
     saved = []
     for s in shots:
         if 'xenos' in os.path.basename(s):
             continue
-        data = deck.read(s)
+        data = deck.read(cap + '/' + s)
         if data:
             p = os.path.join(out_dir, 'try-' + os.path.basename(s))
             open(p, 'wb').write(data)

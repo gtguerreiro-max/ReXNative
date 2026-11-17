@@ -72,9 +72,9 @@ REXCVAR_DEFINE_INT32(rexnative_resolution_scale, 1, "ReXNative",
                      "DLSS and DLSS 5 at that size")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_INT32(rexnative_menu_fps, 60, "ReXNative",
-                     "This port: the front end's frame rate while the player is not driving "
-                     "(menus, garage, pause): the menus' cursor repeats once per frame, too fast "
-                     "at the display's 240 Hz; 0: no limit");
+                     "The game's frame rate limit (30: the console's for a game that ran at 30, "
+                     "such as Dark Souls II; 0: none). Menus whose cursor repeats once per frame "
+                     "go too fast above 60. PGR4 lifts it while the player drives");
 REXCVAR_DEFINE_INT32(rexnative_auto_handover, 0, "ReXNative",
                      "After this many frames in a row with no draw call the native renderer "
                      "sees (screens drawn by code the game inlined past the hooked D3D "
@@ -398,6 +398,8 @@ NativeRenderer* NativeRenderer::Get() {
     if (!n->Initialize()) {
       REXLOG_ERROR("ReXNative: initialization failed; native path off for this run");
       g_failed = true;
+      // host::Attach took the window from ReXGlue's presenter, which draws the game now.
+      if (REXCVAR_GET(rexnative)) ConnectSdkPresenter(true);
       delete n;
       return static_cast<NativeRenderer*>(nullptr);
     }
@@ -424,6 +426,9 @@ bool NativeRenderer::Initialize() {
   uint32_t w = uint32_t(std::max(64, REXCVAR_GET(rexnative_width)));
   uint32_t h = uint32_t(std::max(64, REXCVAR_GET(rexnative_height)));
   const bool primary = primary_ = REXCVAR_GET(rexnative);
+  // host::Attach took the window from ReXGlue's presenter already (present_external): a failure
+  // or an XAM dialog before ReXNative's first frame on it gives it back (ReleaseGameWindow).
+  window_taken_ = primary;
   const bool paced = primary && REXCVAR_GET(rexnative_frame_latency) > 0;
   // The pacer, or with the CSV only its log of the presents shown.
   const bool pacer = paced || (primary && !REXCVAR_GET(rexnative_csv).empty());
@@ -1031,6 +1036,21 @@ void NativeRenderer::OnSwapSuspended() {
 // ---------------------------------------------------------------------------------------------
 // Renderer switch (primary mode)
 
+bool NativeRenderer::UnderWine() {
+  static const bool wine = [] {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll && GetProcAddress(ntdll, "wine_get_version");
+  }();
+  return wine;
+}
+
+bool NativeRenderer::SwitchRefusedUnderWine() {
+  if (!UnderWine()) return false;
+  REXLOG_WARN("ReXNative: renderer switch (F9) ignored under Wine: the window cannot change "
+              "hands under vkd3d-proton (rexnative.enabled picks the renderer for the run)");
+  return true;
+}
+
 bool NativeRenderer::AutoHandOverDue() {
   const uint32_t draws = std::exchange(frame_draw_calls_, 0);
   const int32_t frames = REXCVAR_GET(rexnative_auto_handover);
@@ -1039,11 +1059,7 @@ bool NativeRenderer::AutoHandOverDue() {
   // swap chain was released, the Xenos driver's Present waited in vkd3d-proton for good and its
   // GPU thread with it (Orcs Must Die! black at its title). There the game's setting picks one
   // renderer for the whole run (<work>/deck.toml).
-  static const bool wine = [] {
-    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    return ntdll && GetProcAddress(ntdll, "wine_get_version");
-  }();
-  if (wine) {
+  if (UnderWine()) {
     auto_off_ = true;
     REXLOG_WARN("ReXNative: rexnative.auto_handover off under Wine (the window cannot change "
                 "hands under vkd3d-proton)");
@@ -1295,7 +1311,9 @@ void NativeRenderer::ReleaseGameWindow() {
 
 bool NativeRenderer::OwnGameWindow(bool own) {
   D3D12Device& d = *device_;
-  if (own == d.has_swapchain()) return true;
+  // Without a swap chain the window may still be off ReXGlue's presenter (taken at start, before
+  // ReXNative's first frame): letting it go connects the presenter again.
+  if (own == d.has_swapchain() && (own || !window_taken_)) return true;
   if (!own) {
     ReleaseGameWindow();
     return true;

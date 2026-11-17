@@ -93,8 +93,9 @@ constexpr bool IsStateFlushingFn(uint32_t addr) {
     case HookFn::kSwap:
     case HookFn::kRunCommandBuffer:
       return true;
+    default:  // the queries write their registers outside the shadow (IsTapOnlyRegister)
+      return false;
   }
-  return false;
 }
 // Registers the D3D writes into the stream outside any draw state (Resolve's
 // RB_COPY_DEST_BASE, the queries' RB_SAMPLE_COUNT_ADDR); CompareWithTap skips them.
@@ -114,14 +115,14 @@ bool IsTapOnlyRegister(uint32_t reg);
 //         BeginCommandBuffer: 2);
 //   +116  the chunk list: 136-byte nodes {+0 next, +4 entry count, +8 up to 16 entries of
 //         {0x81000000 | dwords (0x8F: the async kind), physical address}}, linked through
-//         0xC0000000 + physical aliases.
+//         physical memory's CPU views (0xA0000000, 0xC0000000 or 0xE0000000 +).
 inline constexpr uint32_t kCbCommon = 0, kCbInherit = 24, kCbKeep = 64, kCbFlags = 108,
                           kCbChunks = 116;
 inline constexpr uint32_t kCbTypeCommandBuffer = 9, kCbTypeAsync = 10;
 struct CommandBufferHeader {
   uint32_t object = 0, common = 0, flags = 0;  // object address, +0 Common, +108 flags | status
   uint64_t inherit[5] = {}, keep[5] = {};      // +24..+56, +64..+96 (host order)
-  uint32_t chunks = 0;                         // +116: first node (0xC0000000 + physical)
+  uint32_t chunks = 0;                         // +116: first node (a physical view's address)
 };
 // False (only `object` and `common` filled) unless cb != 0, (cb & 3) == 0 and the type is 9.
 bool ReadCommandBufferHeader(const uint8_t* base, uint32_t cb, CommandBufferHeader* out);
