@@ -4,10 +4,11 @@
 #   {"capture": "...rdc", "out": "<dir>", "cmd": "actions"}
 #       every action (draws, clears, copies, markers) with its event id and outputs
 #   {"capture": ..., "out": ..., "cmd": "history", "x": 400, "y": 120, "event": 0,
-#    "texture": 0}
+#    "texture": 0, "x1": 0}
 #       pixel history of one texel up to `event` (0: the last action): every draw that touched
 #       it, with what failed (depth, stencil, culling, discard...) and the values before and
-#       after; `texture` 0 = the first colour output of the last action that has one
+#       after; `texture` 0 = the first colour output of the last action that has one; with
+#       `x1`, of each texel from x to x1 on the row, one after another in the same file
 #   {"capture": ..., "out": ..., "cmd": "save", "event": 1234, "texture": 0}
 #       the texture (0: the event's first colour output, else a resource id) as PNG, as it is
 #       after that event
@@ -73,26 +74,30 @@ def main():
             rid = job.get("texture") or 0
             tex = next((t for t in textures if int(t) == rid), None) if rid else output_of(event)
             controller.SetFrameEvent(event, True)
-            x, y = int(job["x"]), int(job["y"])
-            history = controller.PixelHistory(tex, x, y, rd.Subresource(0, 0, 0),
-                                              rd.CompType.Typeless)
+            x0, y = int(job["x"]), int(job["y"])
+            x1 = max(int(job.get("x1") or 0), x0)
             flags = ["sampleMasked", "backfaceCulled", "depthClipped", "depthBoundsFailed",
                      "viewClipped", "scissorClipped", "shaderDiscarded", "depthTestFailed",
                      "stencilTestFailed", "predicationSkipped", "unboundPS"]
             names = {a.eventId: a.GetName(sfile) for a in actions}
-            with open(os.path.join(out, "history-%d-%d.txt" % (x, y)), "w") as f:
-                f.write("texture %s, texel %d,%d, up to event %d\n" % (describe(tex), x, y, event))
-                for m in history:
-                    failed = [n for n in flags if getattr(m, n, False)]
-                    pre = tuple(m.preMod.col.floatValue[:4])
-                    post = tuple(m.postMod.col.floatValue[:4])
-                    out = tuple(m.shaderOut.col.floatValue[:4])  # the pixel shader's color
-                    f.write("%d %s prim %d pass=%s %s pre=(%.3g %.3g %.3g %.3g) "
-                            "post=(%.3g %.3g %.3g %.3g) shader=(%.3g %.3g %.3g %.3g) "
-                            "depth %.6g->%.6g stencil %d->%d\n" % (
-                                m.eventId, names.get(m.eventId, "?"), m.primitiveID, m.Passed(),
-                                ",".join(failed), *pre, *post, *out, m.preMod.depth,
-                                m.postMod.depth, m.preMod.stencil, m.postMod.stencil))
+            with open(os.path.join(out, "history-%d-%d.txt" % (x0, y)), "w") as f:
+                for x in range(x0, x1 + 1):
+                    history = controller.PixelHistory(tex, x, y, rd.Subresource(0, 0, 0),
+                                                      rd.CompType.Typeless)
+                    f.write("texture %s, texel %d,%d, up to event %d\n" %
+                            (describe(tex), x, y, event))
+                    for m in history:
+                        failed = [n for n in flags if getattr(m, n, False)]
+                        pre = tuple(m.preMod.col.floatValue[:4])
+                        post = tuple(m.postMod.col.floatValue[:4])
+                        shader = tuple(m.shaderOut.col.floatValue[:4])  # the pixel shader's color
+                        f.write("%d %s prim %d pass=%s %s pre=(%.3g %.3g %.3g %.3g) "
+                                "post=(%.3g %.3g %.3g %.3g) shader=(%.3g %.3g %.3g %.3g) "
+                                "depth %.6g->%.6g (fragment %.6g) stencil %d->%d\n" % (
+                                    m.eventId, names.get(m.eventId, "?"), m.primitiveID,
+                                    m.Passed(), ",".join(failed), *pre, *post, *shader,
+                                    m.preMod.depth, m.postMod.depth, m.shaderOut.depth,
+                                    m.preMod.stencil, m.postMod.stencil))
         elif cmd == "save":
             event = job.get("event") or last_event()
             rid = job.get("texture") or 0

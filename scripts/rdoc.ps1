@@ -1,6 +1,6 @@
 # Queries a RenderDoc capture with scripts/rdoc.py (RenderDoc's own Python, no window kept).
 #   scripts\rdoc.ps1 actions <capture.rdc>
-#   scripts\rdoc.ps1 history <capture.rdc> -X 400 -Y 120 [-Event 0] [-Texture 0]
+#   scripts\rdoc.ps1 history <capture.rdc> -X 400 -Y 120 [-X1 410] [-Event 0] [-Texture 0]
 #   scripts\rdoc.ps1 save <capture.rdc> -Event 1234 [-Texture 0]
 #   scripts\rdoc.ps1 inputs <capture.rdc> -Event 1234      # its textures (as PNG) and targets
 #   scripts\rdoc.ps1 mesh <capture.rdc> -Event 1234         # its vertex shader's output positions
@@ -14,7 +14,7 @@
 param(
     [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
     [Parameter(Position = 1, Mandatory)][string]$Capture,
-    [int]$X = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
+    [int]$X = 0, [int]$X1 = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC
 )
 $ErrorActionPreference = 'Stop'
@@ -25,7 +25,7 @@ $capture = (Resolve-Path $Capture).Path
 $out = "$capture.rdoc"
 New-Item -ItemType Directory -Force $out | Out-Null
 $job = Join-Path $out 'job.json'
-@{ capture = $capture; out = $out; cmd = $Cmd; x = $X; y = $Y; event = $Event; texture = $Texture; offset = $Offset; size = $Size } |
+@{ capture = $capture; out = $out; cmd = $Cmd; x = $X; x1 = $X1; y = $Y; event = $Event; texture = $Texture; offset = $Offset; size = $Size } |
     ConvertTo-Json | Set-Content $job -Encoding utf8
 Remove-Item (Join-Path $out 'rdoc.log') -ErrorAction SilentlyContinue
 $env:REXNATIVE_RDOC_JOB = $job

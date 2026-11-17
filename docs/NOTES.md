@@ -132,6 +132,26 @@ the inlined draw's: the next hooked draw reloads the bound ones, and an Immediat
 inlined code called is not left pending for it ("Press Start", drawn by DrawVerticesUP, got the
 inlined draw's vertex shader and showed one letter).
 
+## Motion vectors from a vertex ring
+
+The upscalers' motion vectors come from each scene draw's vertex shader run a second time with
+the previous frame's float and vertex fetch constants of the draw it matches
+(`motion_history.h`). Jet Set Radio transforms its vertices on the CPU (the Dreamcast's way) and
+writes each frame's into one of two 4 MB buffers in turn, every draw at its own first vertex
+(`VGT_INDX_OFFSET`). The second run read the previous frame's buffer at this frame's first
+vertex: another mesh's vertices. On a still scene the motion was 314 pixels at the median (a
+RenderDoc capture of the motion target), FSR followed it, and the characters lost their black
+outlines and sometimes their heads, with any upscaler mode, even at the native size. Bisecting
+the draws with motion off (`draw-debug.txt` 32768 with a range) found the character draws; the
+pixel history showed their outline failing the depth test at another mesh's depth.
+
+A draw now keeps its first vertex and its vertex buffers' addresses in the history. When the
+matched draw used another buffer, its vertex fetch constants are moved by the difference of
+the two first vertices times each binding's stride, so the second run reads the previous
+frame's own vertices. A buffer the draw kept was written over this frame: no motion there.
+With the camera following the skater, the median is now 4.5 pixels and 3 % of the pixels move
+more than 64 (draws matched to another mesh of the same vertex count).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

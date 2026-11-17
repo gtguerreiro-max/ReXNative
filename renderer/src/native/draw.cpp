@@ -1242,6 +1242,7 @@ struct DrawRenderer::Impl {
     // Motion vector draws, those with previous constants, those told apart from copies of their
     // mesh, and those moved with the camera (MotionHistory::Found).
     uint64_t motion_draws = 0, motion_matched = 0, motion_copies = 0, motion_camera = 0;
+    uint64_t motion_moved = 0;  // previous vertices read at the previous first vertex
   } diag;
   // Where Prepare's counters go: with the render thread, which owns diag, the guest thread's own.
   PrepareDiag& PrepDiag() { return threaded ? prep_diag : diag.prep; }
@@ -1291,6 +1292,9 @@ struct DrawRenderer::Impl {
     // issued. Tested before render targets are bound, so a skipped draw changes no target.
     kDebugNoCommandBuffers = 4096,
     kDebugOnlyCommandBuffers = 8192,
+    kDebugNoJitter = 16384,  // the upscaler's scene drawn without its jitter
+    kDebugNoMotion = 32768,  // and without its motion pipelines (with [skip_from, skip_to): those
+                             // draws only, none skipped)
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -1470,8 +1474,10 @@ struct DrawRenderer::Impl {
   bool CommitCbv(CachedCbv& cb, uint32_t root_index, CommandStream* list);
   // A motion vector draw's previous float and vertex fetch constants (b5, b6), after its own
   // are committed: the matching draw's of the previous frame (MotionHistory), or its own.
+  // `fetch_constants`: its own, as uploaded; `vertex_index_offset`: its first vertex.
   void BindPreviousConstants(const DrawState& s, const DxbcShader& vs_generic, const DxbcShader* vs,
-                             CommandStream* list);
+                             CommandStream* list, const uint32_t* fetch_constants,
+                             uint32_t vertex_index_offset);
   bool UploadCbv(CachedCbv& cb, const void* data, uint32_t size, uint32_t root_index,
                  CommandStream* list) {
     if (cb.size != size || !Equal(cb.last, data, size)) {
@@ -2560,12 +2566,33 @@ bool DrawRenderer::Impl::CommitCbv(CachedCbv& cb, uint32_t root_index, CommandSt
   return true;
 }
 
+// The vertex bindings (fetch constant, stride) the translator found in a shader, which the
+// SDK's Shader keeps protected: read through a member pointer taken in a derived class.
+struct ShaderVertexBindings : rex::gpu::Shader {
+  static const std::vector<VertexBinding>& Of(const rex::gpu::Shader& shader) {
+    return shader.*(&ShaderVertexBindings::vertex_bindings_);
+  }
+};
+
 void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcShader& vs_generic,
-                                               const DxbcShader* vs, CommandStream* list) {
+                                               const DxbcShader* vs, CommandStream* list,
+                                               const uint32_t* fetch_constants,
+                                               uint32_t vertex_index_offset) {
   const uint64_t loose = vs_generic.GetUcodeDataHash() ^ uint64_t(s.count) ^
                          (uint64_t(s.primitive) << 58);
   const uint64_t identity = loose ^ (uint64_t(s.index_address) << 32);
-  const MotionHistory::Constants now = {vs, cb_float_vs.gpu, cb_fetch.gpu};
+  MotionHistory::Constants now = {vs, cb_float_vs.gpu, cb_fetch.gpu};
+  // Where its vertices are: a vertex fetch constant's dword 0 is its base address and type.
+  const std::vector<rex::gpu::Shader::VertexBinding>& bindings =
+      ShaderVertexBindings::Of(vs_generic);
+  const uint32_t bases =
+      std::min<uint32_t>(uint32_t(bindings.size()), MotionHistory::Constants::kVertexBases);
+  auto fetch_dword0 = [](uint32_t fetch_constant) {
+    return (fetch_constant / 3) * 6 + (fetch_constant % 3) * 2;
+  };
+  now.vertex_index_offset = vertex_index_offset;
+  for (uint32_t i = 0; i < bases; ++i)
+    now.vertex_base[i] = fetch_constants[fetch_dword0(bindings[i].fetch_constant)];
   const MotionHistory::Constants* previous =
       motion_history.Match(identity, loose, now, cb_float_vs.last, cb_float_vs.size);
   const MotionHistory::Found found = motion_history.found();
@@ -2586,15 +2613,44 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
     ++diag.motion_matched;
   else
     previous = &now;
+  // The previous pass computes the vertex index with this draw's first vertex (the system
+  // constants are this draw's). A game that writes each frame's vertices into another buffer
+  // and draws them from offsets into it (Jet Set Radio: two 4 MB buffers in turn, every draw
+  // at its own first vertex) had the previous frame's draw read at this frame's offset: another
+  // mesh's vertices, motion vectors a quarter of the screen long on a still scene, which FSR
+  // followed and lost the characters' outlines and heads with. Its previous vertex fetch
+  // constants are moved by the difference of the two first vertices, for each binding whose
+  // buffer changed (the one it kept was written over this frame: its vertices stay, no motion).
+  D3D12_GPU_VIRTUAL_ADDRESS previous_fetch = previous->fetch_constants;
+  if (previous != &now && previous != &camera &&
+      previous->vertex_index_offset != vertex_index_offset) {
+    uint32_t moved[32 * 6];
+    bool any = false;
+    for (uint32_t i = 0; i < bases; ++i) {
+      const uint32_t was = previous->vertex_base[i];
+      if (was == now.vertex_base[i]) continue;
+      if (!any) std::memcpy(moved, fetch_constants, sizeof(moved));
+      any = true;
+      const uint32_t shift = (previous->vertex_index_offset - vertex_index_offset) *
+                             bindings[i].stride_words * 4;
+      moved[fetch_dword0(bindings[i].fetch_constant)] = ((was & ~3u) + shift) | (was & 3u);
+    }
+    UploadPool::Alloc a;
+    if (any && constant_upload.Allocate(uint32_t(sizeof(moved)), 256, r.frame_fence(), &a)) {
+      std::memcpy(a.cpu, moved, sizeof(moved));
+      previous_fetch = a.gpu;
+      ++diag.motion_moved;
+    }
+  }
   if (bound_previous_float != previous->float_constants) {
     list->SetGraphicsRootConstantBufferView(kBindlessRoot_PreviousFloatConstantsVertex,
                                             previous->float_constants);
     bound_previous_float = previous->float_constants;
   }
-  if (bound_previous_fetch != previous->fetch_constants) {
+  if (bound_previous_fetch != previous_fetch) {
     list->SetGraphicsRootConstantBufferView(kBindlessRoot_PreviousFetchConstantsVertex,
-                                            previous->fetch_constants);
-    bound_previous_fetch = previous->fetch_constants;
+                                            previous_fetch);
+    bound_previous_fetch = previous_fetch;
   }
 }
 
@@ -4272,7 +4328,7 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
           : nullptr;
   // The upscaler's jitter in render pixels, a translation in host clip space as FSR's docs
   // apply it to the projection (NDC y up, pixels down).
-  if (scene_upscaler) {
+  if (scene_upscaler && !(debug_mask & kDebugNoJitter)) {
     const float w = float(std::max(vp.xy_extent[0], 1u)) * targets.scale.factor(0);
     const float h = float(std::max(vp.xy_extent[1], 1u)) * targets.scale.factor(1);
     sys.ndc_offset[0] += 2.0f * scene_upscaler->jitter_x() / w;
@@ -4443,7 +4499,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       Upscaler::IsScene(sdr.rb_surface_info) && r.upscaler() && !r.upscaler()->post_scene()
           ? r.upscaler()
           : nullptr;
-  const bool motion = scene_upscaler && mods.pixel_shader_used && depth_control.z_enable &&
+  const bool no_motion =
+      (debug_mask & kDebugNoMotion) &&
+      (debug_skip_from >= debug_skip_to ||
+       (frame_draws >= debug_skip_from && frame_draws < debug_skip_to));
+  const bool motion = scene_upscaler && !no_motion && mods.pixel_shader_used &&
+                      depth_control.z_enable &&
                       (depth_control.z_write_enable ||
                        ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
                         !GetRtBlend(regs, 0).Blends()));
@@ -4609,7 +4670,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                                      polygonal, sc, depth_control, color_mask, targets);
   const uint32_t draw_index = frame_draws++;
   bool debug_skip = (debug_max_draws && draw_index >= debug_max_draws) ||
-                    (draw_index >= debug_skip_from && draw_index < debug_skip_to);
+                    (!(debug_mask & kDebugNoMotion) && draw_index >= debug_skip_from &&
+                     draw_index < debug_skip_to);
   uint32_t snap_now = 0;
   if (debug_hash_count) {
     const uint64_t vs_hash = vs->GetUcodeDataHash(), ps_hash = ps ? ps->GetUcodeDataHash() : 0;
@@ -4803,7 +4865,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     ++stats.failed;
     return;
   }
-  if (motion) BindPreviousConstants(s, *vs_generic, vs, list);
+  if (motion)
+    BindPreviousConstants(s, *vs_generic, vs, list, fetch_constants, sys.vertex_index_offset);
   profile::Mark(profile::kCbv);
   if (bound_pso != pso) {
     list->SetPipelineState(pso);
@@ -5244,10 +5307,11 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
       REXLOG_INFO(
           "ReXNative draw diag: motion vector draws {:.1f}/frame, {:.2f} % with previous "
           "constants: {:.1f}/frame told apart from copies of their mesh, {:.1f}/frame moved with "
-          "the camera",
+          "the camera, {:.1f}/frame from their previous vertex buffer",
           double(d.motion_draws) / double(d.frames),
           100.0 * double(d.motion_matched) / double(d.motion_draws),
-          double(d.motion_copies) / double(d.frames), double(d.motion_camera) / double(d.frames));
+          double(d.motion_copies) / double(d.frames), double(d.motion_camera) / double(d.frames),
+          double(d.motion_moved) / double(d.frames));
     d = Impl::Diag{};
   }
   if (!impl_->debug_path.empty() && ++impl_->debug_poll >= 15) {

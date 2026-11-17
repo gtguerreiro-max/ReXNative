@@ -50,6 +50,12 @@ class MotionHistory {
   struct Constants {
     const void* vs = nullptr;  // the shader the float constants are packed for
     D3D12_GPU_VIRTUAL_ADDRESS float_constants = 0, fetch_constants = 0;
+    // The draw's first vertex (VGT_INDX_OFFSET) and the first dword (base address and type) of
+    // the vertex fetch constants of its shader's first kVertexBases bindings: where its vertices
+    // were (DrawRenderer's BindPreviousConstants).
+    uint32_t vertex_index_offset = 0;
+    static constexpr uint32_t kVertexBases = 4;
+    uint32_t vertex_base[kVertexBases] = {};
   };
   // How the last Match found the previous constants.
   enum class Found {

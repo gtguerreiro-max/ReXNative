@@ -25,7 +25,9 @@
 #   test off, 16 log the next frame's draws, 32 upload every draw, 64 depth bias off, 128 only the
 #   listed shaders, 256 snapshot the targets after the first draw of each listed shader (or after
 #   draw skip_from), 512 stencil off (depth kept), 1024 depth test always passes (writes and
-#   stencil kept), 2048 the same for draws that test depth without writing it. Draws in
+#   stencil kept), 2048 the same for draws that test depth without writing it, 16384 the
+#   upscaler's scene without its jitter, 32768 without its motion vector pipelines (with a
+#   range: only the draws in it, none skipped, to bisect). Draws in
 #   [skip_from, skip_to) are skipped. 16 and 256 act when they are set,
 #   so -Pulse clears the file again.
 # Keys: hold:<keys joined by +>:<ms> with real key-down/up (SPACE, ENTER, TAB, arrows, letters;
@@ -315,6 +317,12 @@ switch ($Command) {
     'log' {
         if (-not $s) { throw 'no live game' }
         $path = Join-Path $s.live 'live.log'
+        # ReXGlue v0.11 writes --log_file=live\live.log as logs\live\live.log_NNN.log.
+        $rotated = Get-ChildItem (Join-Path $s.dir 'logs\live') -Filter 'live.log*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($rotated -and (-not (Test-Path $path) -or $rotated.LastWriteTime -gt (Get-Item $path).LastWriteTime)) {
+            $path = $rotated.FullName
+        }
         $n = if ($Arg2) { [int]$Arg2 } else { 30 }
         $lines = Get-Content -LiteralPath $path -Tail 4000
         if ($Arg) { $lines = $lines | Select-String -Pattern $Arg | ForEach-Object { $_.Line } }
