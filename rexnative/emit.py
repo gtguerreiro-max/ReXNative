@@ -44,6 +44,7 @@ def from_result(res):
         'offsets': offs,
         'clear_color': res.get('clear_color'),
         'resolve_args': ra.get('args', list(range(3, 11))),
+        'resolve_stencil_reg': ra.get('stencil_reg', 0),
         'call_args': {k: v['args'] for k, v in (res.get('call_args') or {}).items()},
         'scene': res['scene'], 'defaults': res['defaults'], 'devices': res['devices'],
     }
@@ -155,6 +156,11 @@ def game_layer_h(layer, comments=True):
             canon, 'false' if list(regs) == list(range(3, 11)) else 'true'))
     w('inline constexpr bool kResolveRemapArgs = %s;' % (
         'false' if list(args) == list(range(3, 11)) else 'true'))
+    stencil = layer.get('resolve_stencil_reg') or 0
+    if stencil:
+        if comments:
+            w('// Resolve\'s ClearStencil in this register at entry (0 or absent: on the stack).')
+        w('#define REXNATIVE_RESOLVE_STENCIL_REG %d' % stencil)
     w('')
     dv = layer['devices']
     if comments:

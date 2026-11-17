@@ -1390,6 +1390,13 @@ inline rexnative::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
   a.f[3] = ctx.f4.f64;
   a.ret = 0;
   a.tiling = t_tiling_call;
+  // An LTCG Resolve that passes ClearStencil in a register (game_layer.h; older layers have
+  // none: on the stack).
+#if defined(REXNATIVE_RESOLVE_STENCIL_REG) && REXNATIVE_RESOLVE_STENCIL_REG >= 3 && \
+    REXNATIVE_RESOLVE_STENCIL_REG <= 10
+  if (rexnative::HookFn(fn) == rexnative::HookFn::kResolve)
+    a.stencil = int32_t(EntryRegs(ctx)[REXNATIVE_RESOLVE_STENCIL_REG - 3] & 0xFF);
+#endif
   return a;
 }
 

@@ -483,7 +483,23 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
             name, p, src, n, tot = public[i]
             public[i] = (name, p, ('0',), 0, 0)
     identity = regs == list(range(3, 11)) and stack_ok
+    # ClearStencil follows ClearColor and ClearZ (a float, which takes the next register's slot):
+    # with the colour moved to a lower register (the level and the slice dropped), the stencil is
+    # in a register too, two after it (Overlord II: colour r8, Z f1 in r9's slot, stencil r10),
+    # when most calls set that register. Else on the stack (sp + 92), as the public call has it.
+    stencil_reg = 0
+    color = regs[7]
+    if color and 3 <= color <= 8:
+        cand = color + 2
+        if cand not in regs and sites and 2 * sum(('r%d' % cand) in last for last in sites) >= len(sites):
+            stencil_reg = cand
+            name, p, _, n, tot = public[9]
+            public[9] = (name, p, ('r', cand), n, tot)
+            steps.append('clear_stencil: r%d (two after clear_color r%d, set before %d of the %d '
+                         'calls)' % (cand, color, sum(('r%d' % cand) in last for last in sites),
+                                     len(sites)))
     return {
+        'stencil_reg': stencil_reg,
         'hook': target_fn,
         'inner': target_inner,
         'abi': 'public' if identity else 'remapped',

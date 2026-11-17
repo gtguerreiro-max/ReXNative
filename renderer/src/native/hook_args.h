@@ -103,6 +103,10 @@ struct HookArgs {
   double f[4];      // f1..f4 at entry
   uint64_t ret;     // r3 after the guest function returned
   TilingCall tiling = TilingCall::kNone;  // the tiling call this one is nested in
+  // Resolve: its ClearStencil when an LTCG build passes it in a register (game_layer.h
+  // REXNATIVE_RESOLVE_STENCIL_REG: Overlord II's r10); -1: on the stack, where the public call has
+  // it (sp + 92).
+  int32_t stencil = -1;
 };
 
 }  // namespace rexnative

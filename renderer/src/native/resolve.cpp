@@ -624,7 +624,8 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
             base, rexnative::game::kResolveDefaultClearColor + (rexnative::game::kResolveDefaultClearIsVector ? 4u * i : 0u));
     }
     p.clear_depth = float(args.f[0]);
-    p.clear_stencil = uint8_t(Load32(base, args.sp + 92));
+    p.clear_stencil =
+        args.stencil >= 0 ? uint8_t(args.stencil) : uint8_t(Load32(base, args.sp + 92));
     if (args.tiling == TilingCall::kEnd) {
       const uint32_t tiles = std::min(Load32(base, device + kDevTileCount), kMaxTiles);
       for (uint32_t i = 0; i < tiles; ++i) {
