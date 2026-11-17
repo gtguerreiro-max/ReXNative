@@ -146,6 +146,41 @@ REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 
 namespace rexnative {
 
+}  // namespace rexnative
+// thirdparty/dxbc/DXBCChecksum.cpp (rexnative_shader_xlate).
+void CalculateDXBCChecksum(unsigned char* pData, unsigned int dwSize, unsigned int dwHash[4]);
+namespace rexnative {
+namespace {
+// "ok", "BAD" (the stored DXBC checksum is not the bytecode's) or "-" (no shader).
+const char* DxbcHashState(const D3D12_SHADER_BYTECODE& b) {
+  if (!b.pShaderBytecode || b.BytecodeLength < 32) return "-";
+  std::vector<unsigned char> copy(static_cast<const unsigned char*>(b.pShaderBytecode),
+                                  static_cast<const unsigned char*>(b.pShaderBytecode) +
+                                      b.BytecodeLength);
+  unsigned int hash[4];
+  CalculateDXBCChecksum(copy.data(), unsigned(copy.size()), hash);
+  return std::memcmp(hash, copy.data() + 4, 16) == 0 ? "ok" : "BAD";
+}
+// A pipeline D3D12 refused (E_INVALIDARG): what it was asked for, for the first few.
+void LogRefusedPipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, HRESULT hr) {
+  static std::atomic<uint32_t> refused{0};
+  const uint32_t n = refused.fetch_add(1, std::memory_order_relaxed);
+  if (n >= 8) return;
+  std::string rts;
+  for (UINT i = 0; i < d.NumRenderTargets && i < 8; ++i)
+    rts += std::to_string(int(d.RTVFormats[i])) + (i + 1 < d.NumRenderTargets ? "," : "");
+  REXLOG_WARN("ReXNative draw: pipeline {} refused ({:08X}): vs {} bytes ({}), gs {} bytes ({}), "
+              "ps {} bytes ({}), {} targets "
+              "[{}], depth {}, samples {}, blend0 {} write {:X}, topology {}, inputs {}",
+              n + 1, uint32_t(hr), d.VS.BytecodeLength, DxbcHashState(d.VS),
+              d.GS.BytecodeLength, DxbcHashState(d.GS), d.PS.BytecodeLength, DxbcHashState(d.PS),
+              d.NumRenderTargets, rts, int(d.DSVFormat), d.SampleDesc.Count,
+              d.BlendState.RenderTarget[0].BlendEnable ? "on" : "off",
+              d.BlendState.RenderTarget[0].RenderTargetWriteMask,
+              int(d.PrimitiveTopologyType), d.InputLayout.NumElements);
+}
+}  // namespace
+
 // Memexport destinations (memexport.h): the ranges memexport draws write (the first ones are
 // logged), so a texture read from one can say so.
 namespace xenos = rex::graphics::xenos;
@@ -1892,7 +1927,7 @@ void DrawRenderer::Impl::PipelineWorker(bool saves, bool on_wait) {
       job.target->pso = std::move(pso);
       job.target->state.store(kReady, std::memory_order_release);
     } else {
-      REXNATIVE_WARN_ONCE("ReXNative draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
+      LogRefusedPipeline(job.desc, hr);
       job.target->state.store(kFailed, std::memory_order_release);
     }
     lock.lock();
@@ -2819,6 +2854,17 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
     b.LogicOp = D3D12_LOGIC_OP_NOOP;
     b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
   }
+  // A slot without a format (the game's unbound targets, and those between them and the motion
+  // vectors') neither blends nor writes: D3D12 refuses the pipeline otherwise (E_INVALIDARG).
+  // Halo: Combat Evolved Anniversary leaves blending on for its unused MRT slots, so with the
+  // motion vectors' slot 4 every one of those pipelines failed and its draws were never drawn.
+  for (uint32_t i = 0; i < d.NumRenderTargets; ++i) {
+    if (d.RTVFormats[i] != DXGI_FORMAT_UNKNOWN) continue;
+    D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[i];
+    b.BlendEnable = FALSE;
+    b.LogicOpEnable = FALSE;
+    b.RenderTargetWriteMask = 0;
+  }
   Pipeline* p = pipelines.emplace(hash, std::make_unique<Pipeline>()).first->second.get();
   p->store_entry = store_entry;
   if (new_pipelines_logged < kNewPipelineLog) {
@@ -2836,7 +2882,7 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
   }
   HRESULT hr = device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&p->pso));
   if (FAILED(hr)) {
-    REXNATIVE_WARN_ONCE("ReXNative draw: CreateGraphicsPipelineState failed {:08X}", uint32_t(hr));
+    LogRefusedPipeline(d, hr);
     p->state.store(kFailed, std::memory_order_relaxed);
     return p;
   }
@@ -2860,9 +2906,17 @@ void DrawRenderer::Impl::Prewarm() {
   do {
     const size_t index = prewarm_next++;
     const PipelineStore::Pipeline& sp = list[index];
-    // An upscaler session's motion vector pipelines: unused without the upscaler.
-    if (!r.upscaler() && DxbcShaderTranslator::Modification(sp.vs_mod).vertex.motion_vectors)
+    // An upscaler session's motion vector pipelines: unused without the upscaler. A record
+    // whose vertex and pixel shaders disagree on them cannot link (an older renderer's: D3D12
+    // refused each one, "TEXCOORD n ... not provided by the output stage").
+    const bool vs_motion = DxbcShaderTranslator::Modification(sp.vs_mod).vertex.motion_vectors;
+    const bool ps_motion =
+        sp.ps_hash && DxbcShaderTranslator::Modification(sp.ps_mod).pixel.motion_vectors;
+    if (sp.ps_hash && vs_motion != ps_motion) {
+      ++prewarm_failed;
       continue;
+    }
+    if (!r.upscaler() && (vs_motion || ps_motion)) continue;
     DxbcShader* vs = load(sp.vs_hash, xenos::ShaderType::kVertex);
     DxbcShader* ps = sp.ps_hash ? load(sp.ps_hash, xenos::ShaderType::kPixel) : nullptr;
     DxbcShader::Translation* vst = vs ? shaders.Translate(*vs, sp.vs_mod) : nullptr;

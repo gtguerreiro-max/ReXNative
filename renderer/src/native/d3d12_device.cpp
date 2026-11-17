@@ -30,6 +30,9 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_INT32(rexnative_hdr_peak_nits, 0, "ReXNative",
                      "HDR output: the peak luminance in nits the image is fitted to; 0: the "
                      "display's, or 1000 when it reports none");
+REXCVAR_DEFINE_BOOL(rexnative_d3d12_debug, false, "ReXNative",
+                    "Debug: the D3D12 debug layer on the native renderer's device (slow); its "
+                    "errors and warnings go to the log (the first 64)");
 REXCVAR_DEFINE_BOOL(rexnative_dred, false, "ReXNative",
                     "Debug: D3D12 DRED (auto-breadcrumbs and page-fault data) on the native "
                     "renderer's device; when the GPU removes it (a hang, TDR, or a fault) the last "
@@ -259,10 +262,38 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
       REXLOG_WARN("ReXNative: --rexnative_dred: no DRED settings interface");
     }
   }
+  const bool debug_layer = REXCVAR_GET(rexnative_d3d12_debug);
+  if (debug_layer) {
+    ComPtr<ID3D12Debug> debug;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+      debug->EnableDebugLayer();
+      REXLOG_INFO("ReXNative: D3D12 debug layer on");
+    } else {
+      REXLOG_WARN("ReXNative: --rexnative_d3d12_debug: no debug layer (Graphics Tools?)");
+    }
+  }
   if (Failed(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
                                IID_PPV_ARGS(device_.ReleaseAndGetAddressOf())),
              "D3D12CreateDevice"))
     return false;
+  if (debug_layer) {
+    ComPtr<ID3D12InfoQueue1> queue;
+    DWORD cookie = 0;
+    if (SUCCEEDED(device_.As(&queue)))
+      queue->RegisterMessageCallback(
+          [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
+             LPCSTR text, void*) {
+            static std::atomic<uint32_t> logged{0};
+            // 1328: a buffer's initial state ignored (every buffer ReXNative creates).
+            if (severity > D3D12_MESSAGE_SEVERITY_WARNING || int(id) == 1328 ||
+                logged.fetch_add(1) >= 64)
+              return;
+            REXLOG_WARN("ReXNative D3D12 debug: {} {}: {}",
+                        severity <= D3D12_MESSAGE_SEVERITY_ERROR ? "error" : "warning", int(id),
+                        text ? text : "");
+          },
+          D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
+  }
   DXGI_ADAPTER_DESC1 ad = {};
   adapter->GetDesc1(&ad);
   char name[128] = {};

@@ -44,6 +44,10 @@ REXCVAR_DEFINE_INT32(rexnative_cmdbuf, -1, "ReXNative",
 REXCVAR_DEFINE_INT32(rexnative_cmdbuf_log, 4, "ReXNative",
                      "With --rexnative_cmdbuf 1 or 2: how many RunCommandBuffer calls to log in "
                      "detail (header, chunks, opcode histogram)");
+REXCVAR_DEFINE_BOOL(rexnative_inline_draws_follow, false, "ReXNative",
+                    "With rexnative.inline_draws: follow the INDIRECT_BUFFERs found in the "
+                    "stream between hooked calls (recorded buffers run where no replay saw "
+                    "them)");
 REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_predication, true, "ReXNative",
                     "Replayed command buffers: skip predicated packets when bin select & bin mask "
                     "is 0, as the GPU does (false: run them all)");
@@ -987,6 +991,9 @@ void ReplayGap(const uint8_t* base, const RunContext& c, uint32_t first, uint32_
     w.mask = mask;
     w.select = 0xFFFFFFFFull;
     w.budget = kBudgetDwords;
+    // An INDIRECT_BUFFER in the main stream is a recorded buffer's chunk that a RunCommandBuffer
+    // no replay saw pushed: on another thread (Halo: Combat Evolved Anniversary's), or inlined.
+    w.nested_ok = REXCVAR_GET(rexnative_inline_draws_follow);
   };
   Walker w1(base, pm, c, s);
   setup(w1);
