@@ -12,7 +12,7 @@
 # RenderDoc's folder: -RenderDoc, else $env:REXNATIVE_RENDERDOC (the one with qrenderdoc.exe).
 # Output: <capture>.rdoc\ (actions.txt, history-X-Y.txt, tex-*.png), printed when done.
 param(
-    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'buffer', 'mesh', 'disasm', 'cbuffers')][string]$Cmd,
+    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
     [Parameter(Position = 1, Mandatory)][string]$Capture,
     [int]$X = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC

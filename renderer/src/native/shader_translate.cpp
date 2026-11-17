@@ -207,12 +207,23 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
     pm.pixel.param_gen_point = 0;
   }
   using DepthStencilMode = Modification::DepthStencilMode;
-  pm.pixel.depth_stencil_mode =
-      ps->IsImplicitEarlyZWriteAllowed() &&
-              (!ps->IsColorTargetWritten(0) ||
-               !CoverageDependsOnAlpha(Reg<reg::RB_COLORCONTROL>(regs.rb_colorcontrol)))
-          ? DepthStencilMode::kEarlyHint
-          : DepthStencilMode::kNoModifiers;
+  // A float24 target's depth in the console's precision (PipelineCache::GetCurrentPixelShader-
+  // Modification): a later pass that tests the same geometry against it with EQUAL or
+  // GREATER_EQUAL then finds the value it wrote, not one a float32 rounding away (Halo: Combat
+  // Evolved Anniversary's material pass failed its whole hull and left the clear colour).
+  if (regs.depth_float24 && Reg<reg::RB_DEPTHCONTROL>(regs.rb_depthcontrol).z_enable &&
+      Reg<reg::RB_DEPTH_INFO>(regs.rb_depth_info).depth_format ==
+          xenos::DepthRenderTargetFormat::kD24FS8) {
+    pm.pixel.depth_stencil_mode = regs.depth_float24 == 2 ? DepthStencilMode::kFloat24Rounding
+                                                          : DepthStencilMode::kFloat24Truncating;
+  } else {
+    pm.pixel.depth_stencil_mode =
+        ps->IsImplicitEarlyZWriteAllowed() &&
+                (!ps->IsColorTargetWritten(0) ||
+                 !CoverageDependsOnAlpha(Reg<reg::RB_COLORCONTROL>(regs.rb_colorcontrol)))
+            ? DepthStencilMode::kEarlyHint
+            : DepthStencilMode::kNoModifiers;
+  }
   out.pixel = pm.value;
   return out;
 }

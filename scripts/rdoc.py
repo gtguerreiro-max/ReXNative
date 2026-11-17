@@ -180,6 +180,40 @@ def main():
                     continue
                 text = controller.DisassembleShader(pipe, refl, targets[0])
                 open(os.path.join(out, "disasm-e%d-%s.txt" % (event, tag)), "w").write(text)
+        elif cmd == "state":
+            # The draw's depth and stencil test, depth bias and viewport (D3D12), into
+            # state-e<event>.txt. Each field read on its own: the API's names move between
+            # RenderDoc versions.
+            event = job["event"]
+            controller.SetFrameEvent(event, True)
+            d = controller.GetD3D12PipelineState()
+            lines = ["event %d" % event]
+
+            def field(label, get):
+                try:
+                    lines.append("%s %s" % (label, get()))
+                except Exception as e:  # noqa: BLE001
+                    lines.append("%s ? (%s)" % (label, e))
+
+            om = lambda: d.outputMerger.depthStencilState  # noqa: E731
+            rs = lambda: d.rasterizer.state  # noqa: E731
+            field("depth enable", lambda: om().depthEnable)
+            field("depth write", lambda: om().depthWrites)
+            field("depth func", lambda: om().depthFunction)
+            field("stencil enable", lambda: om().stencilEnable)
+            field("stencil front", lambda: (om().frontFace.function, om().frontFace.passOperation,
+                                            om().frontFace.depthFailOperation))
+            field("depth bias", lambda: rs().depthBias)
+            field("slope bias", lambda: rs().slopeScaledDepthBias)
+            field("bias clamp", lambda: rs().depthBiasClamp)
+            field("depth clip", lambda: rs().depthClip)
+            field("cull", lambda: (rs().cullMode, rs().frontCCW))
+            field("viewport0", lambda: (d.rasterizer.viewports[0].x, d.rasterizer.viewports[0].y,
+                                        d.rasterizer.viewports[0].width,
+                                        d.rasterizer.viewports[0].height,
+                                        d.rasterizer.viewports[0].minDepth,
+                                        d.rasterizer.viewports[0].maxDepth))
+            open(os.path.join(out, "state-e%d.txt" % event), "w").write(chr(10).join(lines) + chr(10))
         elif cmd == "cbuffers":
             # The constant buffers bound to the draw at `event`'s shaders, as float4s (up to 64
             # each), into cbuffers-e<event>.txt.

@@ -130,6 +130,12 @@ REXCVAR_DEFINE_BOOL(rexnative_memexport_readback, true, "ReXNative",
                     "reads a texture from it (the frame so far is submitted and waited for) and "
                     "after the Swap (--rexnative_memexport_readback_async); false: only the GPU "
                     "sees it, textures over it and the game's CPU code see the old memory");
+REXCVAR_DEFINE_INT32(rexnative_depth_float24, 0, "ReXNative",
+                     "Float24 (D24FS8) depth in the console's precision, converted in the pixel "
+                     "shader: 0 off, 1 truncated, 2 rounded. A game that draws the same "
+                     "geometry again with an EQUAL or GREATER_EQUAL depth test needs it (Halo: "
+                     "Combat Evolved Anniversary); it costs early depth testing on those targets")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(rexnative_gpu_memcpy, true, "ReXNative",
                     "Do the known GPU memory copies (a memexport shader that moves 64-byte blocks: "
                     "Iron Brigade's engine moves resources with it every frame) in guest memory "
@@ -143,6 +149,11 @@ REXCVAR_DEFINE_BOOL(rexnative_memexport_readback_async, false, "ReXNative",
                     "Steam Deck 7 to 17 ms a frame in Iron Brigade, whose engine copies memory "
                     "with the GPU to new places every frame, so it would wait anyway)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
+
+// The plugin's float24 depth conversion pixel shaders (rexnative.depth_float24), compiled bytecode.
+using BYTE = unsigned char;
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_round_ps.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_truncate_ps.h"
 
 namespace rexnative {
 
@@ -1367,6 +1378,8 @@ struct DrawRenderer::Impl {
   void WaitForPipeline(Pipeline* p);
   // A known GPU memory copy, done in guest memory now (EmulateGpuMemcpy); the draw is dropped.
   bool memcpy_emulation = REXCVAR_GET(rexnative_gpu_memcpy);
+  // rexnative.depth_float24 (shader_translate.h ShaderDrawRegs::depth_float24).
+  uint32_t depth_float24 = uint32_t(std::clamp(REXCVAR_GET(rexnative_depth_float24), 0, 2));
   uint64_t memcpy_count = 0, memcpy_bytes = 0;
   bool EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs);
   // What BindTextures reads besides the shader, and where it writes the texture signs.
@@ -2786,6 +2799,15 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
   if (ps && !key.disable_raster) {
     d.PS.pShaderBytecode = ps->GetTranslatedBinary().data();
     d.PS.BytecodeLength = ps->GetTranslatedBinary().size();
+  } else if (!key.disable_raster && depth_float24 &&
+             key.dsv == DXGI_FORMAT_D32_FLOAT_S8X24_UINT && key.depth_enable &&
+             (key.depth_write ||
+              D3D12_COMPARISON_FUNC(key.depth_func) != D3D12_COMPARISON_FUNC_ALWAYS)) {
+    // A depth-only draw on a float24 target: the plugin's depth conversion pixel shader, so its
+    // depth is in the same precision as the converted draws' (PipelineCache::CreateD3D12Pipeline).
+    d.PS.pShaderBytecode = depth_float24 == 2 ? kFloat24RoundPS : kFloat24TruncatePS;
+    d.PS.BytecodeLength =
+        depth_float24 == 2 ? sizeof(kFloat24RoundPS) : sizeof(kFloat24TruncatePS);
   }
   if (key.gs_key) {
     auto g = geometry_shaders.find(key.gs_key);
@@ -4390,6 +4412,9 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   sdr.rb_colorcontrol = regs[XE_GPU_REG_RB_COLORCONTROL];
   sdr.rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
   for (uint32_t i = 0; i < 4; ++i) sdr.rb_color_info[i] = regs[kColorInfoRegs[i]];
+  sdr.rb_depth_info = regs[XE_GPU_REG_RB_DEPTH_INFO];
+  sdr.rb_depthcontrol = regs[XE_GPU_REG_RB_DEPTHCONTROL];
+  sdr.depth_float24 = depth_float24;
   if (mods_memo.vs == vs && mods_memo.ps == ps &&
       std::memcmp(&mods_memo.sdr, &sdr, sizeof(sdr)) == 0) {
     ++diag.mods_hits;

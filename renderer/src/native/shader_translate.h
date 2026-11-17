@@ -45,6 +45,12 @@ struct ShaderDrawRegs {
   uint32_t rb_colorcontrol = 0;
   uint32_t rb_color_mask = 0;
   uint32_t rb_color_info[4] = {};  // RB_COLOR_INFO, RB_COLOR1_INFO, RB_COLOR2_INFO, RB_COLOR3_INFO
+  uint32_t rb_depth_info = 0;
+  uint32_t rb_depthcontrol = 0;
+  // rexnative.depth_float24: 0 none, 1 truncate, 2 round the depth of a float24 (D24FS8) target
+  // to 20e4 in the pixel shader, as the console stores it (the plugin's
+  // depth_float24_convert_in_pixel_shader).
+  uint32_t depth_float24 = 0;
 };
 
 struct ShaderModifications {
