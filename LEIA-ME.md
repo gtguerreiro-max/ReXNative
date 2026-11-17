@@ -129,8 +129,10 @@ outra vez. O jogo fica em `D:\rexnative-work\<jogo>\run\`: é só correr o execu
 `--lang pt` (ou `REXNATIVE_LANG=pt`), os relatórios saem em inglês.
 
 Outros comandos: `info <xex>` (título, versão, bibliotecas do XDK), `title-update <work>` (os
-title updates da lista, sem descarregar nada), `project <work>/<jogo> --build` (recompilar um
-jogo), `survey --work <work>` (uma tabela dos jogos preparados), `deck <work>/<jogo>...` (jogos
+title updates da lista, sem descarregar nada), `dlc <work>/<jogo> <pacotes, pastas ou arquivos>`
+(o conteúdo descarregável, onde o jogo o encontra: `run/userdata/0000000000000000/<title id>/00000002`
+com os ficheiros de cabeçalho; o `deck` leva-o também), `project <work>/<jogo> --build` (recompilar
+um jogo; os hooks do próprio jogo em `src/game_*.cpp` entram na compilação), `survey --work <work>` (uma tabela dos jogos preparados), `deck <work>/<jogo>...` (jogos
 compilados para uma Steam Deck: [Steam Deck](#steam-deck)), `adapt` (só a camada, para um
 projeto ReXGlue próprio), `scene` (a superfície da cena a partir de um dump de resolves),
 `validate <port>` (regenerar um port conhecido e comparar), `extract`, `neutral`. `python -m

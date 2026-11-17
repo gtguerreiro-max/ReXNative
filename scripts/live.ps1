@@ -49,6 +49,7 @@ param(
     [switch]$Force,
     [switch]$RenderDoc,
     [switch]$Plain,
+    [switch]$LeaveNotices,
     [string]$RenderDocDir = $env:REXNATIVE_RENDERDOC
 )
 $ErrorActionPreference = 'Stop'
@@ -129,6 +130,9 @@ function Close-FirewallNotices {
     # A game that binds a socket (system link, Xbox Live) makes Windows ask "allow access?" once per
     # new exe, in a window that takes the focus from the game. Ended unanswered (no rule is written,
     # the game stays without inbound access, as on a cancel), so the keys keep reaching the game.
+    # -LeaveNotices: left for the user to answer (the keys then reach the game only while it can
+    # come in front).
+    if ($LeaveNotices) { return }
     Get-CimInstance Win32_Process -Filter "Name='PickerHost.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*FirewallNotificationDialogServer*' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

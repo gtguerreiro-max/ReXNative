@@ -317,6 +317,28 @@ def call_args(R, T, ref_fn, tgt_fn, ref_args=None):
     return out, evidence
 
 
+def stack_address_args(tree, fn, back=24):
+    """The argument registers some call of `fn` sets to a stack address (`addi rN,r1,X`, a
+    pointer to the caller's frame) as their last write before the call."""
+    found = set()
+    for caller in tree.callers.get(fn, ()):
+        insns = tree.funcs.get(caller, ())
+        index = {a: i for i, (a, _) in enumerate(insns)}
+        for site, callee, _ in tree.calls.get(caller, ()):
+            if callee != fn or site not in index:
+                continue
+            seen = set()
+            for _, text in reversed(insns[max(0, index[site] - back):index[site]]):
+                mn, ops = _ops(text)
+                dst = _writes(mn, ops)
+                if not dst or dst in seen:
+                    continue
+                seen.add(dst)
+                if mn == 'addi' and len(ops) == 3 and ops[1] == 'r1':
+                    found.add(dst)
+    return found
+
+
 def resolve_abi(R, T, ref_profile, matches, log=print):
     """The target's Resolve hook and the source of each public argument.
 
@@ -432,6 +454,17 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
         else:
             regs.append(None)  # a register argument now on the stack: not supported
     stack_ok = all(src == p for name, p, src, n, tot in public[8:] if src is not None)
+    # The reference's own mapping, copied where no use aligned (PGR4 hooks an inner Resolve that
+    # takes no source rectangle and the level in r5), against the target's calls: one that passes
+    # a stack address in r5 passes the source rectangle there, as the public signature has it
+    # (Overlord's EndTiling calls its public Resolve so; with PGR4's mapping each tile's resolve
+    # read the rectangle's address as the level and was dropped: a white scene).
+    if regs[2] == 0 and regs[5] == 5 and 'r5' in stack_address_args(T, target_fn):
+        steps.append('a call of %08X passes a stack address in r5, the public source rectangle: '
+                     'the public signature, not the reference\'s mapping' % target_fn)
+        regs = list(range(3, 11))
+        public = [(name, p, p, n, tot) if i < 8 else (name, p, src, n, tot)
+                  for i, (name, p, src, n, tot) in enumerate(public)]
     identity = regs == list(range(3, 11)) and stack_ok
     return {
         'hook': target_fn,

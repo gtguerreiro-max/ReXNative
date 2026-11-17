@@ -268,6 +268,12 @@ def cmd_title_update(a):
             ', '.join('TU %d (%d KB)' % (u['version'], u['size']) for u in ups[:6]) or 'none'))
 
 
+def cmd_dlc(a):
+    from . import dlc
+    names = dlc.install(a.work, a.sources)
+    print('%d package(s) installed in %s' % (len(names), os.path.join(a.work, 'run', 'userdata')))
+
+
 def cmd_survey(a):
     from . import prepare
     print(prepare.survey(a.work))
@@ -349,6 +355,12 @@ def main(argv=None):
                             'and the one installed (nothing is downloaded)')
     s.add_argument('work', nargs='+', help="a game's folder, or prepare's --work")
     s.set_defaults(fn=cmd_title_update)
+    s = sub.add_parser('dlc', parents=[lang_opt],
+                       help="install a game's downloadable content (STFS packages, or folders "
+                            'and archives holding them) where the game finds it')
+    s.add_argument('work', help="the game's folder in prepare's --work")
+    s.add_argument('sources', nargs='+', help='packages, folders or .rar/.7z/.zip archives')
+    s.set_defaults(fn=cmd_dlc)
     s = sub.add_parser('deck', parents=[lang_opt],
                        help='copy built games to the Steam Deck, add them to Steam, try them')
     s.add_argument('work', nargs='+', help="a game's folder in prepare's --work (built)")

@@ -481,7 +481,10 @@ bool NativeRenderer::Initialize() {
   // This port: DLSS 5 (neural.h), on the scene after DLAA or before the HUD; the upscaler takes
   // it as it is made.
   if (NeuralPass::Requested()) neural_ = std::make_unique<NeuralPass>(device_->device());
-  SwitchUpscaler(Upscaler::Requested());
+  // A scene learned at run time and not yet known: the upscaler is made when it is learned
+  // (BeginFrameModules), as until then auto mode matches no surface; made here, it was made a
+  // second time there, for the scene's size, with the GPU idle.
+  if (!SceneAuto() || Scene().mask) SwitchUpscaler(Upscaler::Requested());
   textures_ = std::make_unique<TextureCache>(device_->device(), host::Memory());
   textures_->SetResolvedLookup([this](uint32_t a) { return resolver_->Find(a); });
   textures_->SetResolvedContaining(

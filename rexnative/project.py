@@ -12,6 +12,9 @@ v0.11:
                                                   the settings HUD)
   src/import_stubs.cpp                            the imports the runtime lacks, as stubs
   <name>.toml                                     the run folder's configuration (kept once there)
+The game's own host code, written by hand, is built with it: src/game_*.cpp (hooks of its guest
+functions, REX_HOOK_RAW over __imp__sub_X), kept as they are; they stay in the work folder, with
+the game's other files.
 With --build: configures and builds it (clang++ from LLVM 20, $REXNATIVE_LLVM; Ninja; the Visual
 Studio environment from scripts/vcenv.cmd) in build/, then lays out run/: the executable, the
 DLLs the build staged (ReXGlue's modules, DLSS, FidelityFX), the configuration, game/ (a junction
@@ -74,7 +77,7 @@ rexglue_project({name} OUTPUT_DIR generated/default)
 
 # Host code: the app, the stubs of the imports the runtime lacks, and ReXNative (rexnative_add
 # below) with the game's layer. OBJECT, not STATIC: an archive drops the hooks.
-add_library({name}_common OBJECT src/{name}_app.cpp src/import_stubs.cpp)
+add_library({name}_common OBJECT src/{name}_app.cpp src/import_stubs.cpp{game_sources})
 rexglue_setup_host_library({name}_common)
 
 if(WIN32)
@@ -254,7 +257,10 @@ def write(work):
                          '(it renames the project to one word and runs codegen again)' % name)
     cls = _class_name(name)
     rexnative = HERE.replace('\\', '/')
-    _write(os.path.join(work, 'CMakeLists.txt'), CMAKE.format(name=name, rexnative=rexnative))
+    game_sources = ''.join(' src/' + os.path.basename(f) for f in
+                           sorted(glob.glob(os.path.join(work, 'src', 'game_*.cpp'))))
+    _write(os.path.join(work, 'CMakeLists.txt'),
+           CMAKE.format(name=name, rexnative=rexnative, game_sources=game_sources))
     _write(os.path.join(work, 'src', 'main.cpp'), MAIN.format(name=name, cls=cls))
     # ReXGlue v0.11 writes its own crash report (logs/), and the generated sources.cmake replaced
     # generated/rexglue.cmake.

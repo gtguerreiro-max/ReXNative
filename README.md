@@ -124,7 +124,10 @@ The game is then in `D:\rexnative-work\<game>\run\`: run its executable. Reports
 `--lang pt` (or `REXNATIVE_LANG=pt`) writes them in Portuguese.
 
 Other commands: `info <xex>` (title, version, XDK libraries), `title-update <work>` (the title
-updates listed, nothing downloaded), `project <work>/<game> --build` (rebuild one game), `survey
+updates listed, nothing downloaded), `dlc <work>/<game> <packages, folders or archives>` (its
+downloadable content, where the game finds it: `run/userdata/0000000000000000/<title id>/00000002`
+with its header files; `deck` takes it along), `project <work>/<game> --build` (rebuild one game;
+the game's own hooks in `src/game_*.cpp` are built with it), `survey
 --work <work>` (a table of the prepared games), `deck <work>/<game>...` (built games onto a Steam
 Deck: [Steam Deck](#steam-deck)), `adapt` (only the layer, for a ReXGlue project of your own),
 `scene` (the scene surface from a resolve dump), `validate <port>` (regenerate a known port and

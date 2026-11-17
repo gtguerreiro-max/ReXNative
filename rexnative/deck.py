@@ -229,6 +229,9 @@ def package(work):
     tu = os.path.join(work, 'title-update', 'content')
     if os.path.isdir(tu):
         items += walk(tu, 'title-update/')
+    # Downloadable content (rexnative dlc), in userdata/ beside the game as on the PC.
+    from . import dlc
+    items += dlc.deck_items(work)
     for f in ('play.sh', 'install.sh', 'steam_shortcuts.py'):
         items.append((os.path.join(KIT, f), f))
     # The game's settings for the Deck: the PC's, with the Deck's screen in place of a window.
