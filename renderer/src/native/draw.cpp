@@ -1240,13 +1240,16 @@ struct DrawRenderer::Impl {
     // Motion vector draws, those with previous constants, those told apart from copies of their
     // mesh, and those moved with the camera (MotionHistory::Found).
     uint64_t motion_draws = 0, motion_matched = 0, motion_copies = 0, motion_camera = 0;
-    uint64_t motion_moved = 0;  // previous vertices read at the previous first vertex
+    uint64_t motion_moved = 0;    // previous vertices read at the previous first vertex
+    uint64_t motion_nearest = 0;  // told apart from draws as alike by their first vertex
+    uint64_t motion_far = 0;      // refused the nearest previous draw: its first vertex too far
   } diag;
   // Where Prepare's counters go: with the render thread, which owns diag, the guest thread's own.
   PrepareDiag& PrepDiag() { return threaded ? prep_diag : diag.prep; }
 
   // List state.
   uint64_t list_frame = UINT64_MAX;
+  uint32_t motion_ordinal = 0;  // this frame's motion draws so far (kDebugLogMotion)
   bool list_dirty = true;
   ID3D12PipelineState* bound_pso = nullptr;
   D3D_PRIMITIVE_TOPOLOGY bound_topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -1293,6 +1296,8 @@ struct DrawRenderer::Impl {
     kDebugNoJitter = 16384,  // the upscaler's scene drawn without its jitter
     kDebugNoMotion = 32768,  // and without its motion pipelines (with [skip_from, skip_to): those
                              // draws only, none skipped)
+    kDebugNoAnchor = 65536,  // motion: no first vertex tie-break (MotionHistory::Nearer)
+    kDebugLogMotion = 262144,  // log every motion draw's match while set (MotionHistory)
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -2590,6 +2595,37 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   now.vertex_index_offset = vertex_index_offset;
   for (uint32_t i = 0; i < bases; ++i)
     now.vertex_base[i] = fetch_constants[fetch_dword0(bindings[i].fetch_constant)];
+  // Its first vertex (MotionHistory::Constants::anchor): in the first binding, the first
+  // attribute of 3 or 4 floats (x, y, z) and the first of 2, at the draw's first vertex,
+  // swapped as the fetch constant says.
+  if (bases && membase && !(debug_mask & kDebugNoAnchor)) {
+    const rex::gpu::Shader::VertexBinding& b = bindings[0];
+    const uint32_t endian = fetch_constants[fetch_dword0(b.fetch_constant) + 1] & 3;
+    bool have_position = false, have_pair = false, finite = true;
+    for (const rex::gpu::Shader::VertexBinding::Attribute& a : b.attributes) {
+      const auto& fa = a.fetch_instr.attributes;
+      const bool pair = fa.data_format == xenos::VertexFormat::k_32_32_FLOAT;
+      const bool position = fa.data_format == xenos::VertexFormat::k_32_32_32_FLOAT ||
+                            fa.data_format == xenos::VertexFormat::k_32_32_32_32_FLOAT;
+      if ((!pair || have_pair) && (!position || have_position)) continue;
+      const uint32_t n = position ? 3 : 2, into = position ? 0 : 3;
+      const uint64_t at = uint64_t(now.vertex_base[0] & 0x1FFFFFFCu) +
+                          4 * (uint64_t(vertex_index_offset) * b.stride_words + uint32_t(fa.offset));
+      if (fa.offset < 0 || at + 4 * n > (uint64_t(512) << 20)) continue;
+      for (uint32_t k = 0; k < n; ++k) {
+        uint32_t v;
+        std::memcpy(&v, membase + at + 4 * k, 4);
+        if (endian == 1) v = ((v & 0xFF00FF00u) >> 8) | ((v & 0x00FF00FFu) << 8);  // 8in16
+        if (endian == 2) v = __builtin_bswap32(v);                                   // 8in32
+        if (endian == 3) v = (v >> 16) | (v << 16);                                  // 16in32
+        std::memcpy(&now.anchor[into + k], &v, 4);
+        finite = finite && std::isfinite(now.anchor[into + k]);
+      }
+      (position ? have_position : have_pair) = true;
+      if (have_position && have_pair) break;
+    }
+    now.anchor_valid = finite && (have_position || have_pair);
+  }
   const MotionHistory::Constants* previous =
       motion_history.Match(identity, loose, now, cb_float_vs.last, cb_float_vs.size);
   const MotionHistory::Found found = motion_history.found();
@@ -2604,7 +2640,10 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
     }
   }
   ++diag.motion_draws;
+  ++motion_ordinal;
   diag.motion_copies += found == MotionHistory::Found::kCopy;
+  diag.motion_nearest += found == MotionHistory::Found::kNearest;
+  diag.motion_far += motion_history.refused();
   diag.motion_camera += previous == &camera;
   if (previous && previous->vs == vs)
     ++diag.motion_matched;
@@ -2618,6 +2657,26 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   // followed and lost the characters' outlines and heads with. Its previous vertex fetch
   // constants are moved by the difference of the two first vertices, for each binding whose
   // buffer changed (the one it kept was written over this frame: its vertices stay, no motion).
+  if (debug_mask & kDebugLogMotion) [[unlikely]] {
+    // One line a motion draw: the k-th is the k-th draw writing the motion target in a capture
+    // of that frame. found: 0 none, 1 order, 2 copy, 3 nearest, 4 camera; prev: its index in
+    // the previous frame's motion draws.
+    const MotionHistory::Constants* p =
+        previous != &now && previous != &camera ? previous : nullptr;
+    REXLOG_INFO(
+        "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
+        "prev off {} base {:08X} | anchor {} ({:.4g} {:.4g} {:.4g} {:.4g} {:.4g}) prev {} "
+        "({:.4g} {:.4g} {:.4g} {:.4g} {:.4g})",
+        list_frame, motion_ordinal, frame_draws, s.count, uint32_t(s.primitive),
+        uint32_t(found), motion_history.global() ? " global" : "", motion_history.refused() ? " far" : "",
+        double(motion_history.anchor_limit()),
+        p ? int64_t(motion_history.last_index()) : -1, motion_history.previous_count(),
+        vertex_index_offset, now.vertex_base[0], p ? p->vertex_index_offset : 0u,
+        p ? p->vertex_base[0] : 0u, now.anchor_valid ? 1 : 0, now.anchor[0], now.anchor[1],
+        now.anchor[2], now.anchor[3], now.anchor[4], p && p->anchor_valid ? 1 : 0,
+        p ? p->anchor[0] : 0.f, p ? p->anchor[1] : 0.f, p ? p->anchor[2] : 0.f,
+        p ? p->anchor[3] : 0.f, p ? p->anchor[4] : 0.f);
+  }
   D3D12_GPU_VIRTUAL_ADDRESS previous_fetch = previous->fetch_constants;
   if (previous != &now && previous != &camera &&
       previous->vertex_index_offset != vertex_index_offset) {
@@ -3710,6 +3769,7 @@ void DrawRenderer::Impl::SyncListFrame() {
   // The motion vector pass reads the previous frame's constants where that frame uploaded them.
   constant_upload.set_keep_previous_frame(r.upscaler() != nullptr);
   motion_history.BeginFrame(list_frame);
+  motion_ordinal = 0;
 }
 
 DxbcShader::Translation* DrawRenderer::Impl::Translated(DxbcShader& shader, uint64_t modification) {
@@ -5306,11 +5366,13 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
       REXLOG_INFO(
           "ReXNative draw diag: motion vector draws {:.1f}/frame, {:.2f} % with previous "
           "constants: {:.1f}/frame told apart from copies of their mesh, {:.1f}/frame moved with "
-          "the camera, {:.1f}/frame from their previous vertex buffer",
+          "the camera, {:.1f}/frame from their previous vertex buffer, {:.1f}/frame told apart "
+          "by their first vertex, {:.1f}/frame refused theirs for its distance",
           double(d.motion_draws) / double(d.frames),
           100.0 * double(d.motion_matched) / double(d.motion_draws),
           double(d.motion_copies) / double(d.frames), double(d.motion_camera) / double(d.frames),
-          double(d.motion_moved) / double(d.frames));
+          double(d.motion_moved) / double(d.frames), double(d.motion_nearest) / double(d.frames),
+          double(d.motion_far) / double(d.frames));
     d = Impl::Diag{};
   }
   if (!impl_->debug_path.empty() && ++impl_->debug_poll >= 15) {

@@ -37,8 +37,10 @@
 #include <d3d12.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -56,12 +58,22 @@ class MotionHistory {
     uint32_t vertex_index_offset = 0;
     static constexpr uint32_t kVertexBases = 8;  // more bindings than that: the rest not moved
     uint32_t vertex_base[kVertexBases] = {};
+    // What its first vertex had in its first binding: the first attribute of 3 or 4 floats (x,
+    // y, z: its position) and the first of 2 (a texture coordinate), 0 for one it lacks.
+    // Between previous draws Match finds alike, the nearest is the same mesh where the game
+    // wrote its vertices transformed (Jet Set Radio: a crowd of draws of one shader and index
+    // count, same constants, told apart by nothing else; its overlays' quads by their
+    // positions, or by their texture coordinates where those are all the first vertex differs in).
+    static constexpr int kAnchor = 5;
+    float anchor[kAnchor] = {};
+    bool anchor_valid = false;
   };
   // How the last Match found the previous constants.
   enum class Found {
     kNone,    // not at all
     kOrder,   // the draw of its identity next in order
     kCopy,    // among copies of its mesh, the one with its constants (another than the order's)
+    kNearest, // among draws as alike, the one whose first vertex was nearest (Constants::anchor)
     kCamera,  // none: camera_floats(), its own with the camera's of the previous frame
   };
 
@@ -86,6 +98,18 @@ class MotionHistory {
     frame_ = frame;
     cursor_ = 0;
     by_loose_built_ = false;
+    // The limit on a match's anchor distance (Match): 4 times the lower quartile of the last
+    // frame's distances, matched or refused (a camera's move over most draws; the quartile
+    // stays below the mismatches, which were a quarter to a half of Jet Set Radio's), at least
+    // kAnchorMin. No limit before a frame with anchors.
+    if (!distances_.empty()) {
+      auto q = distances_.begin() + distances_.size() / 4;
+      std::nth_element(distances_.begin(), q, distances_.end());
+      anchor_limit_ = std::max(kAnchorMin, 4.0f * *q);
+    } else {
+      anchor_limit_ = std::numeric_limits<float>::infinity();
+    }
+    distances_.clear();
     // The global search from the first frame whose draws the window mostly missed on (it then
     // finds them, so the window's misses no longer tell).
     global_ = global_ || (draws_ >= 64 && misses_ * 5 > draws_);
@@ -118,6 +142,7 @@ class MotionHistory {
     uint32_t best_same = 0;
     bool several = false;
     bool use_loose = false;
+    bool nearest = false;  // best taken over an equal one for its anchor
     auto consider = [&](size_t i) {
       const Draw& p = previous_[i];
       if ((use_loose ? p.loose != loose : p.identity != identity) || p.matched) return;
@@ -129,9 +154,14 @@ class MotionHistory {
         several = true;
         best_same = SameRegisters(previous_[best], floats, size);
       }
-      if (const uint32_t same = SameRegisters(p, floats, size); same > best_same) {
+      const uint32_t same = SameRegisters(p, floats, size);
+      if (same > best_same) {
         best = i;
         best_same = same;
+        nearest = false;
+      } else if (same == best_same && Nearer(now, p.constants, previous_[best].constants)) {
+        best = i;
+        nearest = true;
       }
     };
     ForWindow(consider);
@@ -155,14 +185,37 @@ class MotionHistory {
       if (auto it = by_loose_.find(loose); it != by_loose_.end())
         for (uint32_t i : it->second) consider(i);
     }
+    far_ = false;
     if (best == n) return Camera(now, floats, size);
-    found_ = several && best != first ? Found::kCopy : Found::kOrder;
+    // A draw whose first vertex was far from this one's is another mesh, not this one moved: Jet
+    // Set Radio clips its polygons on the CPU, so the road's index count changes from frame to
+    // frame, and the nearest draw of this frame's count was a building a third of the screen
+    // away (its motion vectors, 27 % of a frame's pixels off the camera's by over 256 pixels,
+    // made FSR smear the road). Such a draw moves with the camera instead.
+    if (now.anchor_valid && previous_[best].constants.anchor_valid) {
+      const float d = std::sqrt(Distance2(now, previous_[best].constants));
+      distances_.push_back(d);
+      if (d > anchor_limit_) {
+        far_ = true;
+        return Camera(now, floats, size);
+      }
+    }
+    found_ = !several || best == first ? Found::kOrder
+             : nearest                  ? Found::kNearest
+                                        : Found::kCopy;
     previous_[best].matched = true;
     current_.back().previous = uint32_t(best);
     cursor_ = best + 1;
+    last_index_ = best;
     return &previous_[best].constants;
   }
   Found found() const { return found_; }
+  // The last Match's previous draw, its place in the previous frame (debugging), and the frame's.
+  size_t last_index() const { return last_index_; }
+  size_t previous_count() const { return previous_.size(); }
+  bool global() const { return global_; }
+  bool refused() const { return far_; }  // the last Match refused the nearest draw: too far
+  float anchor_limit() const { return anchor_limit_; }
   // Found::kCamera: the float constants of the previous frame for the last Match's draw, its
   // size bytes. Valid until the next Match.
   const std::vector<uint8_t>& camera_floats() const { return camera_floats_; }
@@ -187,6 +240,18 @@ class MotionHistory {
     const size_t n = previous_.size();
     for (size_t i = cursor_, end = std::min(n, cursor_ + kWindow); i < end; ++i) f(i);
     for (size_t i = cursor_, end = cursor_ > kWindow ? cursor_ - kWindow : 0; i-- > end;) f(i);
+  }
+
+  static float Distance2(const Constants& a, const Constants& b) {
+    float d = 0;
+    for (int k = 0; k < Constants::kAnchor; ++k)
+      d += (a.anchor[k] - b.anchor[k]) * (a.anchor[k] - b.anchor[k]);
+    return d;
+  }
+  // Whether `a`'s first vertex was nearer to `now`'s than `b`'s (all three known).
+  static bool Nearer(const Constants& now, const Constants& a, const Constants& b) {
+    if (!now.anchor_valid || !a.anchor_valid || !b.anchor_valid) return false;
+    return Distance2(a, now) < Distance2(b, now);
   }
 
   // The registers (16 bytes each) of the previous frame's draw `p` the same as `floats`.
@@ -233,6 +298,12 @@ class MotionHistory {
   std::vector<Draw> current_, previous_;
   std::vector<uint8_t> current_floats_, previous_floats_;
   size_t cursor_ = 0;  // in previous_: after the last draw matched
+  size_t last_index_ = 0;
+  // Anchor distances of this frame's matches, and the limit from the last frame's (BeginFrame).
+  static constexpr float kAnchorMin = 128.0f;
+  std::vector<float> distances_;
+  float anchor_limit_ = std::numeric_limits<float>::infinity();
+  bool far_ = false;  // the last Match refused its draw for its distance
   uint64_t frame_ = UINT64_MAX - 1;
   Found found_ = Found::kNone;
   std::vector<uint8_t> camera_floats_;  // Camera's

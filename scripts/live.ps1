@@ -28,7 +28,10 @@
 #   stencil kept), 2048 the same for draws that test depth without writing it, 4096 skip the
 #   draws replayed from recorded command buffers, 8192 skip all the others, 16384 the
 #   upscaler's scene without its jitter, 32768 without its motion vector pipelines (with a
-#   range: only the draws in it, none skipped, to bisect). Draws in
+#   range: only the draws in it, none skipped, to bisect), 65536 motion vectors without the
+#   first vertex (MotionHistory's anchor: no tie-break, no distance limit), 262144 log each
+#   motion draw's match ("ReXNative motion: f<frame> #<k>": the k-th draw writing the motion
+#   target in a capture of that frame). Draws in
 #   [skip_from, skip_to) are skipped. 16 and 256 act when they are set,
 #   so -Pulse clears the file again.
 # Keys: hold:<keys joined by +>:<ms> with real key-down/up (SPACE, ENTER, TAB, arrows, letters;

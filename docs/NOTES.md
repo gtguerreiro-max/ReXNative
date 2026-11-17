@@ -153,6 +153,21 @@ frame's own vertices. A buffer the draw kept was written over this frame: no mot
 With the camera following the skater, the median is now 4.5 pixels and 3 % of the pixels move
 more than 64 (draws matched to another mesh of the same vertex count).
 
+Those were more in the attract demo: 8 to 33 % of a frame's pixels off the camera's motion by
+over 256 pixels. A log of each motion draw's match (`draw-debug.txt` 262144), tied to a capture
+by the order of the draws writing the motion target, showed why: the road was matched with a
+building a third of the screen away. Jet Set Radio clips its polygons on the CPU, so a mesh's
+index count changes from frame to frame and the previous frame often has no draw of this one's
+identity that is the same mesh; among the draws that have it, the first in order was taken. Each
+draw now also keeps its first vertex (the first binding's first attribute of 3 or 4 floats, and
+its first of 2: `anchor`). Among previous draws as alike, the nearest is taken; and a match whose
+first vertex is further than 4 times the lower quartile of the last frame's distances (at least
+128 units: the camera's move over most draws) is another mesh, so the draw moves with the camera
+instead. Over ten captures taken in turn with and without (`draw-debug.txt` 65536), the pixels
+off the camera's motion by over 64 pixels went from 10 to 36 % to 0 to 0.3 %. For a game whose
+vertices stay in model space (Iron Brigade, PGR4) a draw's own mesh is at distance 0, and the
+limit only refuses a match with another mesh's buffer.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV
