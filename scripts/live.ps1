@@ -274,7 +274,14 @@ switch ($Command) {
                 Sort-Object LastWriteTime | Select-Object -Last 1
         }
         if (-not $f) { throw 'no capture within 10 s' }
-        Start-Sleep -Milliseconds 300
+        # Written once its size is above zero and stops changing (a busy disk writes it slowly).
+        $len = -1
+        for ($i = 0; $i -lt 50; ++$i) {
+            Start-Sleep -Milliseconds 300
+            $f.Refresh()
+            if ($f.Length -gt 0 -and $f.Length -eq $len) { break }
+            $len = $f.Length
+        }
         $dst = Join-Path $s.live "shots\$name.png"
         Copy-Item $f.FullName $dst -Force
         $dst
