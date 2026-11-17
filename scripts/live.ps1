@@ -13,6 +13,8 @@
 #   scripts\live.ps1 keys "0:hold:SPACE:150,3:hold:ENTER:150"
 #   scripts\live.ps1 click 535 403        # a left click at x,y of the window as `shot` saves it
 #   scripts\live.ps1 log "failed|removed" 20
+#   scripts\live.ps1 control "renderer stock"   # control-file commands (rexnative_d3d_hooks.cpp),
+#                                               # ; between several: here the Xenos plugin draws
 #   scripts\live.ps1 status | stop
 # With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir or
 # $env:REXNATIVE_RENDERDOC): `capture` then takes the next frame into <Dir>\live\rdoc through

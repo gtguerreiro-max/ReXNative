@@ -32,6 +32,8 @@
 //                          LB RB LS RS) and the left stick on user 0's pad for ms (150), in what
 //                          the game's XInputGetState returns (when the layer found it): no window
 //                          focus needed
+//   renderer native|stock  as the renderer switch (F9): the native renderer or the Xenos plugin
+//                          draws from the next Swap on, without the window in front
 // --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
@@ -1010,6 +1012,13 @@ void PollControl(Tap& t, uint8_t* base) {
       }
       g_pad_state.store(state, std::memory_order_relaxed);
       g_pad_until_ns.store(rexnative::NowNs() + ms * 1000000ull, std::memory_order_release);
+    } else if (cmd == "renderer") {
+      rexnative::NativeRenderer* r = rexnative::NativeRenderer::Get();
+      if (!r || (arg != "native" && arg != "stock")) {
+        REXNATIVE_LOG_FIRST(4, WARN, "ReXNative D3D control: '{}' ignored (renderer native|stock)", l);
+        continue;
+      }
+      r->RequestRenderer(arg == "native");
     }
     REXLOG_INFO("ReXNative D3D control: {} (skip mask {})", l, g_skip.load());
   }
