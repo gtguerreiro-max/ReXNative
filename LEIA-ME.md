@@ -69,7 +69,8 @@ deixa um executável compilado que corre.
 | Double Dragon Neon | joga-se a primeira missão | 60 FPS |
 | Brothers - A Tale of Two Sons | menu e abertura, desenhados como no renderer original | 30 FPS (renderer do ReXGlue) |
 | Bionic Commando Rearmed (TU 2) | a introdução a 60 FPS, o mapa das missões | 60 FPS |
-| Midnight Club: Los Angeles - Complete Edition | o ecrã de título com a cidade, 30 FPS | 30 FPS |
+| Midnight Club: Los Angeles - Complete Edition | joga-se: a cidade, os carros (de command buffers gravados), 30 FPS | 30 FPS |
+| Dark Souls II (TU 10) | joga-se: menus, um jogo novo até Things Betwixt, 30 FPS como na consola (60 sem o limite, `rexnative.menu_fps`); o vídeo do prólogo sai estragado (também no renderer do ReXGlue: a descodificação do WMV) | 30 FPS (Things Betwixt) |
 | Halo: Combat Evolved Anniversary (TU 2) | menu da campanha e a cena de abertura; algumas superfícies escuras ou às riscas | 60 FPS (a introdução) |
 | Spelunky (TU 1) | menus, sem texto (também no renderer do ReXGlue, e no Xenia: [game-compatibility#97](https://github.com/xenia-project/game-compatibility/issues/97)) | 60 FPS, sem texto |
 | Perfect Dark (TU 3) | chega aos níveis, mas desenha-os partidos (o renderer do ReXGlue já chega aos menus, para comparar) | 60 FPS (menus) |

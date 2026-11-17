@@ -101,6 +101,22 @@ is applied. In Iron Brigade's first mission that is 2 buffers and 343 draws a fr
 `cmdbuf dump [tag]` (each packet of the next two buffers into the trace folder); draw-debug.txt
 bits 4096 and 8192 skip the replayed draws or all others.
 
+Midnight Club: Los Angeles (XDK 6995) draws its cars from 67 recorded buffers a frame, which
+the replay first refused and then drew 512 rows up:
+
+- its chunk lists live in physical memory's 0xA0000000 view (64 KB pages), not only 0xC0000000;
+- its D3D writes an entry's dword count alone, leaving the high byte as the heap left it (0xCD);
+- each buffer carries one setup per predicated tile under SET_BIN_MASK of the tile's bins, and
+  the last, tile 2's, moves the window 512 rows up (PA_SC_WINDOW_OFFSET 0x7E000000). The replay
+  draws once over the whole surface, so those predicated window writes become offset 0 and the
+  union of the tiles' scissors;
+- the device's bin mask that a buffer starts from moves with the XDK (12956 for 20353/20500,
+  12708 for 6995, 13084 for 21xxx, and others): the generator reads it where the segment start
+  writes SET_BIN_MASK_LO/HI (`constants.bin_mask_offset`) and the layer gives it as
+  `kCmdBufBinMaskOffset`. Read at the wrong offset, every predicated draw was skipped.
+
+`cmdbuf dump tag:N` dumps the next N calls (a whole frame of Midnight Club's is 67).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV
