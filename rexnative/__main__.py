@@ -9,6 +9,10 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative neutral [--port NAME] [--out DIR]   game-neutral src/native (renderer/)
   python -m rexnative prepare SOURCE... --work DIR        a game as it comes -> codegen, layer
   python -m rexnative project WORK/GAME [--build]         a prepared game -> a project that runs
+  python -m rexnative title-update WORK...                the title updates XboxUnity lists
+  python -m rexnative dlc WORK/GAME SOURCE...             install downloadable content
+  python -m rexnative deck WORK/GAME... [--steam] [--try S]  copy built games to the Steam Deck
+  python -m rexnative survey --work DIR                   table of the prepared games
 
 Reports and messages are in English; --lang pt (before or after the command) or
 REXNATIVE_LANG=pt writes them in Portuguese.

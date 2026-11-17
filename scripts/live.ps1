@@ -4,7 +4,8 @@
 #
 #   scripts\live.ps1 start -Dir <game's build folder> -Exe ironbrigade.exe `
 #       -Extra "--rexnative=true" -Route "10:hold:ENTER:150,18:hold:ENTER:150,26:hold:SPACE:150"
-#   scripts\live.ps1 shot before          # <live>\shots\before.png
+#   scripts\live.ps1 shot before          # <live>\shots\before.png (window capture)
+#   scripts\live.ps1 frame before         # the same from the renderer itself: no focus needed
 #   scripts\live.ps1 debug "1"            # draw-debug.txt: depth off (see below)
 #   scripts\live.ps1 debug "16" -Pulse    # log the next frame's draws, then clear the switch
 #   scripts\live.ps1 snap "6160EBE04B693B5E 804E2F1E4E062B9A"   # targets after those shaders
@@ -14,7 +15,8 @@
 #   scripts\live.ps1 log "failed|removed" 20
 #   scripts\live.ps1 status | stop
 # With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir or
-# $env:REXNATIVE_RENDERDOC): `capture` then takes the next frame (F12) into <Dir>\live\rdoc, for
+# $env:REXNATIVE_RENDERDOC): `capture` then takes the next frame into <Dir>\live\rdoc through
+# RenderDoc's target control (scripts\rdoc_trigger.py; the window need not be in front), for
 # scripts\rdoc.ps1 (draw list, pixel history, textures) with the game closed or still running.
 #
 # The game runs in a 1280x720 window (full screen slowed the whole PC down) with
@@ -255,6 +257,26 @@ switch ($Command) {
         $name = if ($Arg) { $Arg } else { (Get-Date).ToString('HHmmss') }
         Save-Shot $p (Join-Path $s.live "shots\$name.png")
     }
+    'frame' {
+        # The renderer's own capture of the next frame (capture.request in <live>\cap): its
+        # f<frame>-native.png copied to <live>\shots\<name>.png. Needs no window in front.
+        Get-Game $s | Out-Null
+        $cap = Join-Path $s.live 'cap'
+        $name = if ($Arg) { $Arg } else { (Get-Date).ToString('HHmmss') }
+        $before = Get-Date
+        New-Item -ItemType File -Force (Join-Path $cap 'capture.request') | Out-Null
+        $f = $null
+        for ($i = 0; $i -lt 50 -and -not $f; ++$i) {
+            Start-Sleep -Milliseconds 200
+            $f = Get-ChildItem $cap -Filter 'f*-native.png' | Where-Object { $_.LastWriteTime -ge $before } |
+                Sort-Object LastWriteTime | Select-Object -Last 1
+        }
+        if (-not $f) { throw 'no capture within 10 s' }
+        Start-Sleep -Milliseconds 300
+        $dst = Join-Path $s.live "shots\$name.png"
+        Copy-Item $f.FullName $dst -Force
+        $dst
+    }
     'burst' {
         # A few window captures in a row (-Arg2 of them, default 6, ~100 ms apart): glitches that
         # one still capture does not catch (frame generation, jitter, motion).
@@ -299,21 +321,22 @@ switch ($Command) {
             Select-Object -First ([int]$frames) | ForEach-Object { $_.FullName }
     }
     'capture' {
-        # RenderDoc's capture key in the game window; waits for the new capture file.
-        $p = Get-Game $s
+        # The next frame, through RenderDoc's target control (scripts\rdoc_trigger.py in
+        # qrenderdoc's Python): the game's window need not be in front.
+        Get-Game $s | Out-Null
         if (-not $s.renderdoc) { throw 'the live game was not started with -RenderDoc' }
+        $qrd = Join-Path $RenderDocDir 'qrenderdoc.exe'
+        if (-not $RenderDocDir -or -not (Test-Path $qrd)) { throw 'RenderDoc not found: -RenderDocDir or REXNATIVE_RENDERDOC' }
         $dir = Join-Path $s.live 'rdoc'
-        $before = @(Get-ChildItem $dir -Filter *.rdc | ForEach-Object { $_.FullName })
-        $h = Get-Window $p
-        [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 200
-        if ([RexLiveWin]::GetForegroundWindow() -ne $h) { throw 'the game is not in front' }
-        [RexLiveWin]::Key(0x7B, $true); Start-Sleep -Milliseconds 120; [RexLiveWin]::Key(0x7B, $false)
-        $new = $null
-        for ($i = 0; $i -lt 300 -and -not $new; ++$i) {
-            Start-Sleep -Milliseconds 200
-            $new = Get-ChildItem $dir -Filter *.rdc | Where-Object { $before -notcontains $_.FullName } | Select-Object -First 1
-        }
-        if (-not $new) { throw 'no capture within 60 s' }
+        $log = Join-Path $dir 'trigger.log'
+        Remove-Item $log -ErrorAction SilentlyContinue
+        $env:REXNATIVE_RDOC_TRIGGER_OUT = $log
+        $q = Start-Process $qrd -ArgumentList @('--python', "`"$PSScriptRoot\rdoc_trigger.py`"") -PassThru -WindowStyle Minimized
+        if (-not $q.WaitForExit(90000)) { Stop-Process $q -Force; throw 'RenderDoc did not answer in 90 s' }
+        $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
+        $m = [regex]::Match($text, '(?m)^capture (.+?)\s*$')
+        if (-not $m.Success) { throw "no capture: $($text.Trim())" }
+        $new = Get-Item $m.Groups[1].Value
         # Written once its size stops changing.
         do { $len = $new.Length; Start-Sleep -Milliseconds 700; $new.Refresh() } while ($new.Length -ne $len)
         if ($Arg) { $dest = Join-Path $dir "$Arg.rdc"; Move-Item -Force $new.FullName $dest; $dest } else { $new.FullName }

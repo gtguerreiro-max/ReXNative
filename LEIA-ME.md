@@ -269,19 +269,28 @@ Arrancar o jogo para cada experiência custa minutos (logótipos, introdução, 
 janela de 1280x720 e leva-o até ao problema; depois cada experiência demora segundos sobre o jogo
 a correr:
 
-- `shot`: uma captura da janela; `log`: o log do jogo; `stop`;
+- `shot`: uma captura da janela; `frame`: o mesmo tirado pelo próprio renderer, sem precisar da
+  janela à frente; `log`: o log do jogo; `stop`;
 - `debug "<máscara>"`: os interruptores do renderer (depth, stencil, cull, blend, alpha test
   desligados, saltar uma gama de draws);
 - `snap`: os render targets depois de certos shaders (`python scripts\snaps.py` passa-os a
-  imagens); `drawlog`: os draws de um frame; `trace`: o push buffer do jogo num frame.
+  imagens); `drawlog`: os draws de um frame; `trace`: o push buffer do jogo num frame;
+- no `-Route`, `pad:A+START:200` carrega nos botões do comando do jogo pelo ficheiro de controlo
+  (sem precisar de foco, numa camada com XInputGetState).
 
 Com `start -RenderDoc` (a pasta do RenderDoc em `REXNATIVE_RENDERDOC`), `capture` tira uma
-captura RenderDoc do frame seguinte, e `scripts\rdoc.ps1` consulta-a com o jogo fechado:
+captura RenderDoc do frame seguinte (pelo controlo de alvos do RenderDoc, por isso um aviso do
+Windows com o foco não a impede), e `scripts\rdoc.ps1` consulta-a com o jogo fechado:
 `actions` (cada draw, o número de índices e os targets), `history -X -Y` (que draws tocaram num
 pixel e o que falhou), `inputs -Event` (as texturas de um draw em PNG), `buffer -Offset -Size` (a
 cópia da memória do jogo no renderer), `mesh`, `disasm`, `cbuffers -Event`, `save`. Só uma nova
 build obriga a arrancar outra vez. [docs/NOTES.md](docs/NOTES.md#recorded-command-buffers)
 mostra como se encontrou assim o cenário em falta do Iron Brigade.
+
+Na Steam Deck, `python scripts\deck_drive.py <work>\<jogo> <etiqueta> "<seg>:<item>,..." <fim>
+[flags]` arranca um jogo instalado pelo Steam com flags extra e, nos segundos indicados, envia
+teclas, tira capturas do renderer (`cap`), liga interruptores de draw-debug (`dbg<máscara>`) e lê
+o consumo do APU (`pwr`); as capturas e o log voltam para `<work>\<jogo>\deck`.
 
 ## Organização do repositório
 
@@ -298,6 +307,8 @@ sdk/                                  o ReXGlue SDK de que o renderer precisa: l
 scripts/build-sdk.ps1                 descarrega, aplica os patches, compila e instala esse SDK
 scripts/live.ps1, snaps.py            um jogo a correr para experiências, snapshots em imagens
 scripts/rdoc.ps1, rdoc.py             consultas a capturas RenderDoc
+scripts/rdoc_trigger.py               uma captura RenderDoc de um jogo a correr, sem foco
+scripts/deck_drive.py                 um jogo na Steam Deck com horário (teclas, capturas, consumo)
 docs/GAME_LAYER.md                    o que o game_layer.h contém
 docs/NOTES.md                         o que cada jogo precisou, e como se descobriu
 ```
