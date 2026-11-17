@@ -23,7 +23,8 @@
 
 REXCVAR_DEFINE_BOOL(rexnative_dlss5, false, "ReXNative",
                     "NVIDIA DLSS 5 Neural Rendering of the finished image before the HUD "
-                    "(nvngx_dlssnr.dll beside the executable, an RTX GPU and its driver), with "
+                    "(nvngx_dlssnr.dll beside the executable or in the common folder, an RTX GPU and "
+                    "its driver), with "
                     "--rexnative_upscaler");
 REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_intensity, 1.0, "ReXNative",
                       "DLSS 5: intensity (0-2; 1 the modding community's baseline)");

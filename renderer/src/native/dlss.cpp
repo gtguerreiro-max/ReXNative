@@ -1,6 +1,8 @@
 // ReXNative renderer: NVIDIA DLSS through the NGX SDK (dlss.h).
 #include "dlss.h"
 
+#include "common_dir.h"
+
 #include "log.h"
 
 #include <rex/cvar.h>
@@ -126,15 +128,23 @@ bool Dlss::Initialize(ID3D12Device* device) {
   // the evaluations it skips are only told there.
   NVSDK_NGX_FeatureCommonInfo info = {};
   const int32_t log_level = std::clamp(REXCVAR_GET(rexnative_ngx_log), 0, 2);
-  info.LoggingInfo.LoggingCallback = NgxLog;
+  if (log_level > 0) info.LoggingInfo.LoggingCallback = NgxLog;
   info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_Logging_Level(log_level);
   info.LoggingInfo.DisableOtherLoggingSinks = false;
+  // nvngx_dlss.dll and nvngx_dlssnr.dll: beside the executable (NGX looks there itself) or in the
+  // shared common folder (common_dir.h).
+  static const wchar_t* common_paths[1] = {};
+  if (!CommonDllDir().empty()) {
+    common_paths[0] = CommonDllDir().c_str();
+    info.PathListInfo.Path = common_paths;
+    info.PathListInfo.Length = 1;
+  }
   NVSDK_NGX_Result r =
       NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", path, device,
-                                          log_level > 0 ? &info : nullptr);
+                                          &info);
   if (NVSDK_NGX_FAILED(r)) {
     REXLOG_WARN("ReXNative DLSS: NGX initialization failed ({:08X}): needs an NVIDIA RTX GPU, its driver "
-                "and nvngx_dlss.dll beside the executable", uint32_t(r));
+                "and nvngx_dlss.dll beside the executable or in the common folder", uint32_t(r));
     return false;
   }
   int supported = 0, needs_driver = 0;

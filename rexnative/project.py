@@ -281,6 +281,18 @@ def _need(path, what, env):
     return os.path.abspath(path)
 
 
+# The runtime DLLs every game shares (renderer/src/native/common_dir.h): NVIDIA's DLSS and DLSS 5,
+# AMD's FidelityFX. One copy in <work>/common (beside the games' folders) instead of one in each
+# game's build/ and run/ (413 MB each).
+COMMON_DLLS = ('nvngx_dlss.dll', 'nvngx_dlssnr.dll', 'amd_fidelityfx_loader_dx12.dll',
+               'amd_fidelityfx_upscaler_dx12.dll', 'amd_fidelityfx_framegeneration_dx12.dll')
+
+
+def common_dir(work):
+    """<work>/common for the game folder <work>/<game>."""
+    return os.path.join(os.path.dirname(os.path.abspath(work)), 'common')
+
+
 def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log=print):
     """Configures, builds and lays out run/; returns the executable's path."""
     work = os.path.abspath(work)
@@ -305,8 +317,10 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
                  '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
                  '"-DCMAKE_PREFIX_PATH={sdk}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF '
                  '"-DREXNATIVE_REXGLUE_SDK_SRC={src}" "-DREXNATIVE_FIDELITYFX_SDK={ffx}" '
-                 '"-DREXNATIVE_DLSS_SDK={dlss}" "-DREXNATIVE_DLSS_NR={nr}"').format(
-        w=work, b=bdir, sdk=sdk_install, src=sdk_src, ffx=fidelityfx, dlss=dlss_sdk, nr=dlss_nr)
+                 '"-DREXNATIVE_DLSS_SDK={dlss}" "-DREXNATIVE_DLSS_NR={nr}" '
+                 '"-DREXNATIVE_COMMON_DIR={common}"').format(
+        w=work, b=bdir, sdk=sdk_install, src=sdk_src, ffx=fidelityfx, dlss=dlss_sdk, nr=dlss_nr,
+        common=common_dir(work).replace(os.sep, '/'))
     steps = [('configure', configure), ('build', 'cmake --build "%s" -j %d' % (bdir, jobs))]
     os.makedirs(bdir, exist_ok=True)
     for what, cmd in steps:
@@ -357,10 +371,14 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     # Every DLL the build staged beside the executable: ReXGlue's modules and drivers, SDL3,
     # NVIDIA's DLSS and AMD's FidelityFX; the ReXGlue DLLs of an older SDK go (v0.10's
     # rexruntime.dll and rexgpu-xenos.dll, its FidelityFX runtime).
+    # NVIDIA's and AMD's (COMMON_DLLS) are in the common folder the renderer looks in (<work>/common,
+    # renderer/src/native/common_dir.h), once for every game: a copy an older build left goes.
     staged = {os.path.basename(f).lower() for f in glob.glob(os.path.join(bdir, '*.dll'))}
+    shared = os.path.isdir(common_dir(work))
     for f in glob.glob(os.path.join(run, '*.dll')):
         n = os.path.basename(f).lower()
-        if n not in staged and (n.startswith('rex') or n == 'amd_fidelityfx_dx12.dll'):
+        if (n not in staged and (n.startswith('rex') or n == 'amd_fidelityfx_dx12.dll')) or \
+                (shared and n in COMMON_DLLS):
             os.remove(f)
     for f in glob.glob(os.path.join(bdir, '*.dll')):
         shutil.copy2(f, run)

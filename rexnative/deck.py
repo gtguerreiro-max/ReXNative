@@ -5,8 +5,8 @@
 
 Each game goes to ~/Games/ReXNative/<game>/ on the Deck: its Windows build from run/ (the
 executable and DLLs, without NVIDIA's, which the Deck cannot use), its files in game/, its
-title update's in title-update/ (mounted as update:), deck/play.sh (Proton with a prefix of the
-game's own, FSR 4 through GE-Proton), deck/install.sh and deck/steam_shortcuts.py, and
+title update's in title-update/ (mounted as update:), deck/play.sh (Proton with the prefix every
+game shares, ~/Games/ReXNative/prefix, FSR 4 through GE-Proton), deck/install.sh and deck/steam_shortcuts.py, and
 <name>-deck.toml, the game's settings for the Deck's screen (full screen at 1280x800), which
 install.sh makes its settings unless the Deck has some already. Only files whose size or time
 differ are sent again, so a rebuilt game sends its executable alone.
@@ -157,8 +157,10 @@ class Deck:
         bytes sent."""
         have = self.files(dest)
         wanted = {rel for _, rel in items}
+        from .project import COMMON_DLLS
         stale = sorted(rel for rel in have if rel not in wanted and (
-            ('/' not in rel and rel.lower().endswith(('.exe', '-deck.toml'))) or
+            ('/' not in rel and (rel.lower().endswith(('.exe', '-deck.toml')) or
+                                 rel.lower() in COMMON_DLLS)) or
             rel.startswith('title-update/')))
         if stale:
             log('  %d files of an older install removed' % len(stale))
@@ -214,11 +216,11 @@ def title_of(work):
 
 def package(work):
     """(executable name, [(local, relative)]) of a built game's Deck folder."""
+    from . import project
     run = os.path.join(work, 'run')
     exes = [f for f in os.listdir(run) if f.lower().endswith('.exe')] if os.path.isdir(run) else []
     if len(exes) > 1:
         # The project's own executable (another one in run/ is a leftover of a test).
-        from . import project
         own = project.manifest_name(work) + '.exe'
         exes = [f for f in exes if f.lower() == own.lower()]
     if len(exes) != 1:
@@ -228,6 +230,7 @@ def package(work):
     for f in sorted(os.listdir(run)):
         p = os.path.join(run, f)
         if (os.path.isfile(p) and not f.lower().startswith('nvngx_') and
+                f.lower() not in project.COMMON_DLLS and
                 (f.lower().endswith('.dll') or f == name + '.exe')):
             items.append((p, f))
     data = os.path.join(work, 'game-data')
@@ -276,6 +279,26 @@ def install(deck, work, log=print):
     dest = '%s/%s' % (REMOTE_ROOT, slug)
     log('%s -> ~/%s' % (title, dest))
     deck.send(dest, items, log=log)
+    # AMD's FidelityFX DLLs, once for every game in ~/Games/ReXNative/common, where the renderer
+    # looks when they are not beside the executable (renderer/src/native/common_dir.h): 87 MB a
+    # game less on the Deck. NVIDIA's are not sent (the Deck has no RTX).
+    from . import project
+    common = []
+    for n in project.COMMON_DLLS:
+        if n.startswith('nvngx_'):
+            continue
+        for src in (os.path.join(work, 'run', n), os.path.join(project.common_dir(work), n)):
+            if os.path.exists(src):
+                common.append((src, n))
+                break
+    if common:
+        deck.send('%s/common' % REMOTE_ROOT, common, log=log)
+    # The Proton prefix every game shares (play.sh): the first game's own prefix becomes it (with
+    # GE-Proton's FSR 4 library already fetched), the others' go (400 MB each; a prefix holds no
+    # game's files, saves or settings: those are in the game's folder).
+    deck.run('cd %s && if [ -d %s/prefix ]; then if [ -d prefix ]; then rm -rf %s/prefix; '
+             'else mv %s/prefix prefix; fi; fi' % (q(REMOTE_ROOT), q(slug), q(slug), q(slug)),
+             check=False)
     out = deck.run('cd %s && bash install.sh %s' % (q(dest), q(title)))
     for line in out.strip().splitlines()[-2:]:
         log('  ' + line)

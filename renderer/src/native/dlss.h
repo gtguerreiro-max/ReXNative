@@ -3,9 +3,9 @@
 // DLAA (render size = output size) and DLSS Super Resolution (a smaller render size) for the
 // 3D scene, at the Upscaler's hook: the scene's first resolve (upscaler.h). The NGX code comes
 // from this PC's FromDustRecomp port (runtime/gpu/native/upscaler.cpp) and uses NVIDIA's own
-// signed DLLs (nvngx_dlss.dll beside the executable, third_party/dlss_sdk). NGX is initialised
-// with this project's ID and its answer is used as it is: on a GPU or driver without DLSS the
-// scene stays on MSAA.
+// signed DLLs (nvngx_dlss.dll beside the executable or in the common folder, common_dir.h;
+// third_party/dlss_sdk). NGX is initialised with this project's ID and its answer is used as it
+// is: on a GPU or driver without DLSS the scene stays on MSAA.
 #pragma once
 
 #include <atomic>
@@ -54,7 +54,7 @@ class Dlss {
   Dlss(const Dlss&) = delete;
   Dlss& operator=(const Dlss&) = delete;
 
-  // DLSS 5 Neural Rendering (NGX feature 18, nvngx_dlssnr.dll beside the executable): it
+  // DLSS 5 Neural Rendering (NGX feature 18, nvngx_dlssnr.dll as nvngx_dlss.dll): it
   // relights and restyles the finished image (neural.h runs it before the HUD).
   struct NeuralSettings {
     uint32_t style = 2;  // DLSSNR.Style: 0 Default (the strongest), 1 Natural, 2 Cinematic

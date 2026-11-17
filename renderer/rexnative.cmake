@@ -59,16 +59,25 @@ function(rexnative_add target)
     target_link_libraries(${target} PRIVATE d3d12 dxgi dxguid delayimp
         "${RN_DLSS_SDK}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
     target_link_options(${RN_EXECUTABLE} PRIVATE "LINKER:/DELAYLOAD:d3d12.dll")
-    # The runtime DLLs the renderer loads, beside the game's executable: NVIDIA's signed DLSS and
-    # DLSS 5 (neural rendering), AMD's signed FidelityFX loader / upscaler / frame generation.
-    # Without them DLSS / FSR report "not available" and the scene keeps its MSAA.
+    # The runtime DLLs the renderer loads: NVIDIA's signed DLSS and DLSS 5 (neural rendering),
+    # AMD's signed FidelityFX loader / upscaler / frame generation (413 MB). Without them DLSS / FSR
+    # report "not available" and the scene keeps its MSAA. With REXNATIVE_COMMON_DIR (python -m
+    # rexnative project: <work>/common) they go there once for every game and a copy an older build
+    # left beside the executable goes (native/common_dir.h); else beside the executable.
     foreach(dll
             "${RN_DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlss.dll"
             "${RN_DLSS_NR}/lib/Windows_x86_64/rel/nvngx_dlssnr.dll"
             "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll"
             "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll"
             "${RN_FIDELITYFX_SDK}/Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll")
-        if(EXISTS "${dll}")
+        if(EXISTS "${dll}" AND REXNATIVE_COMMON_DIR)
+            get_filename_component(dll_name "${dll}" NAME)
+            add_custom_command(TARGET ${RN_EXECUTABLE} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${REXNATIVE_COMMON_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "${REXNATIVE_COMMON_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:${RN_EXECUTABLE}>/${dll_name}"
+                VERBATIM)
+        elseif(EXISTS "${dll}")
             add_custom_command(TARGET ${RN_EXECUTABLE} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}"
                         "$<TARGET_FILE_DIR:${RN_EXECUTABLE}>"

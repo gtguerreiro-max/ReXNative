@@ -1,6 +1,7 @@
 // ReXNative renderer: the FidelityFX API loader. See fidelityfx.h.
 #include "fidelityfx.h"
 
+#include "common_dir.h"
 #include "d3d12_device.h"  // windows.h
 
 #include <rex/cvar.h>
@@ -32,7 +33,12 @@ void SetFfxWatermark(const wchar_t* name, bool on) {
 const FfxApi* LoadFfxApi() {
   static const FfxApi api = [] {
     FfxApi a;
+    // Beside the executable, else from the shared common folder, which CommonDllDir adds to the
+    // DLL search path for the loader's own loads of the upscaler and frame generation.
+    const std::wstring& common = CommonDllDir();
     HMODULE dll = LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll");
+    if (!dll && !common.empty())
+      dll = LoadLibraryW((common + L"\\amd_fidelityfx_loader_dx12.dll").c_str());
     if (!dll) {
       REXLOG_ERROR("ReXNative: cannot load amd_fidelityfx_loader_dx12.dll ({})",
                    uint32_t(GetLastError()));

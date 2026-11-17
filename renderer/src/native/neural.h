@@ -14,8 +14,8 @@
 // are the upscaler's (DLAA: the scene's own size). The image is display-referred: PGR4's gamma
 // ramp is close to the identity (present.cpp's log: 0.25/0.5/0.75 -> 0.19/0.46/0.73).
 //
-// NVIDIA's signed nvngx_dlssnr.dll goes beside the executable (third_party/dlss_nr); NGX's
-// answer for this GPU and driver is used as it is. Threading: the recording thread's
+// NVIDIA's signed nvngx_dlssnr.dll goes beside the executable or in the common folder
+// (common_dir.h; third_party/dlss_nr); NGX's answer for this GPU and driver is used as it is. Threading: the recording thread's
 // (NativeRenderer::Execute*); the evaluation runs on the device's command stream.
 #pragma once
 

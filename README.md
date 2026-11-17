@@ -123,6 +123,12 @@ ReXNative and the settings HUD, builds it, finds the functions codegen missed, a
 The game is then in `D:\rexnative-work\<game>\run\`: run its executable. Reports are in English;
 `--lang pt` (or `REXNATIVE_LANG=pt`) writes them in Portuguese.
 
+NVIDIA's DLSS and DLSS 5 and AMD's FidelityFX DLLs (413 MB) are kept once for every game, in
+`<work>\common` (`D:\rexnative-work\common`), not in each game's `build\` and `run\`; the renderer
+looks for them beside the executable first (a port that keeps them there goes on working), then in
+`..\common` and `..\..\common` (`--rexnative_common_dir` names another folder). On the Steam Deck
+they are in `~/Games/ReXNative/common`.
+
 Other commands: `info <xex>` (title, version, XDK libraries), `title-update <work>` (the title
 updates listed, nothing downloaded), `dlc <work>/<game> <packages, folders or archives>` (its
 downloadable content, where the game finds it: `run/userdata/0000000000000000/<title id>/00000002`
@@ -238,8 +244,9 @@ python -m rexnative deck D:\rexnative-work\<game> --host deck@192.168.1.10 --key
 
 copies it over SSH to `~/Games/ReXNative/<game>/` on the Deck (its executable and DLLs without
 NVIDIA's, its files, its title update; only what changed is sent again), with
-[deck/](deck/)`play.sh` (starts it with Proton: GE-Proton, else Valve's, with a prefix of the
-game's own), `install.sh` and `steam_shortcuts.py`. `--steam` adds each game to Steam's library
+[deck/](deck/)`play.sh` (starts it with Proton: GE-Proton, else Valve's, with one prefix every
+game shares, `~/Games/ReXNative/prefix`; AMD's FidelityFX DLLs are in `~/Games/ReXNative/common`,
+once for all), `install.sh` and `steam_shortcuts.py`. `--steam` adds each game to Steam's library
 as a non-Steam game (Steam is closed meanwhile and started again); `--try SECONDS` starts each one
 from Steam, reads its log and takes a capture after that long, into `<work>/<game>/deck/`, and
 writes `deck-report.md`. The Deck needs SSH with a key (`REXNATIVE_DECK` and

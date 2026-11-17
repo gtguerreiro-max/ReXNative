@@ -210,7 +210,7 @@ std::vector<Option> MakeOptions() {
                [] { return Flag("rexnative_dlss5"); },
                [](const std::string& v) { return Bool("rexnative_dlss5", v); }, nullptr,
                "NVIDIA DLSS 5 on the scene, with the upscaler on: an RTX GPU, its driver and "
-               "nvngx_dlssnr.dll beside the executable.",
+               "nvngx_dlssnr.dll (beside the executable or in the common folder).",
                NvidiaGpu});
   o.push_back({"DLSS 5", "dlss5_intensity", "DLSS 5 intensity",
                {{"Low", "0.5"}, {"Medium", "0.75"}, {"Full", "1"}, {"Strong", "1.25"}}, false,

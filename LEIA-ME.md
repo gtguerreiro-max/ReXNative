@@ -128,6 +128,12 @@ ReXNative e o HUD de definições, compila-o, encontra as funções que o codege
 outra vez. O jogo fica em `D:\rexnative-work\<jogo>\run\`: é só correr o executável. Sem
 `--lang pt` (ou `REXNATIVE_LANG=pt`), os relatórios saem em inglês.
 
+Os DLLs do DLSS e do DLSS 5 da NVIDIA e do FidelityFX da AMD (413 MB) ficam uma só vez para todos
+os jogos, em `<work>\common` (`D:\rexnative-work\common`), e não no `build\` e no `run\` de cada
+jogo; o renderer procura-os primeiro ao lado do executável (um port que os tenha lá continua a
+funcionar), depois em `..\common` e `..\..\common` (o `--rexnative_common_dir` indica outra
+pasta). Na Steam Deck ficam em `~/Games/ReXNative/common`.
+
 Outros comandos: `info <xex>` (título, versão, bibliotecas do XDK), `title-update <work>` (os
 title updates da lista, sem descarregar nada), `dlc <work>/<jogo> <pacotes, pastas ou arquivos>`
 (o conteúdo descarregável, onde o jogo o encontra: `run/userdata/0000000000000000/<title id>/00000002`
@@ -249,8 +255,9 @@ python -m rexnative deck D:\rexnative-work\<jogo> --host deck@192.168.1.10 --key
 
 copia-o por SSH para `~/Games/ReXNative/<jogo>/` na Deck (o executável e as DLLs sem as da
 NVIDIA, os ficheiros do jogo, o title update; só o que mudou é enviado de novo), com o
-[deck/](deck/)`play.sh` (arranca-o com o Proton: o GE-Proton, senão o da Valve, com um prefixo só
-do jogo), o `install.sh` e o `steam_shortcuts.py`. O `--steam` junta cada jogo à biblioteca do
+[deck/](deck/)`play.sh` (arranca-o com o Proton: o GE-Proton, senão o da Valve, com um prefixo
+que todos os jogos partilham, `~/Games/ReXNative/prefix`; os DLLs do FidelityFX da AMD ficam em
+`~/Games/ReXNative/common`, uma vez para todos), o `install.sh` e o `steam_shortcuts.py`. O `--steam` junta cada jogo à biblioteca do
 Steam como jogo não-Steam (o Steam é fechado entretanto e volta a arrancar); o `--try SEGUNDOS`
 arranca cada um a partir do Steam, lê o log e tira uma captura ao fim desse tempo, para
 `<work>/<jogo>/deck/`, e escreve o `deck-report.md`. A Deck precisa de SSH com chave (o

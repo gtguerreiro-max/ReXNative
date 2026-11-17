@@ -2,7 +2,7 @@
 # Plays a ReXGlue game drawn by ReXNative (its Windows build) under Proton on the Steam Deck.
 # `python -m rexnative deck` puts it beside the game's executable, the only .exe in the folder,
 # with the game's files in game/; Steam runs it as a non-Steam game with NO compatibility tool
-# (install.sh adds it): it starts Proton itself, with a prefix of its own in this folder.
+# (install.sh adds it): it starts Proton itself, with the prefix every game of the kit shares.
 #   play.sh [game flags...]
 # REXNATIVE_PROTON picks another Proton (default: GE-Proton, the newest, else Valve's Proton
 # Experimental, else its newest numbered Proton, in any Steam library: the SD card's too).
@@ -46,7 +46,11 @@ fi
 exe=$(ls -1t "$here"/*.exe 2>/dev/null | head -1)
 [[ -n $exe ]] || { echo "no game executable in $here" >&2; exit 1; }
 name=$(basename "$exe" .exe)
-export STEAM_COMPAT_DATA_PATH=$here/prefix STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
+# One Proton prefix for every game (~/Games/ReXNative/prefix, beside the games' folders): 400 MB
+# once, not in each game's folder. A game keeps its files, saves (userdata/) and settings in its
+# own folder; REXNATIVE_PREFIX (deck.env) names another prefix.
+prefix=${REXNATIVE_PREFIX:-$(dirname "$here")/prefix}
+export STEAM_COMPAT_DATA_PATH=$prefix STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
 export PROTON_USE_XALIA=0
 mkdir -p "$STEAM_COMPAT_DATA_PATH" "$here/logs"
 cd "$here"

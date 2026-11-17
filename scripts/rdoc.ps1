@@ -19,6 +19,12 @@ param(
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC
 )
 $ErrorActionPreference = 'Stop'
+# Else the newest RenderDoc_* in the Tools folder beside the repository's (the tools every project
+# shares live there).
+if (-not $RenderDoc) {
+    $RenderDoc = Get-ChildItem (Join-Path $PSScriptRoot '..\..\Tools') -Directory -Filter 'RenderDoc*' -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
 if (-not $RenderDoc -or -not (Test-Path (Join-Path $RenderDoc 'qrenderdoc.exe'))) {
     throw 'RenderDoc not found: pass -RenderDoc <folder with qrenderdoc.exe> or set REXNATIVE_RENDERDOC'
 }

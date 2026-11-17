@@ -16,8 +16,9 @@
 #   scripts\live.ps1 control "renderer stock"   # control-file commands (rexnative_d3d_hooks.cpp),
 #                                               # ; between several: here the Xenos plugin draws
 #   scripts\live.ps1 status | stop
-# With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir or
-# $env:REXNATIVE_RENDERDOC): `capture` then takes the next frame into <Dir>\live\rdoc through
+# With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir,
+# $env:REXNATIVE_RENDERDOC or the newest Tools\RenderDoc* beside the repository's folder):
+# `capture` then takes the next frame into <Dir>\live\rdoc through
 # RenderDoc's target control (scripts\rdoc_trigger.py; the window need not be in front), for
 # scripts\rdoc.ps1 (draw list, pixel history, textures) with the game closed or still running.
 #
@@ -222,8 +223,14 @@ switch ($Command) {
                   '--window_width=1280', '--window_height=720') + $native +
                 ($Extra -split ' ' | Where-Object { $_ })
         if ($RenderDoc) {
-            $rdcmd = Join-Path $RenderDocDir 'renderdoccmd.exe'
-            if (-not $RenderDocDir -or -not (Test-Path $rdcmd)) { throw 'RenderDoc not found: -RenderDocDir or REXNATIVE_RENDERDOC' }
+            # Else the newest RenderDoc_* in the Tools folder beside the repository's (F:\Tools for
+            # F:\ReXNative): the tools shared by every project live there, not in a game's folder.
+            if (-not $RenderDocDir) {
+                $RenderDocDir = Get-ChildItem (Join-Path $PSScriptRoot '..\..\Tools') -Directory -Filter 'RenderDoc*' -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+            }
+            $rdcmd = if ($RenderDocDir) { Join-Path $RenderDocDir 'renderdoccmd.exe' } else { '' }
+            if (-not $RenderDocDir -or -not (Test-Path $rdcmd)) { throw 'RenderDoc not found: -RenderDocDir, REXNATIVE_RENDERDOC or ..\Tools\RenderDoc*' }
             $name = [IO.Path]::GetFileNameWithoutExtension($exePath)
             $before = @(Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
             Start-Process $rdcmd -ArgumentList (@('capture', '-d', $Dir, '-c', "$live\rdoc\cap", $exePath) + $args) -WorkingDirectory $Dir -WindowStyle Hidden | Out-Null
