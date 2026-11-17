@@ -383,6 +383,13 @@ def try_game(deck, g, seconds, log=print):
              '--rexnative_d3d_stats_frames=120' % wine_cap)
     exe_re = re.escape(g['name']) + r'\.exe --log'
     deck.run('cd %s && printf "%%s\\n" %s > try.flags' % (dest, q(flags)))
+    # With the panel off (Game Mode's idle, while nobody holds the Deck) no present is shown and a
+    # game runs at about a frame a second (Midnight Club's "frame N not shown after 100 ms"):
+    # Shift wakes it and keeps it on through the try (no game reads Shift alone).
+    deck.run('XA=$(ls /run/user/1000/xauth_* 2>/dev/null | head -1); export DISPLAY=:0 '
+             'XAUTHORITY=$XA; xdotool key shift; (for i in $(seq 1 %d); do sleep 30; '
+             'xdotool key shift; done) >/dev/null 2>&1 < /dev/null & disown' % (seconds // 30 + 2),
+             check=False)
     try:
         deck.run('DISPLAY=:0 nohup steam steam://rungameid/%d >/dev/null 2>&1 &' % gameid,
                  check=False)

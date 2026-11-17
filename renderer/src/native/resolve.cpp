@@ -984,7 +984,10 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
     RenderTarget *source = rt, *alpha = nullptr;
     // After the game drew into the scene's surface again (Upscaler::EnterPostScene), its own
     // full-size target holds the upscaled scene and what came after: copied as it is.
-    if (upscaler_ && !upscaler_->post_scene() && Upscaler::IsScene(p.regs.surface_info) &&
+    // A colour resolve only: a deferred renderer resolves the scene's depth before its lighting
+    // (Midnight Club: Los Angeles, each frame's first full-width resolve of the scene's surface),
+    // and upscaling there left the scene unlit, its lighting drawn after at the output's size.
+    if (upscaler_ && !depth && !upscaler_->post_scene() && Upscaler::IsScene(p.regs.surface_info) &&
         Upscaler::IsSceneWidth(p.x0, p.x1)) {
       RenderTarget* upscaled = upscaler_->Upscale(list, *targets_, p.regs);
       if (upscaled) upscaler_->NoteSceneResolve(p);
