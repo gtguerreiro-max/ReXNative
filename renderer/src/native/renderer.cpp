@@ -1143,11 +1143,12 @@ void NativeRenderer::FindCamera(const DrawState& state) {
   const reg::RB_DEPTHCONTROL depth{.value = regs[XE_GPU_REG_RB_DEPTHCONTROL]};
   if (!depth.z_enable || !depth.z_write_enable) return;
   --camera_scan_;
-  // A perspective clip transform: four aligned constant registers whose z row is a multiple of
-  // their w row (fidelityfx.cpp). The scene's vertex shaders keep it in c4-c7 (td-323).
+  // A perspective clip transform: four consecutive constant registers whose z row is a multiple
+  // of their w row (fidelityfx.cpp). PGR4's vertex shaders keep it in c4-c7 (td-323); not every
+  // game starts it at a multiple of four, so every start is tried.
   const uint32_t* c = regs + XE_GPU_REG_SHADER_CONSTANT_000_X;
   float m[16];
-  for (uint32_t v = 0; v + 4 <= 256; v += 4) {
+  for (uint32_t v = 0; v + 4 <= 256; ++v) {
     for (uint32_t i = 0; i < 16; ++i) m[i] = std::bit_cast<float>(c[4 * v + i]);
     if (!CameraFromClipRows(m, camera_)) {
       // Or kept as columns (Jet Set Radio's vertex shaders): the transpose's rows.
