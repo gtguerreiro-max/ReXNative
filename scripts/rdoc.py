@@ -222,6 +222,9 @@ def main():
                                         d.rasterizer.viewports[0].height,
                                         d.rasterizer.viewports[0].minDepth,
                                         d.rasterizer.viewports[0].maxDepth))
+            field("scissor0", lambda: (d.rasterizer.scissors[0].x, d.rasterizer.scissors[0].y,
+                                       d.rasterizer.scissors[0].width,
+                                       d.rasterizer.scissors[0].height))
             open(os.path.join(out, "state-e%d.txt" % event), "w").write(chr(10).join(lines) + chr(10))
         elif cmd == "cbuffers":
             # The constant buffers bound to the draw at `event`'s shaders, as float4s (up to 64

@@ -4551,9 +4551,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   // is the camera's turning.
   // A draw into the scene's surface after its upscaled resolve: the post-processing or the HUD,
   // at the output's size, neither jittered nor in the motion (Upscaler::EnterPostScene).
-  if (Upscaler* up = r.upscaler(); up && up->upscaled_this_frame() && !up->post_scene() &&
-                                   Upscaler::IsScene(sdr.rb_surface_info))
-    up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
+  if (Upscaler* up = r.upscaler(); up && Upscaler::IsScene(sdr.rb_surface_info)) {
+    // The scene's pass goes on, its geometry where it writes depth (Upscaler::SceneResolveDue).
+    up->NoteSceneDraw(depth_control.z_enable && depth_control.z_write_enable);
+    if (up->upscaled_this_frame() && !up->post_scene())
+      up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
+  }
   const Upscaler* const scene_upscaler =
       Upscaler::IsScene(sdr.rb_surface_info) && r.upscaler() && !r.upscaler()->post_scene()
           ? r.upscaler()

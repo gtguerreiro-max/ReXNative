@@ -1212,9 +1212,11 @@ void NativeRenderer::ExecuteClear(const ClearCall& c) {
   if (gpu_timer_) gpu_timer_->Pass(device_->command_list(), GpuTimer::KeyClear(c));
   draw_->LogClear(c);
   // A clear of the scene's surface after its upscaled resolve (Upscaler::EnterPostScene).
-  if (Upscaler* u = upscaler(); u && u->upscaled_this_frame() && !u->post_scene() &&
-                                Upscaler::IsScene(c.regs.surface_info))
-    u->EnterPostScene(device_->command_list(), *rt_, c.regs);
+  if (Upscaler* u = upscaler(); u && Upscaler::IsScene(c.regs.surface_info)) {
+    u->NoteSceneDraw(false);  // a new pass of the scene (Upscaler::SceneResolveDue)
+    if (u->upscaled_this_frame() && !u->post_scene())
+      u->EnterPostScene(device_->command_list(), *rt_, c.regs);
+  }
   rt_->Clear(device_->command_list(), c.regs, c.bound_colors, c.depth_bound, c.height, c.p);
   clear_ticks_ += Ticks() - t0;
 }

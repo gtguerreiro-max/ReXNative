@@ -447,6 +447,12 @@ bool Upscaler::CreateTargets() {
 
 bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns) {
   frame_ = frame;
+  // The scene's passes (SceneResolveDue): the last frame's last pass that wrote depth is this
+  // one's.
+  expect_depth_ = depth_pass_ != 0;
+  expected_pass_ = expect_depth_ ? depth_pass_ : 1;
+  scene_passes_ = depth_pass_ = 0;
+  resolved_depth_ = pass_drawn_ = pass_depth_ = false;
   bool resized = false;
   if (dynamic_) {
     const uint32_t level = dynamic_->level();

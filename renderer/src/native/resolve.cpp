@@ -987,8 +987,12 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
     // A colour resolve only: a deferred renderer resolves the scene's depth before its lighting
     // (Midnight Club: Los Angeles, each frame's first full-width resolve of the scene's surface),
     // and upscaling there left the scene unlit, its lighting drawn after at the output's size.
-    if (upscaler_ && !depth && !upscaler_->post_scene() && Upscaler::IsScene(p.regs.surface_info) &&
-        Upscaler::IsSceneWidth(p.x0, p.x1)) {
+    // The frame's last pass of the scene only (Upscaler::SceneResolveDue, which counts the passes
+    // after the upscaled resolve too): an earlier pass's resolve copies the render-size target,
+    // and the scene goes on at the render size.
+    if (upscaler_ && !depth && Upscaler::IsScene(p.regs.surface_info) &&
+        Upscaler::IsSceneWidth(p.x0, p.x1) && upscaler_->SceneResolveDue() &&
+        !upscaler_->post_scene()) {
       RenderTarget* upscaled = upscaler_->Upscale(list, *targets_, p.regs);
       if (upscaled) upscaler_->NoteSceneResolve(p);
       if (upscaled && !depth) {

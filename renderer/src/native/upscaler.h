@@ -94,6 +94,31 @@ class Upscaler {
   // A camera cut this frame (NativeRenderer::FindCamera): the upscaling and the frame generation
   // start over rather than blend the frames before it, which show another view.
   void NoteCameraCut() { reset_ = true; }
+  // The scene in passes: a pass ends at a full-width colour resolve of the scene's surface after
+  // draws into it (its tiles, one resolve each with no draw between, end one pass), and a game
+  // may draw the scene's surface again after it (Midnight Club: Los Angeles resolves a first
+  // pass, cleared, then draws its 2000 draw main scene in the same surface). The upscaler takes
+  // the frame's last pass that wrote depth (the scene's geometry, where the post-processing and
+  // the HUD write none), its number from the last frame; the first pass when none wrote depth.
+  // NoteSceneDraw for each draw or clear into the scene's surface, SceneResolveDue for each
+  // full-width colour resolve of it (true: upscale here), the ones after the upscaled resolve
+  // too: a pass of the scene drawn there at the output's size moves the next frame's upscaling to
+  // it, where a count stopped at the upscaled resolve kept it early for good. A frame with fewer
+  // passes than the last upscales none (its resolves copy the render-size scene); one with more
+  // upscales an earlier one, and the next frame expects the new count.
+  void NoteSceneDraw(bool writes_depth) {
+    pass_drawn_ = true;
+    pass_depth_ |= writes_depth;
+  }
+  bool SceneResolveDue() {
+    if (pass_drawn_ || !scene_passes_) {
+      ++scene_passes_;
+      resolved_depth_ = pass_depth_;
+      if (pass_depth_) depth_pass_ = scene_passes_;
+      pass_drawn_ = pass_depth_ = false;
+    }
+    return scene_passes_ >= expected_pass_ && (resolved_depth_ || !expect_depth_);
+  }
   // A scene draw's motion match (DrawRenderer::BindPreviousConstants): compared by its first
   // vertex, and refused for its distance (MotionHistory). Most of a frame's comparisons refused
   // is a camera cut where FindCamera sees no view turn (Jet Set Radio transforms its vertices
@@ -263,6 +288,10 @@ class Upscaler {
   std::optional<DynamicResolution> dynamic_;  // with --rexnative_upscaler_target_fps
   uint32_t mip_bias_quarters_ = 0;
   uint64_t frame_ = 0;
+  // SceneResolveDue's: this frame's passes and its last that wrote depth, the last frame's one.
+  uint32_t scene_passes_ = 0, depth_pass_ = 0, expected_pass_ = 1;
+  bool expect_depth_ = false, resolved_depth_ = false;
+  bool pass_drawn_ = false, pass_depth_ = false;  // since the last scene resolve
   uint64_t match_frame_ = UINT64_MAX;  // NoteMotionMatch's frame and counts
   uint32_t matches_compared_ = 0, matches_refused_ = 0, motion_cuts_ = 0;
   uint64_t upscaled_frame_ = UINT64_MAX;
