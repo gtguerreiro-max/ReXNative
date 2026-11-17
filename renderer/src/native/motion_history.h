@@ -185,7 +185,7 @@ class MotionHistory {
       if (auto it = by_loose_.find(loose); it != by_loose_.end())
         for (uint32_t i : it->second) consider(i);
     }
-    far_ = false;
+    far_ = compared_ = false;
     if (best == n) return Camera(now, floats, size);
     // A draw whose first vertex was far from this one's is another mesh, not this one moved: Jet
     // Set Radio clips its polygons on the CPU, so the road's index count changes from frame to
@@ -195,6 +195,7 @@ class MotionHistory {
     if (now.anchor_valid && previous_[best].constants.anchor_valid) {
       const float d = std::sqrt(Distance2(now, previous_[best].constants));
       distances_.push_back(d);
+      compared_ = true;
       if (d > anchor_limit_) {
         far_ = true;
         return Camera(now, floats, size);
@@ -215,6 +216,7 @@ class MotionHistory {
   size_t previous_count() const { return previous_.size(); }
   bool global() const { return global_; }
   bool refused() const { return far_; }  // the last Match refused the nearest draw: too far
+  bool compared() const { return compared_; }
   float anchor_limit() const { return anchor_limit_; }
   // Found::kCamera: the float constants of the previous frame for the last Match's draw, its
   // size bytes. Valid until the next Match.
@@ -303,7 +305,8 @@ class MotionHistory {
   static constexpr float kAnchorMin = 128.0f;
   std::vector<float> distances_;
   float anchor_limit_ = std::numeric_limits<float>::infinity();
-  bool far_ = false;  // the last Match refused its draw for its distance
+  bool far_ = false;       // the last Match refused its draw for its distance
+  bool compared_ = false;  // the last Match compared the anchors of its draw and the one found
   uint64_t frame_ = UINT64_MAX - 1;
   Found found_ = Found::kNone;
   std::vector<uint8_t> camera_floats_;  // Camera's

@@ -65,7 +65,7 @@ deixa um executável compilado que corre.
 | Super Meat Boy (TU 1) | joga-se: menus, o mapa do mundo, o nível 1-1 | 60 FPS |
 | Minecraft: Xbox 360 Edition (TU 80) | joga-se: menus, os modelos de mundo do update, um mundo novo | 60 FPS |
 | Castlevania: Symphony of the Night (TU 2) | joga-se: o menu com o texto, o nome, o prólogo | 60 FPS |
-| Orcs Must Die! (TU 1) | joga-se: título, menus, a história da campanha e o primeiro nível com o HUD, 30 FPS, com `rexnative.inline_draws = true` (a compilação pôs muitos desenhos inline, fora das funções ligadas) | 30 FPS |
+| Orcs Must Die! (TU 1) | joga-se: título, menus, a história da campanha e o primeiro nível com o HUD, 30 FPS (a compilação pôs muitos desenhos inline, fora das funções ligadas: `rexnative.inline_draws`, que se liga sozinho) | 30 FPS |
 | Double Dragon Neon | joga-se a primeira missão | 60 FPS |
 | Brothers - A Tale of Two Sons | menu e abertura, desenhados como no renderer original | 30 FPS (renderer do ReXGlue) |
 | Bionic Commando Rearmed (TU 2) | a introdução a 60 FPS, o mapa das missões | 60 FPS |
@@ -225,8 +225,12 @@ continuam a funcionar como aliases.
 
 Um jogo cuja compilação pôs desenhos em código inline, fora das funções D3D ligadas (o título,
 os menus, os carregamentos e o HUD do Orcs Must Die!), mostra-os a preto. Com
-`rexnative.inline_draws = true` o ReXNative percorre o push buffer que o jogo escreveu entre duas
-chamadas ligadas, como percorre um command buffer gravado, e desenha o que lá encontra.
+`rexnative.inline_draws` o ReXNative percorre o push buffer que o jogo escreveu entre duas
+chamadas ligadas, como percorre um command buffer gravado, e desenha o que lá encontra. O
+`rexnative.inline_draws_auto` (ligado por omissão) experimenta-o sozinho quando 30 frames
+seguidos chegam às funções ligadas com no máximo 2 chamadas de desenho enquanto o jogo escreve no
+push buffer, e só o mantém se o percurso encontrar desenhos (um vídeo ou um ecrã de carregamento
+parecem iguais e não os têm).
 `rexnative.auto_handover = 30` é a outra saída: ao fim de 30 frames em que o ReXNative vê no
 máximo uma chamada de desenho, o renderer do ReXGlue desenha até as chamadas do jogo voltarem,
 como faria o F9. Fica desligado no Wine, tal como o F9: no vkd3d-proton a janela não pode passar
@@ -302,12 +306,11 @@ docs/NOTES.md                         o que cada jogo precisou, e como se descob
 - Os problemas em aberto da tabela: os níveis partidos do Perfect Dark, o texto em falta do
   Spelunky, as superfícies escuras e às riscas do Halo, os vídeos WMV do Dark Souls II e do Jet
   Set Radio.
-- O histórico dos upscalers recomeçado num corte de câmara num jogo sem matriz de câmara (o Jet
-  Set Radio transforma os vértices no CPU).
+- Uma reactive mask para os upscalers (a do próprio FSR, feita a partir da cena antes e depois
+  dos desenhos transparentes), onde os vetores de movimento não podem estar certos: partículas, e
+  os desenhos cuja malha o frame anterior não tinha.
 - Memexport: um jogo cuja imagem precise dele, e não esperar pela GPU quando nada no CPU lê o
   que ele escreveu.
-- Os desenhos inline encontrados pela ferramenta, para um jogo como o Orcs Must Die! não precisar
-  de nenhuma definição.
 - Compilar um jogo do princípio ao fim a partir do `scripts\build-sdk.ps1` numa máquina limpa.
 - Cada jogo novo torna-se uma referência e facilita o seguinte.
 
@@ -315,7 +318,8 @@ Feito: o renderer compilado a partir deste repositório para From Dust e Iron Br
 superfície da cena aprendida em runtime (2026-11-14); command buffers gravados, memexport,
 pipelines compilados antecipadamente, e mais treze jogos do princípio ao fim (2026-11-15 e 16); a
 passagem para o ReXGlue v0.11.0 e a Steam Deck com ele (2026-11-16); os carros do Midnight Club
-e o Dark Souls II (2026-11-17).
+e o Dark Souls II, os vetores de movimento e os cortes de câmara do Jet Set Radio, os desenhos
+inline encontrados em runtime (2026-11-17).
 
 ## Licença e créditos
 

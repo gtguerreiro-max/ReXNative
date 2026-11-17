@@ -669,6 +669,16 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   to(input_.Get(), &input_state_, kInputState);
   list->ResourceBarrier(nb, bs);
 
+  // A cut seen in the motion matches (NoteMotionMatch): three quarters of at least 64 compared
+  // draws had no draw of their own mesh near them in the previous frame (Jet Set Radio's
+  // camera moves left up to a third refused, its clipped polygons).
+  if (match_frame_ == frame_ && matches_compared_ >= 64 &&
+      4 * matches_refused_ > 3 * matches_compared_ && !reset_) {
+    reset_ = true;
+    if (++motion_cuts_ <= 8)
+      REXLOG_INFO("ReXNative upscaler: camera cut at frame {} ({} of {} motion matches refused)",
+                  frame_, matches_refused_, matches_compared_);
+  }
   Time(list, GpuTimer::kUpscaleDispatch);
   // The motion target holds UV-space motion (current -> previous), so its scale to render pixels
   // is the render size, for DLSS as for FSR's motionVectorScale.

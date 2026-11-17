@@ -1065,6 +1065,8 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   }
 }
 
+uint64_t GapDraws() { return g_gaps.draws; }
+
 void OnSwapGaps(int32_t stats_every) {
   static uint32_t frames = 0;
   static GapCounters last;

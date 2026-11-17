@@ -2644,6 +2644,8 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   diag.motion_copies += found == MotionHistory::Found::kCopy;
   diag.motion_nearest += found == MotionHistory::Found::kNearest;
   diag.motion_far += motion_history.refused();
+  if (Upscaler* u = r.upscaler())
+    u->NoteMotionMatch(motion_history.compared(), motion_history.refused());
   diag.motion_camera += previous == &camera;
   if (previous && previous->vs == vs)
     ++diag.motion_matched;

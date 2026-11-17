@@ -67,6 +67,8 @@ void AfterRun(const uint8_t* base, const RunContext& c);
 // D3D functions (Orcs Must Die!'s title and menus, DRAW_INDX packets no hook saw) has them drawn.
 // On the Swap thread, on the presenting device.
 void ReplayGap(const uint8_t* base, const RunContext& c, uint32_t first, uint32_t end);
+// The draws ReplayGap issued so far (rexnative.inline_draws_auto's trial).
+uint64_t GapDraws();
 // At each Swap with inline draws on: their counts every `stats_every` frames.
 void OnSwapGaps(int32_t stats_every);
 // The same on any other thread: the tracker's EndCommandBuffer, and a count. Touches no state of

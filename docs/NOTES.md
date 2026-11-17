@@ -168,6 +168,22 @@ off the camera's motion by over 64 pixels went from 10 to 36 % to 0 to 0.3 %. Fo
 vertices stay in model space (Iron Brigade, PGR4) a draw's own mesh is at distance 0, and the
 limit only refuses a match with another mesh's buffer.
 
+The same counts find Jet Set Radio's camera cuts, which FindCamera cannot: its constants hold
+the projection alone, so no view turns. A frame in which three quarters of at least 64 compared
+matches were refused starts the upscaler's history over (`Upscaler::NoteMotionMatch`). In 480
+frames of its attract demo the refused fraction stayed under a tenth in 439, at 20 to 30 % in the
+fastest pans, and above 90 % once, at a cut.
+
+## Inline draws, found at run time
+
+`rexnative.inline_draws_auto` (on by default) watches each Swap: 30 frames in a row with at most
+2 hooked draw calls while the game writes 8 KB or more of push buffer is what Orcs Must Die!'s
+title and menus look like. The walk is then tried for 60 frames and kept only if it drew
+something; else it goes off again (every pass-through hook runs `OnHook` while it is on) and is
+tried again after 600 frames, twice as many each time. Jet Set Radio's intro video and Perfect
+Dark's loading screens trip the first test and fail the second; run with the walk forced on,
+none of the other 14 games had a draw between its hooked calls.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

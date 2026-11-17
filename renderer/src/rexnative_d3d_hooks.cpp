@@ -77,6 +77,11 @@ REXCVAR_DEFINE_BOOL(rexnative_inline_draws, false, "ReXNative",
                     "Draws the game wrote past the hooked D3D functions (inlined by its build: "
                     "Orcs Must Die!'s title and menus): the push buffer between two hooked "
                     "calls is walked as a command buffer and its draws drawn");
+REXCVAR_DEFINE_BOOL(rexnative_inline_draws_auto, true, "ReXNative",
+                    "Tries rexnative.inline_draws by itself after 30 frames in a row with at most "
+                    "2 hooked draw calls and 8 KB or more of push buffer written, for 60 frames: "
+                    "kept on for the rest of the run if the walk drew something (a game drawing "
+                    "its screens with code inlined past the hooks), off again otherwise");
 REXCVAR_DEFINE_STRING(rexnative_d3d_control, "", "ReXNative",
                       "Command file polled once per frame (trace/skip/tap commands)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_trace_dir, "", "ReXNative", "Directory for frame traces");
@@ -1529,6 +1534,10 @@ thread_local uint32_t t_gap_depth = 0;
 thread_local uint32_t t_gap_cursor = 0;
 thread_local uint32_t t_gap_cursor_device = 0;  // the device t_gap_cursor is a push of
 thread_local bool t_gap_valid = false;
+// The walk's generation: rexnative.inline_draws_auto starts a trial with a new one, and a cursor
+// from an older one (before the walk was off) is not walked from.
+std::atomic<uint32_t> g_gap_epoch{0};
+thread_local uint32_t t_gap_epoch = 0;
 // The device Swap presents with, the last one (a game may create its device again): the layer
 // may follow every device (kFollowSwapDeviceOnly false, g_main_device stays 0), but only that
 // one's stream is walked.
@@ -1572,7 +1581,8 @@ constexpr size_t kMaxForeign = 4096;
     g_gap_foreign.any.store(false, std::memory_order_relaxed);
   }
   const uint32_t cursor = t_gap_cursor;
-  if (!t_gap_valid || t_gap_cursor_device != device || overflow || push <= cursor ||
+  if (!t_gap_valid || t_gap_cursor_device != device ||
+      t_gap_epoch != g_gap_epoch.load(std::memory_order_relaxed) || overflow || push <= cursor ||
       push - cursor > (4u << 20))
     return;
   rexnative::NativeRenderer* r = rexnative::NativeRenderer::Live();
@@ -1594,10 +1604,71 @@ constexpr size_t kMaxForeign = 4096;
   if (from < push) rexnative::cmdbuf::ReplayGap(base, rc, from + 4, push + 4);
 }
 
+// rexnative.inline_draws_auto: the hooked draw calls of the frame so far, on the Swap thread,
+// and the walk's generation (a cursor from before a trial is not walked from).
+uint32_t g_auto_draws = 0;
+
+// At each Swap, unless rexnative.inline_draws is set: a game whose frames reach the hooks with
+// at most 2 draw calls while it writes 8 KB or more of push buffer, 30 frames in a row, may draw
+// with code its build inlined past them (Orcs Must Die!'s title and menus: 2 hooked draws, the
+// rest in the push buffer between). The walk is tried for 60 frames: kept if it drew something,
+// else off again, and tried again only after 600 frames, then twice as many each time. Jet Set
+// Radio's intro video and Perfect Dark's loading screens look the same and the walk finds no
+// draw there: they do not keep the cost of every pass-through hook running OnHook
+// (HasFastPath).
+[[gnu::noinline]] void InlineDrawsAuto(const uint8_t* base, uint32_t device) {
+  static uint32_t last_push = 0, quiet = 0, trial = 0, wait = 0, backoff = 600;
+  static uint64_t trial_draws = 0;
+  static bool kept = false;
+  const uint32_t draws = std::exchange(g_auto_draws, 0);
+  if (kept || !device || !REXCVAR_GET(rexnative_inline_draws_auto) ||
+      REXCVAR_GET(rexnative_inline_draws))
+    return;
+  if (trial) {
+    if (rexnative::cmdbuf::GapDraws() > trial_draws) {
+      kept = true;
+      REXLOG_INFO("ReXNative: the push buffer between hooked calls holds draws: inline draws "
+                  "on (rexnative.inline_draws_auto)");
+      return;
+    }
+    if (--trial) return;
+    g_inline_draws.store(false, std::memory_order_relaxed);
+    g_hook_all.store(g_tap.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+    wait = backoff;
+    backoff = std::min(backoff * 2, 38400u);
+    quiet = 0;
+    REXNATIVE_LOG_FIRST(4, INFO, "ReXNative: no draws between hooked calls: inline draws off "
+                                 "again (rexnative.inline_draws_auto)");
+    return;
+  }
+  const uint32_t push = Load32(base, device + rexnative::dev::kPush);
+  const uint32_t written = push > last_push ? push - last_push : 0;  // 0 past a wrap
+  last_push = push;
+  if (wait) {
+    --wait;
+    return;
+  }
+  quiet = draws <= 2 && written >= 8192 ? quiet + 1 : 0;
+  if (quiet < 30) return;
+  trial = 60;
+  trial_draws = rexnative::cmdbuf::GapDraws();
+  g_gap_epoch.fetch_add(1, std::memory_order_relaxed);
+  g_inline_draws.store(true, std::memory_order_relaxed);
+  g_hook_all.store(true, std::memory_order_relaxed);
+  REXNATIVE_LOG_FIRST(4, INFO, "ReXNative: {} frames with at most 2 hooked draw calls and {} bytes "
+                               "of push buffer in the last: inline draws tried "
+                               "(rexnative.inline_draws_auto)",
+                      quiet, written);
+}
+
 template <FnId kId, GuestFn kOriginal>
 inline void OnHook(PPCContext& ctx, uint8_t* base) {
-  if (!g_inline_draws.load(std::memory_order_relaxed)) [[likely]]
+  if constexpr (kId == kFnSwap) InlineDrawsAuto(base, ctx.r3.u32);
+  if (!g_inline_draws.load(std::memory_order_relaxed)) [[likely]] {
+    if constexpr (NativeClassOf(kFns[kId].cat) == kNatDraw) ++g_auto_draws;
     return OnHookInner<kId, kOriginal>(ctx, base);
+  }
+  if constexpr (NativeClassOf(kFns[kId].cat) == kNatDraw) ++g_auto_draws;
   const uint32_t device = ctx.r3.u32;
   if constexpr (kId == kFnSwap) {
     if (device) {
@@ -1618,6 +1689,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
   if (outer) {
     t_gap_cursor = Load32(base, device + rexnative::dev::kPush);
     t_gap_cursor_device = device;
+    t_gap_epoch = g_gap_epoch.load(std::memory_order_relaxed);
     t_gap_valid = kId != kFnBeginVertices && kId != kFnBeginIndexedVertices;
     if constexpr (kId == kFnSwap)
       rexnative::cmdbuf::OnSwapGaps(REXCVAR_GET(rexnative_d3d_stats_frames));

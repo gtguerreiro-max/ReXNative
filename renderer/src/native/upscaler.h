@@ -94,6 +94,18 @@ class Upscaler {
   // A camera cut this frame (NativeRenderer::FindCamera): the upscaling and the frame generation
   // start over rather than blend the frames before it, which show another view.
   void NoteCameraCut() { reset_ = true; }
+  // A scene draw's motion match (DrawRenderer::BindPreviousConstants): compared by its first
+  // vertex, and refused for its distance (MotionHistory). Most of a frame's comparisons refused
+  // is a camera cut where FindCamera sees no view turn (Jet Set Radio transforms its vertices
+  // on the CPU: its constants hold the projection alone): Upscale starts over then too.
+  void NoteMotionMatch(bool compared, bool refused) {
+    if (match_frame_ != frame_) {
+      match_frame_ = frame_;
+      matches_compared_ = matches_refused_ = 0;
+    }
+    matches_compared_ += compared;
+    matches_refused_ += refused;
+  }
   // The upscaler running: NVIDIA DLSS / DLAA (dlss.h) where the GPU and nvngx_dlss.dll have it,
   // AMD FSR through the FidelityFX API otherwise (FSR 4 on the GPUs that run it, FSR 3.1
   // elsewhere, the Steam Deck among them), or as --rexnative_upscaler_backend asks.
@@ -251,6 +263,8 @@ class Upscaler {
   std::optional<DynamicResolution> dynamic_;  // with --rexnative_upscaler_target_fps
   uint32_t mip_bias_quarters_ = 0;
   uint64_t frame_ = 0;
+  uint64_t match_frame_ = UINT64_MAX;  // NoteMotionMatch's frame and counts
+  uint32_t matches_compared_ = 0, matches_refused_ = 0, motion_cuts_ = 0;
   uint64_t upscaled_frame_ = UINT64_MAX;
   bool upscaled_ = false;  // the frame's Upscale succeeded
   RenderTarget* scene_depth_ = nullptr;  // that Upscale's depth (SceneInputs)

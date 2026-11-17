@@ -63,7 +63,7 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |
 | Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world | 60 FPS |
 | Castlevania: Symphony of the Night (TU 2) | plays: the menu with its text, the name entry, the prologue | 60 FPS |
-| Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS, with `rexnative.inline_draws = true` (its build inlined many draws past the hooks) | 30 FPS |
+| Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS (its build inlined many draws past the hooks: `rexnative.inline_draws`, which turns itself on) | 30 FPS |
 | Double Dragon Neon | plays its first mission | 60 FPS |
 | Brothers - A Tale of Two Sons | menu and opening, drawn as the stock renderer draws them | 30 FPS (ReXGlue's renderer) |
 | Bionic Commando Rearmed (TU 2) | the intro at 60 FPS, the mission map | 60 FPS |
@@ -216,9 +216,11 @@ rate (60 by default, so menus made for a console's 60 Hz keep their speed on a f
 PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still work as aliases.
 
 A game whose build inlined draws past the hooked D3D functions (Orcs Must Die!'s title, menus,
-loading screens and HUD) shows them black. With `rexnative.inline_draws = true` ReXNative walks the
-push buffer the game wrote between two hooked calls, as it walks a recorded command buffer, and
-draws what it finds there. `rexnative.auto_handover = 30` is the other way out: after 30 frames in
+loading screens and HUD) shows them black. With `rexnative.inline_draws` ReXNative walks the push
+buffer the game wrote between two hooked calls, as it walks a recorded command buffer, and draws
+what it finds there. `rexnative.inline_draws_auto` (on by default) tries it by itself when 30
+frames in a row reach the hooks with at most 2 draw calls while the game writes its push buffer,
+and keeps it only if the walk finds draws (a video or a loading screen looks the same and has none). `rexnative.auto_handover = 30` is the other way out: after 30 frames in
 which ReXNative sees at most one draw call, ReXGlue's renderer draws until the game's draw calls
 come back, as F9 would. It stays off under Wine, as F9 does: under vkd3d-proton the window cannot
 go from one renderer's swap chain to the other's (the Xenos driver's Present then waits for good).
@@ -290,18 +292,19 @@ docs/NOTES.md                         what each game needed, and how it was foun
 - Find the HDR pass before the game's tone mapping, for DLSS 5.
 - The open problems above: Perfect Dark's broken levels, Spelunky's missing text, Halo's dark
   and striped surfaces, the WMV videos of Dark Souls II and Jet Set Radio.
-- The upscalers' history started over at a camera cut in a game without a camera matrix (Jet
-  Set Radio transforms its vertices on the CPU).
+- A reactive mask for the upscalers (FSR's own, made from the scene before and after its
+  transparent draws), where motion vectors cannot be right: particles, and the draws whose mesh
+  the previous frame did not have.
 - Memexport: a game whose picture needs it, and no GPU wait when nothing on the CPU reads its
   results.
-- Inline draws found by the tool, so a game such as Orcs Must Die! needs no setting.
 - Build a game end to end from `scripts\build-sdk.ps1` on a clean machine.
 - Every new game becomes a reference and makes the next one easier.
 
 Done: the renderer built from this repository for From Dust and Iron Brigade, and the scene
 surface learned at run time (2026-11-14); recorded command buffers, memexport, pipelines compiled
 ahead, and thirteen more games end to end (2026-11-15 and 16); the move to ReXGlue v0.11.0 and
-the Steam Deck on it (2026-11-16); Midnight Club's cars and Dark Souls II (2026-11-17).
+the Steam Deck on it (2026-11-16); Midnight Club's cars and Dark Souls II, Jet Set Radio's
+motion vectors and camera cuts, inline draws found at run time (2026-11-17).
 
 ## License and credits
 
