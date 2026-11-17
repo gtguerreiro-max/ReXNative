@@ -80,4 +80,16 @@ def map_offsets(ref_offsets, v, R=None, ref_funcs=()):
             row['how'] = ('not voted: kept (%d uses in the reference library)' % used
                           if used else 'unused in the reference library: kept')
         out[name] = row
+    # Fields of one block move together: predicated tiling's count, rectangles and origins
+    # (render_targets.h). A rectangle list read through a register (no use to vote on) moves
+    # with the count and the origins when both moved by the same amount (Overlord II: +16 from
+    # PGR4's XDK; kept, the second tile was read at the first's place and never drawn).
+    block = ('rt.kDevTileCount', 'rt.kDevTileRects', 'rt.kDevTileOrigins')
+    if all(k in out for k in block):
+        count, rects, origins = (out[k] for k in block)
+        moved = count['target'] - count['ref']
+        if (moved and origins['target'] - origins['ref'] == moved and not rects['votes'] and
+                rects['target'] == rects['ref']):
+            rects['target'] = rects['ref'] + moved
+            rects['how'] = 'moved with the tile count and origins (%+d)' % moved
     return out

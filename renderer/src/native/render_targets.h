@@ -150,6 +150,11 @@ struct RenderTarget {
   uint32_t srgb_view_index = UINT32_MAX;
   uint64_t last_frame = 0;  // frame of the last use, for eviction
   uint64_t fill_seq = 0;    // EDRAM fills up to this sequence are applied (SyncEdram)
+  // Under predicated tiling (BeginTiling's clear, until a clear without tiles): the rows its tiles
+  // take in the EDRAM, each tile rendered at the base. The rows below them are the other tiles'
+  // and no other surface's EDRAM: Overlord II's three G-buffer targets at bases 0, 368 and 736
+  // took each other's clears into their second tile. 0: the whole height.
+  uint32_t edram_rows = 0;
   // Depth targets: when their depth last changed (bound, cleared, copied in; AliasDepth).
   uint64_t depth_seq = 0;
   // Color targets: when their color last changed (bound, copied in; AliasColor).

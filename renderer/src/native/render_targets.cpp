@@ -612,6 +612,7 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
     } else {
       for (const D3D12_RECT& r : edram) RecordFill(*rt, r, p.color);
     }
+    rt->edram_rows = p.edram_rects.empty() ? 0 : edram_rows(*rt);
     rt->fill_seq = fill_seq_;
   }
   D3D12_CLEAR_FLAGS df = D3D12_CLEAR_FLAGS(0);
@@ -752,7 +753,9 @@ void RenderTargets::SyncEdram(CommandStream* list, RenderTarget* rt) {
   rt->fill_seq = fill_seq_;
   if (rt->depth || since == fill_seq_) return;
   const EdramGrid g = GridOf(*rt);
-  const uint32_t end = GridEnd(g, rt->height);
+  // Its rows in the EDRAM: under predicated tiling only its tiles' (RenderTarget::edram_rows).
+  const uint32_t rows = rt->edram_rows ? std::min(rt->edram_rows, rt->height) : rt->height;
+  const uint32_t end = GridEnd(g, rows);
   const uint32_t format = StorageFormat(rt->guest_format);
   for (const EdramFill& f : fills_) {
     if (f.seq <= since || f.first_tile() >= end || f.end_tile() <= g.base) continue;
@@ -780,7 +783,7 @@ void RenderTargets::SyncEdram(CommandStream* list, RenderTarget* rt) {
       const GridSpan& s = spans[i];
       const int64_t x0 = (s.x0 + g.dx - 1) / g.dx, x1 = std::min<int64_t>(s.x1 / g.dx, rt->width);
       const int64_t y0 = (std::max<int64_t>(s.y0, 0) + g.dy - 1) / g.dy;
-      const int64_t y1 = std::min<int64_t>(s.y1 / g.dy, rt->height);
+      const int64_t y1 = std::min<int64_t>(s.y1 / g.dy, rows);
       if (x1 > x0 && y1 > y0) guest[ng++] = {LONG(x0), LONG(y0), LONG(x1), LONG(y1)};
     }
     const UINT nr = UINT(ScaleRects(*rt, guest, ng, rects));

@@ -317,26 +317,31 @@ def call_args(R, T, ref_fn, tgt_fn, ref_args=None):
     return out, evidence
 
 
-def stack_address_args(tree, fn, back=24):
-    """The argument registers some call of `fn` sets to a stack address (`addi rN,r1,X`, a
-    pointer to the caller's frame) as their last write before the call."""
-    found = set()
+def call_site_writes(tree, fn, back=24):
+    """For each call of `fn`: {register: the last instruction writing it in the `back`
+    instructions before the call}."""
+    sites = []
     for caller in tree.callers.get(fn, ()):
         insns = tree.funcs.get(caller, ())
         index = {a: i for i, (a, _) in enumerate(insns)}
         for site, callee, _ in tree.calls.get(caller, ()):
             if callee != fn or site not in index:
                 continue
-            seen = set()
+            last = {}
             for _, text in reversed(insns[max(0, index[site] - back):index[site]]):
                 mn, ops = _ops(text)
                 dst = _writes(mn, ops)
-                if not dst or dst in seen:
-                    continue
-                seen.add(dst)
-                if mn == 'addi' and len(ops) == 3 and ops[1] == 'r1':
-                    found.add(dst)
-    return found
+                if dst and dst not in last:
+                    last[dst] = (mn, ops)
+            sites.append(last)
+    return sites
+
+
+def stack_address_args(sites):
+    """The registers some call sets to a stack address (`addi rN,r1,X`, a pointer into the
+    caller's frame) as their last write before it (call_site_writes)."""
+    return {reg for last in sites for reg, (mn, ops) in last.items()
+            if mn == 'addi' and len(ops) == 3 and ops[1] == 'r1'}
 
 
 def resolve_abi(R, T, ref_profile, matches, log=print):
@@ -459,12 +464,24 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
     # a stack address in r5 passes the source rectangle there, as the public signature has it
     # (Overlord's EndTiling calls its public Resolve so; with PGR4's mapping each tile's resolve
     # read the rectangle's address as the level and was dropped: a white scene).
-    if regs[2] == 0 and regs[5] == 5 and 'r5' in stack_address_args(T, target_fn):
+    sites = call_site_writes(T, target_fn)
+    if regs[2] == 0 and regs[5] == 5 and 'r5' in stack_address_args(sites):
         steps.append('a call of %08X passes a stack address in r5, the public source rectangle: '
                      'the public signature, not the reference\'s mapping' % target_fn)
         regs = list(range(3, 11))
         public = [(name, p, p, n, tot) if i < 8 else (name, p, src, n, tot)
                   for i, (name, p, src, n, tot) in enumerate(public)]
+    # The level and the slice, 0 unless the caller says otherwise: a register most calls leave as
+    # it was is no argument (Overlord II's LTCG Resolve takes neither; the mapping's r9, unset by
+    # EndTiling, moved each tile's destination by a whole surface per leftover unit).
+    for i in (5, 6):
+        reg = 'r%d' % regs[i] if regs[i] else None
+        if reg and sites and 2 * sum(reg in last for last in sites) < len(sites):
+            steps.append('%s: %s is set before only %d of the %d calls of %08X: a constant 0' % (
+                PUBLIC_NAMES[i], reg, sum(reg in last for last in sites), len(sites), target_fn))
+            regs[i] = 0
+            name, p, src, n, tot = public[i]
+            public[i] = (name, p, ('0',), 0, 0)
     identity = regs == list(range(3, 11)) and stack_ok
     return {
         'hook': target_fn,

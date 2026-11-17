@@ -16,7 +16,8 @@ title=${1:?usage: install.sh "Game name"}
 exe=$(ls -1t "$dest"/*.exe 2>/dev/null | head -1 || true)
 [[ -n $exe ]] || { echo "no game executable in $dest" >&2; exit 1; }
 name=$(basename "$exe" .exe)
-[[ -e $dest/game/default.xex || -e $dest/game/Default.xex ]] ||
+# Any case: a disc's files can be upper case (Overlord II's DEFAULT.XEX); Wine finds them anyway.
+[[ -n $(find "$dest/game" -maxdepth 1 -iname default.xex -print -quit 2>/dev/null) ]] ||
   { echo "no game data: put the game's files in $dest/game" >&2; exit 1; }
 # The deck settings become the game's while the game's are the ones installed last (.<name>-deck,
 # a copy): changes made on the Deck (the HUD saves them) are kept.

@@ -36,7 +36,8 @@
 #   so -Pulse clears the file again.
 # Keys: hold:<keys joined by +>:<ms> with real key-down/up (SPACE, ENTER, TAB, arrows, letters;
 # with --mnk_mode Space is A and Enter Start), or SendKeys text. They go to the game only while
-# its window is in front.
+# its window is in front: a Windows prompt that holds the focus (the firewall's "allow access?"
+# for a game that opens a socket) is the user's to answer, and the keys are skipped meanwhile.
 param(
     [Parameter(Position = 0)][string]$Command = 'status',
     [Parameter(Position = 1)][string]$Arg = '',
@@ -49,7 +50,6 @@ param(
     [switch]$Force,
     [switch]$RenderDoc,
     [switch]$Plain,
-    [switch]$LeaveNotices,
     [string]$RenderDocDir = $env:REXNATIVE_RENDERDOC
 )
 $ErrorActionPreference = 'Stop'
@@ -126,18 +126,6 @@ function Get-Window($p) {
     throw 'the game has no window'
 }
 
-function Close-FirewallNotices {
-    # A game that binds a socket (system link, Xbox Live) makes Windows ask "allow access?" once per
-    # new exe, in a window that takes the focus from the game. Ended unanswered (no rule is written,
-    # the game stays without inbound access, as on a cancel), so the keys keep reaching the game.
-    # -LeaveNotices: left for the user to answer (the keys then reach the game only while it can
-    # come in front).
-    if ($LeaveNotices) { return }
-    Get-CimInstance Win32_Process -Filter "Name='PickerHost.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*FirewallNotificationDialogServer*' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-}
-
 function Send-Schedule($p, [string]$schedule) {
     # "<seconds from now>:<key>" items, in order.
     $start = Get-Date
@@ -148,7 +136,6 @@ function Send-Schedule($p, [string]$schedule) {
             if ($p.HasExited) { throw ('the game exited: 0x{0:X8}' -f $p.ExitCode) }
         }
         $h = Get-Window $p
-        Close-FirewallNotices
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 150
         if ([RexLiveWin]::GetForegroundWindow() -ne $h) { "skipped '$key' at ${at}s: the game is not in front"; continue }
         if ($key -like 'hold:*') {
@@ -178,7 +165,6 @@ function Save-Shot($p, [string]$path) {
         if ($c.R + $c.G + $c.B -gt 0) { $black = $false; break }
     }
     if ($black) {  # a swapchain PrintWindow cannot read: copy the screen with the window in front
-        Close-FirewallNotices
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 300
         $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
     }
@@ -248,7 +234,6 @@ switch ($Command) {
         $p = Get-Game $s
         $h = Get-Window $p
         $r = New-Object RexLiveWin+RECT; [RexLiveWin]::GetWindowRect($h, [ref]$r) | Out-Null
-        Close-FirewallNotices
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 150
         if ([RexLiveWin]::GetForegroundWindow() -ne $h) { throw 'the game is not in front' }
         [RexLiveWin]::Click($r.Left + [int]$Arg, $r.Top + [int]$Arg2)
