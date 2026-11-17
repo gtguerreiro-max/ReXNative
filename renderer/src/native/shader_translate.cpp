@@ -168,10 +168,16 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
                    program_cntl, Reg<reg::SQ_CONTEXT_MISC>(regs.sq_context_misc), param_gen_pos)
          : 0;
 
-  // Vertex shader (always a plain host vertex shader: PGR4 does not tessellate).
+  // Vertex shader: a host vertex shader, or with the tessellator the patch's domain shader. The
+  // major mode is the implicit one here (SelectModifications sees the initiator's primitive
+  // alone), which is explicit for the patch types anyway.
+  const bool tessellated =
+      xenos::IsMajorModeExplicit(draw_initiator.major_mode, draw_initiator.prim_type) &&
+      Reg<reg::VGT_OUTPUT_PATH_CNTL>(regs.vgt_output_path_cntl).path_select ==
+          xenos::VGTOutputPath::kTessellationEnable;
   Modification vm(translator.GetDefaultVertexShaderModification(
       vs.GetDynamicAddressableRegisterCount(program_cntl.vs_num_reg),
-      rex::gpu::Shader::HostVertexShaderType::kVertex));
+      HostVertexShaderTypeFor(draw_initiator.prim_type, tessellated)));
   vm.vertex.interpolator_mask = interpolator_mask;
   auto clip = Reg<reg::PA_CL_CLIP_CNTL>(regs.pa_cl_clip_cntl);
   uint32_t ucp = clip.clip_disable ? 0 : clip.ucp_ena;
@@ -228,17 +234,21 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
   return out;
 }
 
-ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(ID3D12Device* device, uint64_t* blob_hash) {
+ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(ID3D12Device* device, uint64_t* blob_hash,
+                                                        bool tessellated) {
   using CB = DxbcShaderTranslator::CbufferRegister;
   using Space = DxbcShaderTranslator::SRVSpace;
+  // The guest vertex shader's constants: in the vertex shader, or with the tessellator in the
+  // domain shader it becomes (the plugin's root_signature_bindless_ds_).
+  const D3D12_SHADER_VISIBILITY vertex =
+      tessellated ? D3D12_SHADER_VISIBILITY_DOMAIN : D3D12_SHADER_VISIBILITY_VERTEX;
   D3D12_ROOT_PARAMETER p[kBindlessRoot_Count];
   p[kBindlessRoot_FetchConstants] = Cbv(CB::kFetchConstants, D3D12_SHADER_VISIBILITY_ALL);
-  p[kBindlessRoot_FloatConstantsVertex] = Cbv(CB::kFloatConstants, D3D12_SHADER_VISIBILITY_VERTEX);
+  p[kBindlessRoot_FloatConstantsVertex] = Cbv(CB::kFloatConstants, vertex);
   p[kBindlessRoot_FloatConstantsPixel] = Cbv(CB::kFloatConstants, D3D12_SHADER_VISIBILITY_PIXEL);
   p[kBindlessRoot_DescriptorIndicesPixel] =
       Cbv(CB::kDescriptorIndices, D3D12_SHADER_VISIBILITY_PIXEL);
-  p[kBindlessRoot_DescriptorIndicesVertex] =
-      Cbv(CB::kDescriptorIndices, D3D12_SHADER_VISIBILITY_VERTEX);
+  p[kBindlessRoot_DescriptorIndicesVertex] = Cbv(CB::kDescriptorIndices, vertex);
   p[kBindlessRoot_SystemConstants] = Cbv(CB::kSystemConstants, D3D12_SHADER_VISIBILITY_ALL);
   p[kBindlessRoot_BoolLoopConstants] = Cbv(CB::kBoolLoopConstants, D3D12_SHADER_VISIBILITY_ALL);
   p[kBindlessRoot_SharedMemory] =
@@ -256,10 +266,8 @@ ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(ID3D12Device* device, ui
             0),
   };
   p[kBindlessRoot_ViewHeap] = Table(views, 3, D3D12_SHADER_VISIBILITY_ALL);
-  p[kBindlessRoot_PreviousFloatConstantsVertex] =
-      Cbv(CB::kPreviousFloatConstants, D3D12_SHADER_VISIBILITY_VERTEX);
-  p[kBindlessRoot_PreviousFetchConstantsVertex] =
-      Cbv(CB::kPreviousFetchConstants, D3D12_SHADER_VISIBILITY_VERTEX);
+  p[kBindlessRoot_PreviousFloatConstantsVertex] = Cbv(CB::kPreviousFloatConstants, vertex);
+  p[kBindlessRoot_PreviousFetchConstantsVertex] = Cbv(CB::kPreviousFetchConstants, vertex);
   D3D12_ROOT_SIGNATURE_DESC desc = {kBindlessRoot_Count, p, 0, nullptr,
                                     D3D12_ROOT_SIGNATURE_FLAG_NONE};
   return Create(device, desc, blob_hash);

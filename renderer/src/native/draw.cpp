@@ -154,6 +154,20 @@ REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 using BYTE = unsigned char;
 #include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_round_ps.h"
 #include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/float24_truncate_ps.h"
+// Tessellation: the plugin's hull shaders and the vertex shaders that pass a patch's index or
+// edge factors on to them (PipelineCache::CreateD3D12Pipeline).
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/adaptive_quad_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/adaptive_triangle_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/continuous_quad_1cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/continuous_quad_4cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/continuous_triangle_1cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/continuous_triangle_3cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/discrete_quad_1cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/discrete_quad_4cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/discrete_triangle_1cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/discrete_triangle_3cp_hs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/tessellation_adaptive_vs.h"
+#include "src/gpu/xenos/shaders/bytecode/d3d12_5_1/tessellation_indexed_vs.h"
 
 // thirdparty/dxbc/DXBCChecksum.cpp (rexnative_shader_xlate).
 void CalculateDXBCChecksum(unsigned char* pData, unsigned int dwSize, unsigned int dwHash[4]);
@@ -567,7 +581,9 @@ struct PipelineKey {
   uint8_t depth_enable, depth_write, depth_func, stencil_enable;
   uint8_t stencil_read_mask, stencil_write_mask;
   uint8_t front[4], back[4];  // fail, depth fail, pass, func (D3D12 values)
-  uint8_t num_rts, pad[5];
+  uint8_t num_rts;
+  uint8_t tessellation;  // 0 none, else 1 + xenos::TessellationMode (the vertex shader is a domain one)
+  uint8_t pad[4];
   DXGI_FORMAT dsv;
   DXGI_FORMAT rtv[4];
   struct Rt {
@@ -580,8 +596,9 @@ static_assert(offsetof(PipelineKey, depth_bias) == 28 && offsetof(PipelineKey, d
               offsetof(PipelineKey, rt) == 76 && sizeof(PipelineKey) == 112);
 // Bump when PipelineKey's layout or the meaning of a field changes: keys are stored on disk
 // (PipelineStore) and an old file is then discarded.
-// 2: depth bias zero with dynamic depth bias; 3: pixel shaders specialized for unsigned textures
-constexpr uint32_t kPipelineKeyVersion = 3;
+// 2: depth bias zero with dynamic depth bias; 3: pixel shaders specialized for unsigned textures;
+// 4: tessellation
+constexpr uint32_t kPipelineKeyVersion = 4;
 
 enum class BlendFactor : uint8_t {
   kZero,
@@ -866,6 +883,9 @@ struct DrawRenderer::Impl {
   BoolSpecializer vs_bools{shaders}, ps_bools{shaders};
   bool bool_specialize = REXCVAR_GET(rexnative_bool_specialize);
   ComPtr<ID3D12RootSignature> root_signature;
+  // Its twin for tessellated draws: the vertex constants visible to the domain shader.
+  ComPtr<ID3D12RootSignature> root_signature_ds;
+  ID3D12RootSignature* bound_root_signature = nullptr;  // list state (ResetListState)
   uint64_t root_signature_hash = 0;  // names in the pipeline library depend on it
 
   // Shared memory: guest physical memory mirror and its page validity (cleared by CPU writes).
@@ -1767,6 +1787,8 @@ bool DrawRenderer::Impl::Initialize() {
   constant_upload.Reserve(12);
   root_signature = CreateBindlessRootSignature(device, &root_signature_hash);
   if (!root_signature) return false;
+  root_signature_ds = CreateBindlessRootSignature(device, nullptr, true);
+  if (!root_signature_ds) return false;
 
   const D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
   const D3D12_RESOURCE_DESC rd =
@@ -1959,6 +1981,7 @@ void DrawRenderer::Impl::PipelineWorker(bool saves, bool on_wait) {
 
 void DrawRenderer::Impl::ResetListState() {
   list_dirty = true;
+  bound_root_signature = nullptr;
   bound_pso = nullptr;
   bound_topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
   bound_viewport = {};
@@ -2903,13 +2926,52 @@ DrawRenderer::Impl::Pipeline* DrawRenderer::Impl::CreatePipeline(
     const DxbcShader::Translation* ps, bool prewarm, uint32_t store_entry) {
   D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
   std::memset(&d, 0, sizeof(d));  // padding too: PipelineLibrary hashes the bytes
-  d.pRootSignature = root_signature.Get();
+  d.pRootSignature = key.tessellation ? root_signature_ds.Get() : root_signature.Get();
   if (dynamic_depth_bias) d.Flags = D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
   d.IBStripCutValue = key.strip_cut == 1   ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF
                       : key.strip_cut == 2 ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF
                                            : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
-  d.VS.pShaderBytecode = vs.GetTranslatedBinary().data();
-  d.VS.BytecodeLength = vs.GetTranslatedBinary().size();
+  if (key.tessellation) {
+    // PipelineCache::CreateD3D12Pipeline: a vertex shader passing the index (or the adaptive
+    // edge factors) on, the hull shader of the mode and patch, the guest shader as the domain one.
+    const auto mode = xenos::TessellationMode(key.tessellation - 1);
+    const auto type =
+        DxbcShaderTranslator::Modification(vs.GetModification()).vertex.host_vertex_shader_type;
+    using T = rex::gpu::Shader::HostVertexShaderType;
+    const bool adaptive = mode == xenos::TessellationMode::kAdaptive;
+    d.VS.pShaderBytecode = adaptive ? kTessellationAdaptiveVS : kTessellationIndexedVS;
+    d.VS.BytecodeLength = adaptive ? sizeof(kTessellationAdaptiveVS) : sizeof(kTessellationIndexedVS);
+    const BYTE* hs = nullptr;
+    size_t hs_size = 0;
+    const auto pick = [&](const BYTE* b, size_t n) { hs = b, hs_size = n; };
+    switch (mode) {
+      case xenos::TessellationMode::kDiscrete:
+        if (type == T::kTriangleDomainCPIndexed) pick(kDiscreteTriangle3CPHS, sizeof(kDiscreteTriangle3CPHS));
+        if (type == T::kTriangleDomainPatchIndexed) pick(kDiscreteTriangle1CPHS, sizeof(kDiscreteTriangle1CPHS));
+        if (type == T::kQuadDomainCPIndexed) pick(kDiscreteQuad4CPHS, sizeof(kDiscreteQuad4CPHS));
+        if (type == T::kQuadDomainPatchIndexed) pick(kDiscreteQuad1CPHS, sizeof(kDiscreteQuad1CPHS));
+        break;
+      case xenos::TessellationMode::kContinuous:
+        if (type == T::kTriangleDomainCPIndexed) pick(kContinuousTriangle3CPHS, sizeof(kContinuousTriangle3CPHS));
+        if (type == T::kTriangleDomainPatchIndexed) pick(kContinuousTriangle1CPHS, sizeof(kContinuousTriangle1CPHS));
+        if (type == T::kQuadDomainCPIndexed) pick(kContinuousQuad4CPHS, sizeof(kContinuousQuad4CPHS));
+        if (type == T::kQuadDomainPatchIndexed) pick(kContinuousQuad1CPHS, sizeof(kContinuousQuad1CPHS));
+        break;
+      case xenos::TessellationMode::kAdaptive:
+        if (type == T::kTriangleDomainPatchIndexed) pick(kAdaptiveTriangleHS, sizeof(kAdaptiveTriangleHS));
+        if (type == T::kQuadDomainPatchIndexed) pick(kAdaptiveQuadHS, sizeof(kAdaptiveQuadHS));
+        break;
+      default:
+        break;
+    }
+    d.HS.pShaderBytecode = hs;
+    d.HS.BytecodeLength = hs_size;
+    d.DS.pShaderBytecode = vs.GetTranslatedBinary().data();
+    d.DS.BytecodeLength = vs.GetTranslatedBinary().size();
+  } else {
+    d.VS.pShaderBytecode = vs.GetTranslatedBinary().data();
+    d.VS.BytecodeLength = vs.GetTranslatedBinary().size();
+  }
   if (ps && !key.disable_raster) {
     d.PS.pShaderBytecode = ps->GetTranslatedBinary().data();
     d.PS.BytecodeLength = ps->GetTranslatedBinary().size();
@@ -3797,6 +3859,13 @@ PipelineKey DrawRenderer::Impl::BuildPipelineKey(
   key.ps = pst;
   key.gs_key = GeometryShaderKeyFor(prim, mods.vertex, pst ? mods.pixel : 0);
   key.topology_type = uint8_t(TopologyTypeForPrimitive(prim));
+  if (rex::gpu::Shader::IsHostVertexShaderTypeDomain(
+          DxbcShaderTranslator::Modification(mods.vertex).vertex.host_vertex_shader_type)) {
+    // Patches through the hull and domain shaders, no geometry shader.
+    key.gs_key = 0;
+    key.topology_type = uint8_t(D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH);
+    key.tessellation = uint8_t(1 + uint32_t(regs.Get<reg::VGT_HOS_CNTL>().tess_mode));
+  }
   key.strip_cut = strip_cut;
   key.samples = 1;
   if (!rasterization) {
@@ -4567,7 +4636,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
        (frame_draws >= debug_skip_from && frame_draws < debug_skip_to));
   // Not for a vertex shader that writes memory: the motion pass runs its ucode a second time,
   // memexport included, with the temporaries of the first pass freed (patch 0010 only asserts).
-  const bool motion = scene_upscaler && !no_motion && mods.pixel_shader_used &&
+  // The vertex shader as a domain shader (tessellation, SelectModifications): those draws go
+  // without motion vectors for now (the motion pass would need its own domain shader).
+  const auto host_vs_type =
+      DxbcShaderTranslator::Modification(mods.vertex).vertex.host_vertex_shader_type;
+  const bool domain = rex::gpu::Shader::IsHostVertexShaderTypeDomain(host_vs_type);
+  const bool motion = scene_upscaler && !no_motion && !domain && mods.pixel_shader_used &&
                       !vs->GetMemExportEMWritten() && depth_control.z_enable &&
                       (depth_control.z_write_enable ||
                        ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
@@ -4603,19 +4677,49 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const bool tess = xenos::IsMajorModeExplicit(initiator.major_mode, initiator.prim_type) &&
                     regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
                         xenos::VGTOutputPath::kTessellationEnable;
+  const xenos::TessellationMode tess_mode = regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
   if (tess) {
-    REXNATIVE_WARN_ONCE("ReXNative draw: tessellation unsupported");
-    ++stats.unsupported;
-    return;
+    // What the plugin tessellates (PrimitiveProcessor::Process): triangle and quad lists in the
+    // discrete and continuous modes, triangle and quad patches in all three, the adaptive mode
+    // with its edge factors as 32-bit floats in the index buffer.
+    using T = rex::gpu::Shader::HostVertexShaderType;
+    const bool patch = host_vs_type == T::kTriangleDomainPatchIndexed ||
+                       host_vs_type == T::kQuadDomainPatchIndexed;
+    const bool supported =
+        domain && (tess_mode != xenos::TessellationMode::kAdaptive ||
+                   (patch && s.indexed && s.index_32bit));
+    if (!supported) {
+      REXNATIVE_WARN_ONCE("ReXNative draw: tessellation of primitive {} in mode {} unsupported",
+                          s.primitive, uint32_t(tess_mode));
+      ++stats.unsupported;
+      return;
+    }
+    REXNATIVE_LOG_FIRST(1, INFO,
+                        "ReXNative draw: tessellated draws (first: primitive {}, mode {}, vertex "
+                        "shader {:016X})",
+                        s.primitive, uint32_t(tess_mode), vs->GetUcodeDataHash());
   }
   profile::Mark(profile::kShaders);
-  const bool polygonal = rex::gpu::draw_state::IsPrimitivePolygonal(false, prim);
+  const bool polygonal = rex::gpu::draw_state::IsPrimitivePolygonal(tess, prim);
   const bool rasterization = IsRasterizationPotentiallyDone(regs, polygonal);
 
   // Host primitive (the plugin's primitive processor on D3D12: points, rectangles and quads go
-  // through a geometry shader, triangle fans through converted indices).
-  D3D_PRIMITIVE_TOPOLOGY topology;
-  switch (prim) {
+  // through a geometry shader, triangle fans through converted indices; patches of one control
+  // point, or of the list's three or four, with the tessellator).
+  D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+  if (tess) {
+    const bool triangles = prim == xenos::PrimitiveType::kTriangleList ||
+                           prim == xenos::PrimitiveType::kTrianglePatch;
+    if (prim == xenos::PrimitiveType::kTriangleList)
+      topology = D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+    else if (prim == xenos::PrimitiveType::kQuadList)
+      topology = D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST;
+    else if (tess_mode == xenos::TessellationMode::kAdaptive)
+      topology = triangles ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST
+                           : D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST;
+    else
+      topology = D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST;
+  } else switch (prim) {
     case xenos::PrimitiveType::kPointList:
       topology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
       break;
@@ -4897,11 +5001,22 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       {LONG(scissor.offset[0]), LONG(scissor.offset[1]),
        LONG(scissor.offset[0] + scissor.extent[0]), LONG(scissor.offset[1] + scissor.extent[1])});
 
-  // Root state.
+  // Root state. A tessellated draw takes the root signature whose vertex constants the domain
+  // shader sees; changing it leaves every root argument undefined, so all are bound again.
+  ID3D12RootSignature* const draw_root_signature =
+      domain ? root_signature_ds.Get() : root_signature.Get();
+  if (draw_root_signature != bound_root_signature) {
+    if (bound_root_signature) {
+      for (CachedCbv* cb : Cbvs()) cb->bound = 0;
+      bound_previous_float = bound_previous_fetch = 0;
+    }
+    bound_root_signature = draw_root_signature;
+    list_dirty = true;
+  }
   if (list_dirty) {
     ID3D12DescriptorHeap* heaps[] = {view_heap.Get(), sampler_heap.Get()};
     list->SetDescriptorHeaps(2, heaps);
-    list->SetGraphicsRootSignature(root_signature.Get());
+    list->SetGraphicsRootSignature(bound_root_signature);
     list->SetGraphicsRootDescriptorTable(kBindlessRoot_SharedMemory, view_gpu);
     list->SetGraphicsRootDescriptorTable(kBindlessRoot_SamplerHeap, sampler_gpu);
     D3D12_GPU_DESCRIPTOR_HANDLE table = view_gpu;

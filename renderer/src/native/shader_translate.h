@@ -62,6 +62,29 @@ struct ShaderModifications {
   uint64_t pixel = 0;
 };
 
+// The host vertex shader a draw needs (PrimitiveProcessor::Process): kVertex, or with the
+// tessellator on the domain shader of its patch, in which the guest vertex shader runs (Fable II
+// draws its world as quad patches). kVertex also for what the plugin does not tessellate either
+// (line patches, strips, fans): the draw refuses those.
+inline rex::gpu::Shader::HostVertexShaderType HostVertexShaderTypeFor(
+    rex::xenos::PrimitiveType prim, bool tessellated) {
+  using P = rex::xenos::PrimitiveType;
+  using T = rex::gpu::Shader::HostVertexShaderType;
+  if (!tessellated) return T::kVertex;
+  switch (prim) {
+    case P::kTriangleList:
+      return T::kTriangleDomainCPIndexed;
+    case P::kQuadList:
+      return T::kQuadDomainCPIndexed;
+    case P::kTrianglePatch:
+      return T::kTriangleDomainPatchIndexed;
+    case P::kQuadPatch:
+      return T::kQuadDomainPatchIndexed;
+    default:
+      return T::kVertex;
+  }
+}
+
 // Mirrors D3D12CommandProcessor::IssueDraw + PipelineCache::GetCurrent*ShaderModification for
 // the host-render-target path. Both shaders must have their ucode analyzed (ShaderCache::Load
 // does that); ps may be null.
@@ -120,9 +143,11 @@ enum BindlessRootParameter : uint32_t {
   kBindlessRoot_Count,
 };
 
-// The one root signature every bindless translation uses. *blob_hash: XXH3 of its serialized
-// blob, which names in the pipeline library depend on (PipelineLibrary::Open).
+// The root signature every bindless translation uses; `tessellated`: its twin for the draws whose
+// vertex shader runs as a domain shader (the vertex constants visible there instead). *blob_hash:
+// XXH3 of its serialized blob, which names in the pipeline library depend on
+// (PipelineLibrary::Open).
 Microsoft::WRL::ComPtr<ID3D12RootSignature> CreateBindlessRootSignature(
-    ID3D12Device* device, uint64_t* blob_hash = nullptr);
+    ID3D12Device* device, uint64_t* blob_hash = nullptr, bool tessellated = false);
 
 }  // namespace rexnative

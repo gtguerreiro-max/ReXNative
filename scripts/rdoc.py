@@ -159,10 +159,17 @@ def main():
             controller.SetFrameEvent(event, True)
             vp = controller.GetPipelineState().GetViewport(0)
             mesh = controller.GetPostVSData(0, 0, rd.MeshDataStage.VSOut)
+            stage = "vertex shader"
+            # A tessellated (or geometry shader) draw: its positions are the last stage's, the
+            # domain shader's; the vertex shader then only passes an index on.
+            if mesh.vertexByteStride < 16:
+                mesh = controller.GetPostVSData(0, 0, rd.MeshDataStage.GSOut)
+                stage = "domain or geometry shader"
             with open(os.path.join(out, "mesh-e%d.txt" % event), "w") as f:
-                f.write("%d %s: %d vertices, stride %d, viewport %g,%g %gx%g\n" % (
+                f.write("%d %s: %d vertices (%s), stride %d, viewport %g,%g %gx%g\n" % (
                     event, next(a for a in actions if a.eventId == event).GetName(sfile),
-                    mesh.numIndices, mesh.vertexByteStride, vp.x, vp.y, vp.width, vp.height))
+                    mesh.numIndices, stage, mesh.vertexByteStride, vp.x, vp.y, vp.width,
+                    vp.height))
                 n = min(mesh.numIndices, 64)
                 if mesh.vertexResourceId != null and n:
                     data = controller.GetBufferData(mesh.vertexResourceId, mesh.vertexByteOffset,
@@ -234,7 +241,8 @@ def main():
             controller.SetFrameEvent(event, True)
             state = controller.GetPipelineState()
             with open(os.path.join(out, "cbuffers-e%d.txt" % event), "w") as f:
-                for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Pixel, "ps")):
+                for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Hull, "hs"),
+                                   (rd.ShaderStage.Domain, "ds"), (rd.ShaderStage.Pixel, "ps")):
                     refl = state.GetShaderReflection(stage)
                     if refl is None:
                         continue
