@@ -181,7 +181,11 @@ bool NeuralPass::CarsSimulated() {
                                     std::chrono::steady_clock::now().time_since_epoch())
                                     .count());
   const uint64_t last = RexNativeGameStepNs();
-  return last && now - last < 500'000'000ull;
+  return last && last != ~0ull && now - last < 500'000'000ull;
+}
+
+bool NeuralPass::Dlss5Wanted() {
+  return RexNativeGameStepNs() == ~0ull || CarsSimulated() || REXCVAR_GET(rexnative_dlss5_menus);
 }
 
 void NeuralPass::OnSwap(uint32_t front_base) {
@@ -267,13 +271,13 @@ bool NeuralPass::BeforeDraw(CommandStream* list, uint64_t frame, const uint32_t*
   // The front end's stylized menus (silhouettes on white) turn grey through DLSS 5: it runs
   // while cars are being simulated (a race, a replay), or everywhere with
   // --rexnative_dlss5_menus.
-  const bool racing = CarsSimulated();
+  const bool racing = Dlss5Wanted();
   if (racing != racing_) {
     racing_ = racing;
-    REXLOG_INFO("ReXNative DLSS 5: {} at frame {}", racing ? "the player drives, on" : "no player driving (front end), off",
+    REXLOG_INFO("ReXNative DLSS 5: {} at frame {}", racing ? "on" : "no player driving (front end), off",
                 frame);
   }
-  if (!racing && !REXCVAR_GET(rexnative_dlss5_menus)) return false;
+  if (!racing) return false;
   if (REXCVAR_GET(rexnative_dlss5_paused)) return false;
   return Run(list, frame, targets, *upscaler);
 }

@@ -563,12 +563,12 @@ void NeuralPass::SceneDispatch(CommandStream* list, uint64_t frame, uint32_t tab
 bool NeuralPass::SceneWanted(const Dlss& dlss) {
   if (!SceneStage() || !dlss.neural_available() || REXCVAR_GET(rexnative_dlss5_paused))
     return false;
-  const bool racing = CarsSimulated();
+  const bool racing = Dlss5Wanted();
   if (racing != scene_racing_) {
     scene_racing_ = racing;
-    REXLOG_INFO("ReXNative DLSS 5 (scene): {}", racing ? "the player drives" : "the front end");
+    REXLOG_INFO("ReXNative DLSS 5 (scene): {}", racing ? "on" : "the front end: off");
   }
-  return racing || REXCVAR_GET(rexnative_dlss5_menus);
+  return racing;
 }
 
 bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, RenderTarget* scene,

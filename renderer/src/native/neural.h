@@ -41,6 +41,10 @@ class NeuralPass {
   // Whether the player's car stepped in the last half second (Pgr4CarStepHook): a race, not the
   // front end.
   static bool CarsSimulated();
+  // Whether DLSS 5 runs now: while the player drives (CarsSimulated), everywhere in a game that
+  // does not tell (RexNativeGameStepNs ~0: every game the tool prepares), or with
+  // --rexnative_dlss5_menus.
+  static bool Dlss5Wanted();
 
   explicit NeuralPass(ID3D12Device* device) : device_(device) {}
 

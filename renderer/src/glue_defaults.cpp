@@ -7,9 +7,11 @@
 // Whether the game's own 60 FPS option is on (PGR4: its guest presentation interval ONE).
 bool RexNativeGame60Fps() { return false; }
 
-// The time of the game's last simulation step in ns, for DLSS 5's scene timing (neural.cpp);
-// 0: the renderer uses the frame's own time.
-uint64_t RexNativeGameStepNs() { return 0; }
+// The time of the game's last simulation step in ns (PGR4: its car physics), which tells DLSS 5
+// gameplay from the front end and lifts the menu frame limit while the player drives
+// (neural.cpp); 0: not playing now; ~0: the game does not tell (DLSS 5 runs everywhere, the frame
+// limit stays).
+uint64_t RexNativeGameStepNs() { return ~0ull; }
 
 // The guest's pad reads in the last frame, for the renderer's frame CSV (PGR4Native's SDK patch
 // 0025); 0 without that patch.
