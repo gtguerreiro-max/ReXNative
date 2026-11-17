@@ -28,6 +28,10 @@
 //   cmdbuf log N           log the next N RunCommandBuffer calls in detail
 //   cmdbuf dump [tag]      write the next two decoded calls, packet by packet, to
 //                          --rexnative_d3d_trace_dir
+//   pad <A+START|none> [lx=N] [ly=N] [ms]   hold buttons (A B X Y START BACK UP DOWN LEFT RIGHT
+//                          LB RB LS RS) and the left stick on user 0's pad for ms (150), in what
+//                          the game's XInputGetState returns (when the layer found it): no window
+//                          focus needed
 // --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
@@ -442,6 +446,32 @@ struct Tap {
 Tap g_tap;
 std::atomic<uint64_t> g_calls[kFnCount + 1];  // (+1: kFnCount, functions the game lacks) IsCountedFn's, for rex_drawcount_api_counters
 std::atomic<uint32_t> g_skip{0};
+// The control file's `pad`: buttons (XINPUT_GAMEPAD wButtons) and, with bit 48, the left stick
+// (lx in bits 16-31, ly in 32-47) held on user 0's pad until g_pad_until_ns, in what the game's
+// XInputGetState returns. A game is driven so where no key reaches it: another window holds the
+// focus (a firewall prompt), RenderDoc's capture, or the Steam Deck.
+std::atomic<uint64_t> g_pad_state{0};
+std::atomic<uint64_t> g_pad_until_ns{0};
+
+// "A+START", "UP", "none": XINPUT_GAMEPAD button bits; false for an unknown name.
+bool ParsePadButtons(const std::string& s, uint16_t* out) {
+  static const std::pair<const char*, uint16_t> kNames[] = {
+      {"UP", 0x0001}, {"DOWN", 0x0002}, {"LEFT", 0x0004}, {"RIGHT", 0x0008}, {"START", 0x0010},
+      {"BACK", 0x0020}, {"LS", 0x0040}, {"RS", 0x0080}, {"LB", 0x0100}, {"RB", 0x0200},
+      {"A", 0x1000}, {"B", 0x2000}, {"X", 0x4000}, {"Y", 0x8000}};
+  *out = 0;
+  if (s == "none") return true;
+  std::istringstream ss(s);
+  std::string name;
+  while (std::getline(ss, name, '+')) {
+    for (char& c : name) c = char(std::toupper(static_cast<unsigned char>(c)));
+    const auto it = std::find_if(std::begin(kNames), std::end(kNames),
+                                 [&](const auto& n) { return name == n.first; });
+    if (it == std::end(kNames)) return false;
+    *out |= it->second;
+  }
+  return true;
+}
 // The device the game presents with (the first Swap's), the one the renderer follows; set only
 // with game_layer.h kFollowSwapDeviceOnly (OnHook).
 std::atomic<uint32_t> g_main_device{0};
@@ -962,6 +992,24 @@ void PollControl(Tap& t, uint8_t* base) {
       std::string arg2;
       ss >> arg2;
       rexnative::cmdbuf::Control(arg, arg2, REXCVAR_GET(rexnative_d3d_trace_dir));
+    } else if (cmd == "pad") {
+      // pad <buttons|none> [lx=N] [ly=N] [ms]: held on user 0's pad for ms (default 150).
+      uint16_t buttons = 0;
+      if (!ParsePadButtons(arg, &buttons)) {
+        REXNATIVE_LOG_FIRST(4, WARN, "ReXNative D3D control: '{}': unknown button", l);
+        continue;
+      }
+      uint64_t state = buttons, ms = 150;
+      for (std::string tok; ss >> tok;) {
+        if (tok.rfind("lx=", 0) == 0 || tok.rfind("ly=", 0) == 0) {
+          const int v = std::clamp(std::atoi(tok.c_str() + 3), -32768, 32767);
+          state |= uint64_t(uint16_t(int16_t(v))) << (tok[1] == 'x' ? 16 : 32) | 1ull << 48;
+        } else {
+          ms = std::strtoull(tok.c_str(), nullptr, 10);
+        }
+      }
+      g_pad_state.store(state, std::memory_order_relaxed);
+      g_pad_until_ns.store(rexnative::NowNs() + ms * 1000000ull, std::memory_order_release);
     }
     REXLOG_INFO("ReXNative D3D control: {} (skip mask {})", l, g_skip.load());
   }
@@ -1783,6 +1831,24 @@ REX_EXTERN(REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE));
 REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_XINPUT_GET_STATE)) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
   REXNATIVE_IMP(REXNATIVE_XINPUT_GET_STATE)(ctx, base);
+  // The control file's `pad` (g_pad_state): on user 0, connected for it if no pad is, with a new
+  // packet number each read (games read a pad again only when it changed).
+  if (user == 0 && state &&
+      rexnative::NowNs() < g_pad_until_ns.load(std::memory_order_acquire)) {
+    const uint64_t pad = g_pad_state.load(std::memory_order_relaxed);
+    uint8_t* s = base + state;
+    if (ctx.r3.u32 != 0) {
+      std::memset(s, 0, 16);
+      ctx.r3.u64 = 0;
+    }
+    rex::memory::store_and_swap<uint32_t>(s, rex::memory::load_and_swap<uint32_t>(s) + 1);
+    rex::memory::store_and_swap<uint16_t>(
+        s + 4, uint16_t(rex::memory::load_and_swap<uint16_t>(s + 4) | uint16_t(pad)));
+    if (pad >> 48 & 1) {
+      rex::memory::store_and_swap<uint16_t>(s + 8, uint16_t(pad >> 16));
+      rex::memory::store_and_swap<uint16_t>(s + 10, uint16_t(pad >> 32));
+    }
+  }
   if (ctx.r3.u32 != 0 || !state || user >= 4 || !rexnative::NativeRenderer::Live()) return;
   rexnative::hud::FilterPad(user, base + state + 4);  // XINPUT_STATE: packet, then the pad
 }

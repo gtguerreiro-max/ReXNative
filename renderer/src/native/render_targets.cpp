@@ -556,6 +556,9 @@ bool RenderTargets::DecodeClear(const uint8_t* base, const HookArgs& args, Clear
     return false;
   }
   const uint32_t device = args.device;
+  // The D3D's predicated tiling is on (BeginTiling set its tile count): a whole-surface clear
+  // then is one tile's EDRAM, not the end of the tiling (RenderTarget::edram_rows).
+  p.tiling = Load32(base, device + kDevTileCount) > 1;
   out->regs = SurfaceRegsFromDevice(base, device);
   uint32_t bound = 0;
   for (uint32_t i = 0; i < 4; ++i)
@@ -612,7 +615,16 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
     } else {
       for (const D3D12_RECT& r : edram) RecordFill(*rt, r, p.color);
     }
-    rt->edram_rows = p.edram_rects.empty() ? 0 : edram_rows(*rt);
+    // Tiling begins at BeginTiling's clear and ends at a whole-surface clear made outside it (or
+    // a resolve taller than the tiles: Resolver::Resolve); the clears inside it (the game's
+    // whole-surface ones between BeginTiling and EndTiling, EndTiling's of a tile's rectangle)
+    // leave it as it is: reset there, the second G-buffer target took the third's first-tile
+    // clear in its second tile's rows before they were resolved (Overlord II: no normals below
+    // row 368, a brighter lower half).
+    if (!p.edram_rects.empty())
+      rt->edram_rows = edram_rows(*rt);
+    else if (p.rects.empty() && !p.tiling)
+      rt->edram_rows = 0;
     rt->fill_seq = fill_seq_;
   }
   D3D12_CLEAR_FLAGS df = D3D12_CLEAR_FLAGS(0);

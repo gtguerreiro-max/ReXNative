@@ -975,6 +975,8 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
   const int32_t x1 = std::min<int32_t>(p.x1, int32_t(rt->width)),
                 y1 = std::min<int32_t>(p.y1, int32_t(rt->height));
   if (x1 <= x0 || y1 <= y0) return true;  // nothing to copy or clear
+  // A resolve taller than the predicated tiles: the surface is whole in the EDRAM again.
+  if (rt->edram_rows && uint32_t(y1 - y0) > rt->edram_rows) rt->edram_rows = 0;
   const int32_t dx = p.dest_x + (x0 - p.x0), dy = p.dest_y + (y0 - p.y0);
   const int32_t copy_x1 = std::min<int32_t>(x1, x0 + int32_t(p.dest_width) - dx);
   const int32_t copy_y1 = std::min<int32_t>(y1, y0 + int32_t(p.dest_height) - dy);

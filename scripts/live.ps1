@@ -38,6 +38,8 @@
 # with --mnk_mode Space is A and Enter Start), or SendKeys text. They go to the game only while
 # its window is in front: a Windows prompt that holds the focus (the firewall's "allow access?"
 # for a game that opens a socket) is the user's to answer, and the keys are skipped meanwhile.
+# pad:<buttons joined by +>:<ms> (A B X Y START BACK UP DOWN LEFT RIGHT LB RB) presses them on the
+# game's pad instead, through the control file: no focus needed (a layer with XInputGetState).
 param(
     [Parameter(Position = 0)][string]$Command = 'status',
     [Parameter(Position = 1)][string]$Arg = '',
@@ -134,6 +136,15 @@ function Send-Schedule($p, [string]$schedule) {
         while (((Get-Date) - $start).TotalSeconds -lt $at) {
             Start-Sleep -Milliseconds 100
             if ($p.HasExited) { throw ('the game exited: 0x{0:X8}' -f $p.ExitCode) }
+        }
+        if ($key -like 'pad:*') {
+            # pad:<buttons joined by +>:<ms>: the control file's `pad`, on the game's pad (its
+            # XInputGetState): no focus needed.
+            $parts = $key.Split(':')
+            $ms = if ($parts.Count -gt 2) { $parts[2] } else { '150' }
+            Add-Content -Path (Join-Path $s.live 'control.txt') -Value "pad $($parts[1]) $ms" -Encoding ascii
+            "pad $($parts[1]) $ms ms at ${at}s"
+            continue
         }
         $h = Get-Window $p
         [RexLiveWin]::Front($h); Start-Sleep -Milliseconds 150

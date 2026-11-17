@@ -150,7 +150,7 @@ struct RenderTarget {
   uint32_t srgb_view_index = UINT32_MAX;
   uint64_t last_frame = 0;  // frame of the last use, for eviction
   uint64_t fill_seq = 0;    // EDRAM fills up to this sequence are applied (SyncEdram)
-  // Under predicated tiling (BeginTiling's clear, until a clear without tiles): the rows its tiles
+  // Under predicated tiling (BeginTiling's clear, until a whole-surface clear): the rows its tiles
   // take in the EDRAM, each tile rendered at the base. The rows below them are the other tiles'
   // and no other surface's EDRAM: Overlord II's three G-buffer targets at bases 0, 368 and 736
   // took each other's clears into their second tile. 0: the whole height.
@@ -191,6 +191,7 @@ struct ClearParams {
   // ClearF clears the largest tile's extent there once (and `rects` holds every tile), and
   // EndTiling's resolve clears land at the base whatever the tile's position.
   std::vector<D3D12_RECT> edram_rects;
+  bool tiling = false;  // the D3D's predicated tiling was on (its tile count above 1)
 };
 
 // One Clear / ClearF call, decoded from its arguments and the device (guest memory).
