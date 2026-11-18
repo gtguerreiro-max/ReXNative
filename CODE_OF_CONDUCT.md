@@ -59,11 +59,11 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-the project's maintainer, [gtguerreiro-max](https://github.com/gtguerreiro-max), through
-GitHub: **Report content** on the comment, issue or pull request, choosing to report it to
-the repository's maintainers, or GitHub's own
-[abuse report](https://github.com/contact/report-abuse) for anything else.
+reported to the community leaders responsible for enforcement, the project's maintainer,
+[gtguerreiro-max](https://github.com/gtguerreiro-max), privately through the repository's
+private reporting form ([Security > Report a vulnerability](https://github.com/gtguerreiro-max/ReXNative/security/advisories/new),
+saying it is a conduct report), or to GitHub through its
+[abuse report](https://github.com/contact/report-abuse).
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
