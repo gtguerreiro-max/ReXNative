@@ -27,6 +27,7 @@ ia.ini's [s3]). Nothing is downloaded unless asked.
 """
 import configparser
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -109,7 +110,12 @@ def install(work, sources, log=print):
     try:
         for path in packages_in(sources, tmp, log):
             name = os.path.basename(path)
-            pkg = stfs.Package(path)
+            try:
+                pkg = stfs.Package(path)
+            except (OSError, ValueError) as e:
+                log('  %s: not a package ReXNative reads (%s): left out' % (name, e))
+                continue
+            staging = None
             try:
                 if pkg.content_type != MARKETPLACE:
                     log('  %s: content type %08X (%s), not downloadable content: left out' % (
@@ -120,18 +126,25 @@ def install(work, sources, log=print):
                     continue
                 dest = os.path.join(root, kind, name)
                 staging = dest + '.installing'
+                # Everything that can refuse the package before any of it is in place: its header
+                # file (a name longer than 42 characters or not ASCII), its files.
+                mask = license_mask(path)
+                head = header(pkg.display_name or name, name, title_id, mask)
                 shutil.rmtree(staging, ignore_errors=True)
                 files = pkg.extract(staging)
                 shutil.rmtree(dest, ignore_errors=True)
                 os.replace(staging, dest)
-                mask = license_mask(path)
                 hdr = os.path.join(root, 'Headers', kind, name + '.header')
                 os.makedirs(os.path.dirname(hdr), exist_ok=True)
                 with open(hdr, 'wb') as f:
-                    f.write(header(pkg.display_name or name, name, title_id, mask))
+                    f.write(head)
                 log('  %s: "%s", %d files, license mask %08X' % (name, pkg.display_name, files,
                                                                     mask))
                 installed.append(name)
+            except (OSError, ValueError) as e:
+                if staging:
+                    shutil.rmtree(staging, ignore_errors=True)
+                log('  %s: not installed (%s)' % (name, e))
             finally:
                 pkg.close()
     finally:
@@ -202,10 +215,17 @@ def catalog(cache={}):
         req = urllib.request.Request(METADATA_URL, headers={'User-Agent': title_update.USER_AGENT})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = json.loads(r.read().decode('utf-8', 'replace'))
+        # Plain file names only: a name is joined to the download folder.
         cache['files'] = [{'name': f['name'], 'size': int(f.get('size') or 0),
                            'md5': f.get('md5', '').lower()}
-                          for f in data.get('files', []) if f.get('format') == 'RAR']
+                          for f in data.get('files', [])
+                          if f.get('format') == 'RAR' and _plain_name(f.get('name', ''))]
     return cache['files']
+
+
+def _plain_name(name):
+    return (bool(name) and name not in ('.', '..') and not name.startswith('.') and
+            not any(c in name for c in '/\\:') and os.path.basename(name) == name)
 
 
 def archives_for(work, files):
@@ -230,11 +250,16 @@ def credentials():
     (see the module's notes); {} when there are none. Never logged."""
     cp = configparser.RawConfigParser()
     home = os.path.expanduser('~')
-    for p in (os.environ.get('IA_CONFIG_FILE'),
+    xdg = os.environ.get('XDG_CONFIG_HOME') or os.path.join(home, '.config')
+    for p in (os.environ.get('IA_CONFIG_FILE'), os.path.join(xdg, 'internetarchive', 'ia.ini'),
               os.path.join(home, '.config', 'internetarchive', 'ia.ini'),
               os.path.join(home, '.config', 'ia.ini'), os.path.join(home, '.ia')):
         if p and os.path.exists(p):
-            cp.read(p, encoding='utf-8')
+            try:
+                cp.read(p, encoding='utf-8-sig')
+            except (configparser.Error, UnicodeDecodeError) as e:
+                raise NotLoggedIn('%s could not be read (%s): run `ia configure` or '
+                                  'scripts\\ia-keys.ps1 again' % (p, type(e).__name__)) from None
             break
     headers = {}
     cookies = []
@@ -255,12 +280,33 @@ class NotLoggedIn(SystemExit):
     pass
 
 
+def _archive_https(url):
+    p = urllib.parse.urlsplit(url)
+    host = (p.hostname or '').lower()
+    return p.scheme == 'https' and (host == 'archive.org' or host.endswith('.archive.org'))
+
+
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """Redirects that keep the account's headers only to archive.org over HTTPS (urllib
+    forwards every header to wherever a redirect points)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and not _archive_https(new.full_url):
+            for h in ('Authorization', 'Cookie'):
+                new.remove_header(h)
+        return new
+
+
+_opener = urllib.request.build_opener(_Redirects)
+
+
 def _open(url, auth, offset=0, end=None, timeout=120):
-    headers = dict(auth, **{'User-Agent': title_update.USER_AGENT})
+    headers = dict(auth if _archive_https(url) else {}, **{'User-Agent': title_update.USER_AGENT})
     if offset or end is not None:
         headers['Range'] = 'bytes=%d-%s' % (offset, '' if end is None else end)
     try:
-        return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
+        return _opener.open(urllib.request.Request(url, headers=headers), timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise NotLoggedIn(LOGIN % (' (HTTP %d)' % e.code)) from None
@@ -277,7 +323,7 @@ def archive_packages(name, auth):
             found = PACKAGE_PATH.findall(urllib.parse.unquote(r.read().decode('utf-8', 'replace')))
     except NotLoggedIn:
         raise
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         pass
     if not found:
         try:
@@ -285,19 +331,24 @@ def archive_packages(name, auth):
                 found = PACKAGE_PATH.findall(r.read(65536).decode('latin-1'))
         except NotLoggedIn:
             raise
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             pass
     return sorted(set(found))
 
 
 def download(entry, folder, auth, log=print):
     """The archive in folder (a part a stopped run left goes on from where it stopped), checked
-    against the collection's MD5."""
+    against the collection's size and MD5. A connection that stops early keeps the part for the
+    next run (RuntimeError)."""
+    if not _plain_name(entry['name']):
+        raise RuntimeError('%r: not a plain file name' % entry['name'])
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, entry['name'])
     part = path + '.part'
     md5 = hashlib.md5()
     done = 0
+    if os.path.exists(path) and not os.path.exists(part):
+        os.replace(path, part)  # an archive a run downloaded but did not install: checked again
     if os.path.exists(part):
         with open(part, 'rb') as f:
             for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -315,14 +366,23 @@ def download(entry, folder, auth, log=print):
             if done and r.status != 206:  # the server sends it whole
                 md5, done, start, shown = hashlib.md5(), 0, 0, 0
             with open(part, 'ab' if done else 'wb') as f:
-                for chunk in iter(lambda: r.read(1 << 20), b''):
-                    f.write(chunk)
-                    md5.update(chunk)
-                    done += len(chunk)
-                    if done - shown >= max(size // 10, 50 << 20):
-                        shown = done
-                        log('    %d%% (%.1f MB/s)' % (done * 100 // max(size, 1),
-                                                     (done - start) / 1e6 / max(time.time() - t0, 1e-3)))
+                try:
+                    for chunk in iter(lambda: r.read(1 << 20), b''):
+                        f.write(chunk)
+                        md5.update(chunk)
+                        done += len(chunk)
+                        if done - shown >= max(size // 10, 50 << 20):
+                            shown = done
+                            log('    %d%% (%.1f MB/s)' % (
+                                done * 100 // max(size, 1),
+                                (done - start) / 1e6 / max(time.time() - t0, 1e-3)))
+                except (OSError, http.client.HTTPException) as e:
+                    raise RuntimeError('%s: the connection stopped at %.1f of %.1f MB (%s); '
+                                       'run again to go on' % (entry['name'], done / 1e6,
+                                                               size / 1e6, e)) from None
+    if done != size:
+        raise RuntimeError('%s: %.1f of %.1f MB came; run again to go on from there' % (
+            entry['name'], done / 1e6, size / 1e6))
     if entry['md5'] and md5.hexdigest() != entry['md5']:
         os.remove(part)
         raise RuntimeError('%s: MD5 %s, the collection lists %s (removed)' % (
@@ -356,9 +416,13 @@ def fetch(work, log=print, list_only=False, keep=False):
     auth = {} if list_only else credentials()
     if not list_only and not auth:
         raise NotLoggedIn(LOGIN % '')
-    rec = _record(work)
+    try:
+        rec = _record(work)
+    except ValueError:
+        log('  dlc.json could not be read: every archive is looked at again')
+        rec = {}
     root = content_root(work, title_id)
-    out = {}
+    out, failed = {}, []
     for e in entries:
         have = rec.get(e['name'])
         if have and have.get('md5') == e['md5']:
@@ -368,28 +432,42 @@ def fetch(work, log=print, list_only=False, keep=False):
         if list_only:
             log('  %s: %.1f MB, to fetch' % (e['name'], e['size'] / 1e6))
             continue
-        paths = archive_packages(e['name'], auth)
-        titles = sorted({p[0] for p in paths})
-        mine = sorted(p[2] for p in paths if p[0] == tid and p[1] == kind)
-        if titles and tid not in titles:
-            log('  %s: packages of %s only, not %s: left out' % (e['name'], ', '.join(titles), tid))
-            names = []
-        elif mine and all(os.path.isdir(os.path.join(root, kind, n)) and
-                          os.path.exists(os.path.join(root, 'Headers', kind, n + '.header'))
-                          for n in mine):
-            log('  %s: its %d packages are installed already' % (e['name'], len(mine)))
-            names = mine
-        else:
-            folder = os.path.join(work, 'dlc-download')
-            path = download(e, folder, auth, log)
-            try:
-                names = install(work, [path], log)
-            finally:
-                if not keep:
-                    os.remove(path)
-                    if not os.listdir(folder):
-                        os.rmdir(folder)
+        try:
+            names, titles = _fetch_one(work, e, auth, root, tid, kind, keep, log)
+        except NotLoggedIn:
+            raise
+        except (OSError, ValueError, RuntimeError, http.client.HTTPException) as x:
+            log('  %s: FAILED: %s' % (e['name'], x))
+            failed.append(e['name'])
+            continue
         rec[e['name']] = {'md5': e['md5'], 'titles': titles, 'installed': sorted(names)}
         _save_record(work, rec)
         out[e['name']] = rec[e['name']]
+    if failed:
+        raise RuntimeError('not fetched: %s (installed: %d of %d archives)' % (
+            ', '.join(failed), len(out), len(entries)))
     return out
+
+
+def _fetch_one(work, e, auth, root, tid, kind, keep, log):
+    """One archive: (the packages it installed, the titles its listing names)."""
+    paths = archive_packages(e['name'], auth)
+    titles = sorted({p[0] for p in paths})
+    mine = sorted(p[2] for p in paths if p[0] == tid and p[1] == kind)
+    if titles and tid not in titles:
+        log('  %s: packages of %s only, not %s: left out' % (e['name'], ', '.join(titles), tid))
+        names = []
+    elif mine and all(os.path.isdir(os.path.join(root, kind, n)) and
+                      os.path.exists(os.path.join(root, 'Headers', kind, n + '.header'))
+                      for n in mine):
+        log('  %s: its %d packages are installed already' % (e['name'], len(mine)))
+        names = mine
+    else:
+        folder = os.path.join(work, 'dlc-download')
+        path = download(e, folder, auth, log)
+        names = install(work, [path], log)  # on a failure the archive stays for the next run
+        if not keep:
+            os.remove(path)
+            if not os.listdir(folder):
+                os.rmdir(folder)
+    return names, titles

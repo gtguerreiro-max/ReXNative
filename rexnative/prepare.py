@@ -658,7 +658,7 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
             try:
                 got = dlcmod.fetch(work, log)
                 status['steps']['dlc'] = {k: v['installed'] for k, v in got.items()}
-            except (SystemExit, OSError, RuntimeError) as e:
+            except (SystemExit, Exception) as e:  # content, not code: prepare goes on
                 status['steps']['dlc'] = {'error': str(e)}
                 log('  DLC: %s' % e)
             save()

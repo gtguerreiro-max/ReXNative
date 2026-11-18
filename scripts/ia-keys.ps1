@@ -7,8 +7,9 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\ia-keys.ps1
 $ErrorActionPreference = 'Stop'
-$dir = Join-Path $env:USERPROFILE '.config\internetarchive'
-$ini = Join-Path $dir 'ia.ini'
+# The file the internetarchive tool reads: IA_CONFIG_FILE when it is set.
+$ini = if ($env:IA_CONFIG_FILE) { $env:IA_CONFIG_FILE } else { Join-Path $env:USERPROFILE '.config\internetarchive\ia.ini' }
+$dir = Split-Path -Parent $ini
 
 Write-Host 'Opening https://archive.org/account/s3.php in your browser: sign in there (Google is fine),'
 Write-Host 'then copy the two keys the page shows into this window (right-click pastes).'
@@ -24,13 +25,16 @@ if (-not $access -or -not $secret) { throw 'Both keys are needed.' }
 $kept = @()
 if (Test-Path $ini) {
     $skip = $false
-    foreach ($line in Get-Content $ini) {
+    # ReadAllLines takes the file's own encoding (a BOM says which; UTF-8 without one).
+    foreach ($line in [IO.File]::ReadAllLines($ini)) {
         if ($line -match '^\s*\[(.+)\]\s*$') { $skip = ($Matches[1].Trim() -eq 's3') }
         if (-not $skip) { $kept += $line }
     }
 }
 New-Item -ItemType Directory -Force $dir | Out-Null
-Set-Content -Path $ini -Value ($kept + @('[s3]', "access = $access", "secret = $secret")) -Encoding ascii
+# UTF-8 without a BOM, as the internetarchive tool writes it (its parser takes a BOM for text).
+[IO.File]::WriteAllLines($ini, [string[]]($kept + @('[s3]', "access = $access", "secret = $secret")),
+                         (New-Object Text.UTF8Encoding $false))
 Remove-Variable secret, access
 
 # The internetarchive tool checks them with archive.org when it is installed.

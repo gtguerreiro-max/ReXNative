@@ -112,7 +112,9 @@ anything is downloaded: an archive of other titles only is left out, and one who
 installed already is not fetched. The download goes on from a part a stopped run left, is
 checked against the collection's MD5, and its packages of the game's title are installed as
 `rexnative dlc` installs local ones. The collection's files need an archive.org login: the
-cookies `ia configure` keeps (or S3 keys), which are never logged.
+cookies `ia configure` keeps (or S3 keys), which are never logged and go to archive.org over
+HTTPS only (a redirect elsewhere gets none). A connection that stops keeps its part for the
+next run; one archive's failure is reported and the others go on.
 
 ## Disc images
 

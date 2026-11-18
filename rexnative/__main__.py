@@ -298,7 +298,7 @@ def cmd_dlc(a):
             got = dlc.fetch(w, list_only=a.list, keep=a.keep)
         except dlc.NotLoggedIn:
             raise
-        except (OSError, RuntimeError) as e:
+        except Exception as e:  # one game's failure does not stop the others
             print('  FAILED: %s' % e)
             failed.append(os.path.basename(w))
             continue
