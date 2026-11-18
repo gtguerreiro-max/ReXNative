@@ -93,7 +93,10 @@ REXCVAR_DEFINE_BOOL(rexnative_inline_draws_auto, true, "ReXNative",
                     "Tries rexnative.inline_draws by itself after 30 frames in a row with at most "
                     "2 hooked draw calls and 8 KB or more of push buffer written, for 60 frames: "
                     "kept on for the rest of the run if the walk drew something (a game drawing "
-                    "its screens with code inlined past the hooks), off again otherwise");
+                    "its screens with code inlined past the hooks), off again otherwise; and "
+                    "every 150 frames probes the push buffer between hooked calls for 3 frames, "
+                    "keeping it on if the game's own code loads shader constants there (XDK "
+                    "GPU-owned constants: Deus Ex: Human Revolution)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_control, "", "ReXNative",
                       "Command file polled once per frame (trace/skip/tap commands)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_trace_dir, "", "ReXNative", "Directory for frame traces");
@@ -1630,6 +1633,9 @@ thread_local uint32_t t_gap_epoch = 0;
 // may follow every device (kFollowSwapDeviceOnly false, g_main_device stays 0), but only that
 // one's stream is walked.
 std::atomic<uint32_t> g_gap_device{0};
+// rexnative.inline_draws_auto's probe (InlineDrawsAuto): the gaps are validated and the shader
+// constants they change counted, nothing more.
+std::atomic<bool> g_gap_probe{false};
 // Only on the thread that calls Swap: the state tracker has no locks (Orcs Must Die! drives its
 // device from a second thread while it loads).
 std::atomic<uint64_t> g_gap_thread{0};
@@ -1681,6 +1687,7 @@ constexpr size_t kMaxForeign = 4096;
   rc.main_device = device;
   rc.follow_swap_device_only = true;
   rc.in_native_call = t_native_depth != 0;
+  rc.probe = g_gap_probe.load(std::memory_order_relaxed);
   // (cursor, push] without the other threads' calls in it: dword addresses [first, end).
   std::sort(foreign.begin(), foreign.end());
   uint32_t from = cursor;
@@ -1704,14 +1711,46 @@ uint32_t g_auto_draws = 0;
 // Radio's intro video and Perfect Dark's loading screens look the same and the walk finds no
 // draw there: they do not keep the cost of every pass-through hook running OnHook
 // (HasFastPath).
+// Every kProbeEvery frames, whatever the draw count, a probe of kProbeFrames: the walk only
+// validates the gaps and counts the shader constant registers they set to another value than
+// the tracker holds. A game whose own code gives the GPU shader constants keeps the walk on:
+// Deus Ex: Human Revolution's XDK GPU-owned constants, a LOAD_ALU_CONSTANT of c0-c7 from its own
+// ring and a SET_SHADER_CONSTANTS of c8-c15 beside each of its 126 hooked draws, which the
+// tracker never saw: every vertex shader's position was 0 and the picture black. Constants the
+// tracker holds already do not count. Sega Rally Revo's race keeps the walk on too (its gaps
+// change thousands of constants a frame) and draws as it did without it.
+constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
+
 [[gnu::noinline]] void InlineDrawsAuto(const uint8_t* base, uint32_t device) {
   static uint32_t last_push = 0, quiet = 0, trial = 0, wait = 0, backoff = 600;
-  static uint64_t trial_draws = 0;
+  static uint32_t probe = 0, probe_clock = 0;
+  static uint64_t trial_draws = 0, probe_constants = 0;
   static bool kept = false;
   const uint32_t draws = std::exchange(g_auto_draws, 0);
   if (kept || !device || !REXCVAR_GET(rexnative_inline_draws_auto) ||
       REXCVAR_GET(rexnative_inline_draws))
     return;
+  if (probe) {
+    if (--probe) return;
+    g_gap_probe.store(false, std::memory_order_relaxed);
+    const uint64_t found = rexnative::cmdbuf::GapConstants() - probe_constants;
+    if (found >= kProbeMinConstants) {
+      kept = true;  // the walk goes on from this Swap's gap
+      REXLOG_INFO("ReXNative: the game's own code loads shader constants between hooked calls "
+                  "({} registers changed in {} frames): inline draws on "
+                  "(rexnative.inline_draws_auto)",
+                  found, kProbeFrames - 1);
+      return;
+    }
+    if (found)
+      REXNATIVE_LOG_FIRST(4, INFO, "ReXNative: the push buffer between hooked calls changed {} "
+                                   "shader constant registers in {} frames: too few, inline "
+                                   "draws stay off (rexnative.inline_draws_auto)",
+                          found, kProbeFrames - 1);
+    g_inline_draws.store(false, std::memory_order_relaxed);
+    g_hook_all.store(g_tap.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
+    return;
+  }
   if (trial) {
     if (rexnative::cmdbuf::GapDraws() > trial_draws) {
       kept = true;
@@ -1732,6 +1771,16 @@ uint32_t g_auto_draws = 0;
   const uint32_t push = Load32(base, device + rexnative::dev::kPush);
   const uint32_t written = push > last_push ? push - last_push : 0;  // 0 past a wrap
   last_push = push;
+  if (++probe_clock >= kProbeEvery) {
+    probe_clock = 0;
+    probe = kProbeFrames;
+    probe_constants = rexnative::cmdbuf::GapConstants();
+    g_gap_epoch.fetch_add(1, std::memory_order_relaxed);
+    g_gap_probe.store(true, std::memory_order_relaxed);
+    g_inline_draws.store(true, std::memory_order_relaxed);
+    g_hook_all.store(true, std::memory_order_relaxed);
+    return;
+  }
   if (wait) {
     --wait;
     return;
@@ -1776,7 +1825,8 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     // inlines EndVertices (no RestorePush call), so the held draw waited for the next flushing
     // call: its tonemap rectangle came after the HUD's inline draws, with their shaders. The
     // vertices are written by now: no D3D call comes between BeginVertices and EndVertices.
-    if (t_pending_vertices) QueuePendingVertices(rexnative::NativeRenderer::Live(), base);
+    if (t_pending_vertices && !g_gap_probe.load(std::memory_order_relaxed))
+      QueuePendingVertices(rexnative::NativeRenderer::Live(), base);
     GapEntry(base, device);
   }
   ++t_gap_depth;

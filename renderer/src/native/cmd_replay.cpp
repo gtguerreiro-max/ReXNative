@@ -364,6 +364,7 @@ struct Walker {
   uint32_t ops[128] = {};
   uint32_t draws_seen = 0, draws_emitted = 0, nested_followed = 0, nested_refused = 0;
   uint32_t bin_packets = 0;
+  uint32_t constant_changes = 0;  // pass 1 of a probe (RunContext::probe): see Write
   uint64_t draw_ticks = 0;
   bool pred_shader_ran[2] = {};  // vs, ps: a predicated load ran since the last draw
   struct HashSlot {
@@ -466,8 +467,11 @@ struct Walker {
     if constexpr (kApply) {
       if (reg == kFetch95) up = {};  // Execute sets it again after a Begin call's own run
       Apply(reg, v);
-    } else if (mirror && reg < kGuestRegisterCount) {
-      mirror[reg] = v;
+    } else {
+      // The probe: a shader constant (float, fetch, bool, loop) the stream changes from what
+      // the tracker holds, which no hooked call gave it.
+      if (c.probe && reg >= 0x4000 && reg < 0x4928 && gs.regs()[reg] != v) ++constant_changes;
+      if (mirror && reg < kGuestRegisterCount) mirror[reg] = v;
     }
   }
 
@@ -986,9 +990,10 @@ void AfterRunOtherThread(const uint8_t* base, uint32_t device, uint32_t cb) {
 }
 
 // Inline draws (cmd_replay.h ReplayGap). Counted apart from the buffers: gaps a frame, the ones
-// with draws, their draws issued, and the gaps the check refused.
+// with draws, their draws issued, and the gaps the check refused. `constants`: the probe's
+// shader constants that the gaps changed from the tracker's values.
 struct GapCounters {
-  uint64_t gaps = 0, with_draws = 0, draws = 0, refused = 0, dwords = 0;
+  uint64_t gaps = 0, with_draws = 0, draws = 0, refused = 0, dwords = 0, constants = 0;
 };
 GapCounters g_gaps;
 
@@ -1003,8 +1008,10 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   const uint32_t phys = GpuAddress(first);
   if (uint64_t(phys) + 4ull * dwords > kPhysicalEnd) return;
   const uint8_t* const pm = rexnative::host::Memory()->GetPhysicalMembase();
-  ++g_gaps.gaps;
-  g_gaps.dwords += dwords;
+  if (!c.probe) {
+    ++g_gaps.gaps;
+    g_gaps.dwords += dwords;
+  }
   GuestStateTracker& gs = GuestState();
   // The bin state the GPU has there: the device's SET_BIN_MASK and SET_BIN_SELECT
   // 0x00000000FFFFFFFF, as a buffer starts from. Inside a tiling bracket the select is the
@@ -1026,23 +1033,31 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   Walker w1(base, pm, c, s);
   setup(w1);
   uint32_t walk = dwords;
-  if (!w1.Execute<false>(phys, walk, 0)) {
+  uint32_t constants = 0;
+  if (w1.Execute<false>(phys, walk, 0)) {
+    constants = w1.constant_changes;
+  } else {
     // What precedes the packet the check refused is whole: walked alone. A stream that runs
     // into a hole the D3D reserved (a segment's start, data written later) ends there.
     const bool prefix = w1.fail_ib == phys && w1.fail_offset > 0 && w1.fail_offset < walk;
-    ++g_gaps.refused;
-    REXNATIVE_LOG_FIRST(8, WARN,
-                        "ReXNative inline draws: the stream at {:08X} ({} dwords) refused: {} at "
-                        "{:08X}+{} op {:02X} ({}){}",
-                        first, dwords, kReasonNames[size_t(w1.reason)], w1.fail_ib,
-                        w1.fail_offset, w1.fail_op, OpName(w1.fail_op),
-                        prefix ? "; the packets before it walked" : "");
+    if (!c.probe) {
+      ++g_gaps.refused;
+      REXNATIVE_LOG_FIRST(8, WARN,
+                          "ReXNative inline draws: the stream at {:08X} ({} dwords) refused: {} "
+                          "at {:08X}+{} op {:02X} ({}){}",
+                          first, dwords, kReasonNames[size_t(w1.reason)], w1.fail_ib,
+                          w1.fail_offset, w1.fail_op, OpName(w1.fail_op),
+                          prefix ? "; the packets before it walked" : "");
+    }
     if (!prefix) return;
     walk = w1.fail_offset;
     Walker again(base, pm, c, s);
     setup(again);
     if (!again.Execute<false>(phys, walk, 0)) return;
+    constants = again.constant_changes;
   }
+  g_gaps.constants += constants;
+  if (c.probe) return;  // counted only: nothing reaches the tracker or the renderer
   // Every register group kept: what the stream wrote stays on the GPU, as it does after these
   // packets. Not the shader loads (keep +16 bits 19 and 20): the stream's shader is the inlined
   // draw's, and the next hooked draw reloads the bound ones (Orcs Must Die!'s "Press Start",
@@ -1066,6 +1081,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
 }
 
 uint64_t GapDraws() { return g_gaps.draws; }
+uint64_t GapConstants() { return g_gaps.constants; }
 
 void OnSwapGaps(int32_t stats_every) {
   static uint32_t frames = 0;

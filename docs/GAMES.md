@@ -28,7 +28,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Sega Rally Revo | runs, drawn from its replayed command buffers | 30 FPS |
 | Diablo III | its intro cinematics | 60 FPS (intro) |
 | Syndicate | its intro video plays | not tried |
-| Deus Ex: Human Revolution - Director's Cut | runs, but the native renderer's picture stays black | not tried |
+| Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game asks for disc 1 | not tried |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
 ## How these were tested
@@ -42,7 +42,8 @@ and how it was found, is in [NOTES.md](NOTES.md).
 ## Open problems
 
 Perfect Dark's broken levels, Spelunky's missing text, Halo's dark and striped surfaces, and Deus
-Ex's black picture on the native renderer. The plans for them are in [ROADMAP.md](ROADMAP.md).
+Ex's "insert disc 1" when a new game starts (from disc 1's own image). The plans for them are in
+[ROADMAP.md](ROADMAP.md).
 The garbled WMV videos (Jet Set Radio, Syndicate, Dark Souls II) were the video decoder's
 registers, fixed on 2026-11-18 ([NOTES.md](NOTES.md#registers-a-function-takes-from-its-caller)).
 

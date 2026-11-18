@@ -56,7 +56,9 @@ buffer the game wrote between two hooked calls, as it walks a recorded command b
 what it finds there. `rexnative.inline_draws_auto` (on by default) tries it by itself when 30
 frames in a row reach the hooks with at most 2 draw calls while the game writes its push buffer,
 and keeps it only if the walk finds draws (a video or a loading screen looks the same and has
-none).
+none). It also probes the push buffer between hooked calls for 3 frames every 150, whatever the
+draw count, and keeps the walk on when the game's own code loads shader constants there (Deus Ex:
+Human Revolution's GPU-owned constants, without which its picture stays black).
 
 `rexnative.auto_handover = 30` is the other way out: after 30 frames in which ReXNative sees at
 most one draw call, ReXGlue's renderer draws until the game's draw calls come back, as F9 would.

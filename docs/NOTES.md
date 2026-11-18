@@ -128,8 +128,15 @@ and copies the game's files out, without the console's `$SystemUpdate`.
   address): every scene resolve had level ~0x7000xxxx and was dropped, and the world drew black.
   `adapt` now keeps the public signature when the calls set the register a mapping reads the
   level or slice from to stack addresses more often than the public one (Deus Ex: Human
-  Revolution's mapping had the same fault; its resolves still decode another destination than
-  the one the D3D writes, so it stays black).
+  Revolution's mapping had the same fault).
+- **The Resolve's clear colour shows where its arguments went.** Deus Ex's LTCG Resolve dropped
+  the level and the slice: the clear colour is in r8, ClearZ in r9's slot and the stencil in r10,
+  and the function never reads r9 as an argument. Read with the public signature, each slice came
+  from r9's leftover and moved the destination by billions of bytes. `adapt` now finds the colour
+  as the argument the function tests against 0 and replaces with a vector it builds in its own
+  frame (`abi.clear_color_arg`), takes the level and the slice only from the registers below
+  it, and makes an argument the function writes before reading it at its entry a constant 0
+  (`abi.reads_at_entry`): Deus Ex `{3,4,5,6,7,0,0,8}`, Fable II `{3,4,5,6,7,8,0,10}`.
 - **DXT3A.** Fable II's terrain patches (tessellated, blended `SRC_ALPHA, ZERO`) take their alpha
   from a k_DXT3A texture fetched in the vertex shader, compared against one 4-bit step. The
   format was unsupported, the fetch read 0 and the ground drew black under the sky. It is now
@@ -259,6 +266,18 @@ something; else it goes off again (every pass-through hook runs `OnHook` while i
 tried again after 600 frames, twice as many each time. Jet Set Radio's intro video and Perfect
 Dark's loading screens trip the first test and fail the second; run with the walk forced on,
 none of the other 14 games had a draw between its hooked calls.
+
+Deus Ex: Human Revolution drew its title black with 126 hooked draws a frame. In a RenderDoc
+capture every vertex shader output position was 0: they read c0-c3, which the tracker held at
+0. The push-buffer trace (`live.ps1 trace`) showed why: beside each hooked draw the game's own
+code writes a `SET_SHADER_CONSTANTS` of c8-c15 and a `LOAD_ALU_CONSTANT` of c0-c7 from a ring
+of its own, the XDK's GPU-owned constants, which never pass a hooked call or the device's
+shadow. The walk applies them; so every 150 frames, whatever the draw count, the walk now runs
+for 3 frames as a probe that only validates the gaps and counts the shader constant registers
+they set to another value than the tracker holds, and stays on at 16 or more (Deus Ex: about
+200 in 2 frames at its first probe). Sega Rally Revo's race turns it on as well, with thousands,
+and draws as it did without it; Brothers' title and menu find nothing (Fable II has the walk on
+already, for its inline draws).
 
 ## Memexport
 

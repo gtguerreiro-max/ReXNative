@@ -337,6 +337,47 @@ def call_site_writes(tree, fn, back=24):
     return sites
 
 
+def reads_at_entry(insns, reg):
+    """Whether the function reads `reg` before writing it, in its code from the entry up to its
+    first call (the register-save helper in the prologue aside): True, False, or None when the
+    code reaches a call (or its end) without touching it."""
+    for i, (_, text) in enumerate(insns):
+        mn, ops = _ops(text)
+        if mn == 'bl' and i > 2:
+            return None
+        dest = _writes(mn, ops)
+        srcs = ops[1:] if dest else ops
+        if dest == reg and mn.startswith(('rlwimi', 'rldimi')):
+            return True  # an insert reads its destination
+        for o in srcs:
+            m = DFORM.match(o)
+            if o == reg or (m and m.group(2) == reg):
+                return True
+        if dest == reg:
+            return False
+    return None
+
+
+def clear_color_arg(insns, window=80):
+    """The argument register the function tests against 0 and, when it is 0, replaces with the
+    address of a vector it builds in its own frame (`addi rX,r1,N` and an lvx/stvx pair right
+    after): the D3D Resolve's pClearColor, defaulted when the caller passes none. None if the
+    first `window` instructions show no such test."""
+    hs = homes(insns)
+    for i, (_, text) in enumerate(insns[:window]):
+        mn, ops = _ops(text)
+        if mn not in ('cmplwi', 'cmpwi') or len(ops) != 3 or ops[2] != '0':
+            continue
+        arg = _home_at(hs, ops[1], i)
+        if not arg or arg[0] != 'r' or not 7 <= arg[1] <= 10:
+            continue
+        after = [_ops(t) for _, t in insns[i + 1:i + 10]]
+        if (any(m.startswith(('lvx', 'stvx')) for m, _ in after) and
+                any(m == 'addi' and len(o) == 3 and o[1] == 'r1' for m, o in after)):
+            return arg[1]
+    return None
+
+
 def stack_address_args(sites):
     """The registers some call sets to a stack address (`addi rN,r1,X`, a pointer into the
     caller's frame) as their last write before it (call_site_writes)."""
@@ -498,6 +539,33 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
         if reg and sites and 2 * sum(reg in last for last in sites) < len(sites):
             steps.append('%s: %s is set before only %d of the %d calls of %08X: a constant 0' % (
                 PUBLIC_NAMES[i], reg, sum(reg in last for last in sites), len(sites), target_fn))
+            regs[i] = 0
+            name, p, src, n, tot = public[i]
+            public[i] = (name, p, ('0',), 0, 0)
+    # The clear colour is the argument the function tests against 0 and then replaces with a
+    # default vector (clear_color_arg); the level and the slice can only be in the registers
+    # between the destination point and it. And a register the function never reads at its
+    # entry is no argument at all: a constant 0. Deus Ex: Human Revolution's LTCG Resolve takes
+    # the colour in r8 (the level and the slice dropped, ClearZ in r9's slot, the stencil in r10):
+    # read with the public signature, each slice came from r9's leftover and moved the
+    # destination by billions of bytes (no resolve reached the texture its D3D wrote).
+    # Fable II's reads no r9 either (no slice), and Overlord's neither r8 nor r9.
+    insns = T[target_fn]
+    color = clear_color_arg(insns)
+    if color and regs[4] == 7 and regs[7] != color:
+        between = list(range(8, color))
+        steps.append('clear_color: r%d, which %08X tests against 0 and replaces with a default '
+                     'vector; level and slice from %s' % (
+                         color, target_fn, ', '.join('r%d' % r for r in between) or 'nothing'))
+        for i, reg in ((5, between[0] if between else 0),
+                       (6, between[1] if len(between) > 1 else 0), (7, color)):
+            regs[i] = reg
+            name, p, src, n, tot = public[i]
+            public[i] = (name, p, ('r', reg) if reg else ('0',), n, tot)
+    for i in (5, 6, 7):
+        if regs[i] and reads_at_entry(insns, 'r%d' % regs[i]) is False:
+            steps.append('%s: %08X writes r%d before reading it: a constant 0' % (
+                PUBLIC_NAMES[i], target_fn, regs[i]))
             regs[i] = 0
             name, p, src, n, tot = public[i]
             public[i] = (name, p, ('0',), 0, 0)

@@ -2,8 +2,8 @@
 
 ## Next
 
-- Deus Ex: Human Revolution on the native renderer: its resolves decode another destination
-  than the one its D3D writes, so the front buffer is never resolved and the picture stays black.
+- Deus Ex: Human Revolution past its main menu: a new game asks for disc 1, though it runs from
+  disc 1's image.
 - Fable II on the Steam Deck past its title screen, and Diablo III's replayed command buffers
   with the shader tracking of 2026-11-18 (neither tried yet).
 - Midnight Club's races on the Steam Deck at frame latency 2: they fell to 22-29 FPS at 1.
@@ -34,4 +34,6 @@
   Fable II on the native renderer, now its default on the PC and the Steam Deck: its tone
   mapping, its DXT3A terrain, resolves into 1:5:5:5, the Resolve's level, and the shaders its own
   code loads between the hooks. The settings menu saves again, the Steam Deck runs at frame
-  latency 2, and the README's details moved into `docs/`.
+  latency 2, and the README's details moved into `docs/`. Deus Ex: Human Revolution on the
+  native renderer: the GPU-owned shader constants its own code loads (found by a probe of the
+  push buffer between the hooks), and its Resolve's arguments from where the clear colour is.

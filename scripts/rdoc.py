@@ -243,6 +243,8 @@ def main():
                 if mesh.vertexResourceId != null and n:
                     data = controller.GetBufferData(mesh.vertexResourceId, mesh.vertexByteOffset,
                                                     mesh.vertexByteStride * n)
+                    # An indexed draw's output holds each vertex once: fewer than its indices.
+                    n = min(n, len(data) // mesh.vertexByteStride)
                     for i in range(n):
                         x, y, z, w = struct.unpack_from("<4f", data, i * mesh.vertexByteStride)
                         sx = vp.x + (x / w * 0.5 + 0.5) * vp.width if w else float("nan")
