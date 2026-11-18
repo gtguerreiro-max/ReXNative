@@ -5,7 +5,7 @@
 #
 #   scripts\build-sdk.ps1 [-Dest build] [-SdkSrc <dir>] [-Jobs 10] [-Llvm <LLVM 20 bin>]
 #                         [-VulkanInclude <dir> -VulkanLib <vulkan-1.lib> -VmaInclude <dir>]
-#                         [-FidelityFx <dir>] [-NoBuild]
+#                         [-FidelityFx <dir>] [-NoBuild] [-Tests]
 #
 #   -Dest           build tree: <Dest>\rexglue-sdk (source, unless -SdkSrc), <Dest>\sdk (build),
 #                   <Dest>\sdk-install (install), <Dest>\fidelityfx-sdk, <Dest>\logs
@@ -19,6 +19,8 @@
 #                   driver too)
 #   -FidelityFx     the FidelityFX SDK v2.4.0 checkout (made here when absent)
 #   -NoBuild        fetch and patch only
+#   -Tests          also build ReXGlue's unit tests and run them (ctest, <Dest>\logs\ctest.log;
+#                   failures are left to the caller: scripts\update-sdk.ps1 reads the log)
 #
 # Needs git, Python 3, CMake, Ninja, LLVM 20 and Visual Studio 2022 (or its Build Tools) with the
 # C++ workload (the Windows SDK and the MSVC libraries). The NVIDIA DLSS SDK and DLSS 5 headers
@@ -32,7 +34,8 @@ param(
     [string]$VulkanLib = '',
     [string]$VmaInclude = '',
     [int]$Jobs = 10,
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [switch]$Tests
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
@@ -78,7 +81,8 @@ if os.path.isdir(repo):
             p = os.path.join(repo, path)
             shutil.copyfile(os.path.normpath(os.path.join(os.path.dirname(p), open(p).read().strip())), p)
 "@
-    $patches = @(Get-ChildItem "$repo\sdk\patches\v0.11\*.patch" | Sort-Object Name)
+    $series = if ($lock.REXGLUE_PATCHES) { $lock.REXGLUE_PATCHES } else { 'v0.11' }
+    $patches = @(Get-ChildItem "$repo\sdk\patches\$series\*.patch" | Sort-Object Name)
     foreach ($p in $patches) {
         git -C $SdkSrc apply --whitespace=nowarn $p.FullName
         if ($LASTEXITCODE) { throw "patch $($p.Name) does not apply" }
@@ -105,8 +109,13 @@ if (-not $NoBuild) {
     if ($VulkanLib) { $vulkan += " `"-DVulkan_LIBRARY=$VulkanLib`"" }
     if ($VmaInclude) { $vulkan += " `"-DREXGLUE_VMA_INCLUDE_DIR=$VmaInclude`"" }
     $path = "set `"PATH=$Llvm;%PATH%`""
-    Run "$path && cd /d `"$SdkSrc`" && cmake --preset win-amd64 -B `"$Dest\sdk`" -DREXGLUE_BUILD_TESTS=OFF$vulkan `"-DCMAKE_INSTALL_PREFIX=$Dest\sdk-install`"" 'sdk-configure.log'
+    $buildTests = if ($Tests) { 'ON' } else { 'OFF' }
+    Run "$path && cd /d `"$SdkSrc`" && cmake --preset win-amd64 -B `"$Dest\sdk`" -DREXGLUE_BUILD_TESTS=$buildTests$vulkan `"-DCMAKE_INSTALL_PREFIX=$Dest\sdk-install`"" 'sdk-configure.log'
     Run "$path && cmake --build `"$Dest\sdk`" --config Release --target install -j $Jobs" 'sdk-build.log'
+    if ($Tests) {
+        Run "$path && cmake --build `"$Dest\sdk`" --config Release --target unit_tests cross_module_tests -j $Jobs" 'sdk-build-tests.log'
+        cmd /c "call `"$vc`" && $path && ctest --test-dir `"$Dest\sdk`" -C Release -j 8 > `"$Dest\logs\ctest.log`" 2>&1"
+    }
 }
 
 ''

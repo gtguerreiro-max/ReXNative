@@ -61,9 +61,20 @@ presenter (BSD-3-Clause), built from AMD's FidelityFX FSR 1 (MIT). No game data 
 
 ## Updating
 
-To move to another ReXGlue commit: change `rexglue.lock`, check that commit out in a clone of
-your own and apply the patches there as commits (`git am --3way sdk/patches/v0.11/*.patch`),
-fixing each one that no longer applies (`git am --continue`); then write them again from that
-tree (`git format-patch <lock>..HEAD`) and build it with `scripts\build-sdk.ps1 -SdkSrc <clone>`.
+`scripts\update-sdk.ps1` moves the SDK to a newer ReXGlue commit, by default the newest nightly
+prerelease: ReXGlue tags `nightly-YYYYMMDD-<commit>` on each day its `development` branch moves,
+and its releases come from that branch. The script checks that commit out in a clone of its own,
+applies the patches there as commits (`git am --3way`) and drops the ones the commit already has
+(taken upstream). It then builds and installs the SDK with ReXGlue's unit tests (`build-sdk.ps1
+-Tests`), with `-Games` builds and starts games against it, and with `-Promote` writes
+`rexglue.lock` and the patches again for a commit here. `-Check` only says whether a newer
+nightly exists and whether the patches apply. A patch that conflicts stops the script in the
+middle of `git am`: fix the files in the clone, `git am --continue`, and run it again. The
+script's header has the details; `<Dest>\update-status.txt` says what a run did.
+
+To move by hand instead: change `rexglue.lock`, check that commit out in a clone of your own and
+apply the patches there as commits (`git am --3way sdk/patches/v0.11/*.patch`), fixing each one
+that no longer applies (`git am --continue`); then write them again from that tree (`git
+format-patch <lock>..HEAD`) and build it with `scripts\build-sdk.ps1 -SdkSrc <clone>`.
 `build-sdk.ps1` itself applies them with `git apply` (no commits) and stops at the first that
 fails: a stopped run's tree is half patched, so delete it before running again.

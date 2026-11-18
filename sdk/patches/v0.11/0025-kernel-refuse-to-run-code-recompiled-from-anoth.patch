@@ -9,10 +9,14 @@ without any error, and the title then runs recompiled functions over code and da
 theirs, which fails far from the cause. After the entry XEX loads, its image size is compared
 with the one codegen recorded in PPCImage, and when they differ the load stops with an error that
 names both sizes and the update data root (a zero image_size skips the check). Ported to ReXGlue
-v0.11 from pgr4-native's patch 0028.
+v0.11 from pgr4-native's patch 0028. The SDK's test title (tests/unit/kernel/title_image.h)
+gets 64 KB pages: with 4 KB ones the loader counted its two pages as two 64 KB pages of its
+heap, a 0x20000-byte image against the 0x10000 bytes its PPCImage records, and every test
+that loads it failed the new check.
 ---
- src/kernel/title_state.cpp | 14 ++++++++++++++
- 1 file changed, 14 insertions(+)
+ src/kernel/title_state.cpp      | 14 ++++++++++++++
+ tests/unit/kernel/title_image.h |  3 +++
+ 2 files changed, 17 insertions(+)
 
 diff --git a/src/kernel/title_state.cpp b/src/kernel/title_state.cpp
 index 171437af..0bf28bd4 100644
@@ -46,6 +50,20 @@ index 171437af..0bf28bd4 100644
  
    SetExecutableModule(handle);
    REXSYS_DEBUG("  XEX image loaded successfully");
+diff --git a/tests/unit/kernel/title_image.h b/tests/unit/kernel/title_image.h
+index 8e865477..e445dc8a 100644
+--- a/tests/unit/kernel/title_image.h
++++ b/tests/unit/kernel/title_image.h
+@@ -57,6 +57,9 @@ inline void WriteTitle(const std::filesystem::path& game_root) {
+   spec.load_address = kTitleImageBase;
+   spec.entry_point = kTitleEntry;
+   spec.title_id = kTitleId;
++  // 64 KB pages, as the heap it loads into: one page, the 0x10000-byte image MakeTitleImage
++  // describes, which the loader checks against the one the code was recompiled from.
++  spec.page_size_4kb = false;
+   spec.image = BuildTitleImage();
+   const auto file = BuildXEX(spec);
+   std::filesystem::create_directories(game_root);
 -- 
 2.55.0.windows.5
 
