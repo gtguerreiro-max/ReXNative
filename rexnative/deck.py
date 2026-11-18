@@ -51,6 +51,10 @@ DECK_SETTINGS = [
     ('rexnative', 'anisotropy', '8'),
     ('rexnative', 'upscaler', 'true'),
     ('rexnative', 'upscaler_mode', '"native"'),
+    # One frame begun ahead of the display: Midnight Club with FSR 4 at 30 FPS showed a frame 33 ms
+    # after it began (the game reading its pad), against 51 ms at 2 and 54 ms at 3, still at 30 FPS
+    # (2026-11-18). The settings HUD's Frame latency changes it, live.
+    ('rexnative', 'frame_latency', '1'),
 ]
 
 

@@ -911,6 +911,9 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   const uint64_t capture_wait = sync ? q.WaitFrames(q.frame) : 0;
   // The render thread has run this Swap: the capture is taken, or waits for a shown frame.
   if (sync) q.capture_armed = present_->capture_holding_guest();
+  // The settings HUD's Frame latency, live.
+  if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
   const uint64_t pace_wait = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
   const uint64_t t2 = NowNs();
   // The pacer's wait is the gap between two frames, not time in the hook.
@@ -992,6 +995,8 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   swap.hand_over = HandOverRequested() || AutoHandOverDue();
   ExecuteSwap(swap);
   // stats_ is the next frame's from here.
+  if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
   stats_.pace_wait_ns = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
   stats_.guest_begin_ns = NowNs();
   if (swap.hand_over || g_failed) HandOver(base, args.device);
@@ -1587,13 +1592,16 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   const int32_t every = REXCVAR_GET(rexnative_d3d_stats_frames);
   if (every <= 0 || w.frames < uint64_t(every)) return;
   const double n = double(w.frames);
+  // From a frame beginning (the game reading its pad) to the display showing it, paced frames.
+  const double shown_ms = pacer_ ? pacer_->TakeShownLatencyMs() : 0.0;
   REXLOG_INFO(
       "ReXNative: frames {} | per frame: draws {:.1f}, draw CPU {:.1f} us "
       "({:.4f} us/draw), swap {:.1f} us, frame {:.2f} ms, game thread {:.1f} us "
-      "(waiting {:.1f} us)",
+      "(waiting {:.1f} us), begin to shown {:.1f} ms (latency {})",
       frame_index_, w.draws / n, w.draw_ns / 1000.0 / n,
       w.draws ? w.draw_ns / 1000.0 / double(w.draws) : 0.0, w.swap_ns / 1000.0 / n,
-      w.frame_ns / 1e6 / n, w.hook_ns / 1000.0 / n, w.hook_wait_ns / 1000.0 / n);
+      w.frame_ns / 1e6 / n, w.hook_ns / 1000.0 / n, w.hook_wait_ns / 1000.0 / n, shown_ms,
+      pacer_ ? pacer_->frame_latency() : 0);
   if (profile::On() && w.draws) {
     // ns per draw for each stage (the hook-side ones are per draw too, for comparison).
     std::string line;

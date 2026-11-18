@@ -147,12 +147,14 @@ std::vector<Option> MakeOptions() {
                "How often a frame is shown. Whether the game itself runs faster depends on "
                "the game."});
   o.push_back({"Display", "frame_latency", "Frame latency", {{"1", "1"}, {"2", "2"}, {"3", "3"}},
-               true,
+               false,
                [] { return Nearest(Find("frame_latency"), FlagInt("rexnative_frame_latency")); },
                [](const std::string& v) {
                  return Assignments{{"rexnative_frame_latency", v}};
                },
-               nullptr, "Frames begun but not shown yet: fewer respond sooner, more are steadier."});
+               nullptr,
+               "Frames the game may run ahead of the screen: 1 responds soonest (the least input "
+               "delay), 3 is the steadiest when the GPU is near its limit. Takes effect at once."});
   // The scene's upscaler (upscaler.h): NVIDIA DLSS (dlss.h) or AMD FSR 4 / 3.1, the mode, and
   // FSR frame generation (frame_generation.h). They work on the scene surface (game_layer.h's
   // kSceneSurface, or learned at run time: scene.h). The live ones make the upscaler again at

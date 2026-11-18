@@ -141,13 +141,17 @@ int64_t FramePacer::IntervalLocked() const {
 }
 
 void FramePacer::ControlLocked(const Present& p, uint64_t shown_ns) {
-  if (!low_latency_ || latency_ == 0) return;
+  if (!low_latency_ || frame_latency() == 0) return;
   const bool chained = last_frame_ && p.frame == last_frame_ + 1;
   const int64_t shown_interval = int64_t(shown_ns - last_shown_ns_);
   last_frame_ = p.frame;
   last_shown_ns_ = shown_ns;
   if (!chained) return;
   intervals_[interval_count_++ % kIntervalFrames] = shown_interval;
+  if (const uint64_t begun = begin_ns_[p.frame % kRing]; begun && p.first_shown_ns > begun) {
+    shown_latency_sum_ns_ += p.first_shown_ns - begun;
+    ++shown_latency_count_;
+  }
   const uint64_t lag = lag_ns_[p.frame % kRing];
   const int64_t interval = IntervalLocked();
   if (lag == kNoLag || interval <= 0) return;
@@ -226,17 +230,37 @@ void FramePacer::SleepUntil(uint64_t deadline_ns) const {
   }
 }
 
+double FramePacer::TakeShownLatencyMs() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const double ms = shown_latency_count_
+                        ? double(shown_latency_sum_ns_) / 1e6 / double(shown_latency_count_)
+                        : 0.0;
+  shown_latency_sum_ns_ = shown_latency_count_ = 0;
+  return ms;
+}
+
+void FramePacer::SetFrameLatency(uint32_t frames) {
+  frames = std::clamp(frames, 1u, kMaxFrameLatency);
+  if (frames == frame_latency()) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  REXLOG_INFO("ReXNative: frame latency {} -> {}", frame_latency(), frames);
+  latency_.store(frames, std::memory_order_relaxed);
+  ResetControlLocked();
+}
+
 uint64_t FramePacer::WaitToBegin() {
   // Frame `queued_` was queued; frame queued_ + 1 begins once frame queued_ + 1 - L was shown,
   // and D after that.
   const uint64_t queued = ++queued_;
   const uint64_t frame = queued + 1;
-  if (latency_ == 0) return 0;
+  const uint32_t latency = frame_latency();
+  if (latency == 0) return 0;
   const uint64_t t0 = NowNs();
   std::unique_lock<std::mutex> lock(mutex_);
   lag_ns_[frame % kRing] = kNoLag;
-  if (queued < latency_ || stopped_) return 0;
-  const uint64_t needed = queued + 1 - latency_;
+  begin_ns_[frame % kRing] = t0;
+  if (queued < latency || stopped_) return 0;
+  const uint64_t needed = queued + 1 - latency;
   if (retired_ < needed) {
     const bool shown = retired_cv_.wait_for(lock, std::chrono::milliseconds(kWaitTimeoutMs),
                                             [&] { return retired_ >= needed || stopped_; });
@@ -254,6 +278,7 @@ uint64_t FramePacer::WaitToBegin() {
   const uint64_t begin = NowNs();
   lock.lock();
   lag_ns_[frame % kRing] = begin - gate_ns;
+  begin_ns_[frame % kRing] = begin;
   return begin - t0;
 }
 

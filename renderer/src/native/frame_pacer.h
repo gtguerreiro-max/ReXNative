@@ -57,6 +57,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -90,9 +91,15 @@ class FramePacer {
   FramePacer(const FramePacer&) = delete;
   FramePacer& operator=(const FramePacer&) = delete;
 
-  uint32_t frame_latency() const { return latency_; }
+  uint32_t frame_latency() const { return latency_.load(std::memory_order_relaxed); }
   // Whether frames are paced: a swapchain is attached and L > 0.
-  bool pacing() const { return waitable_ && latency_ > 0; }
+  bool pacing() const { return waitable_ && frame_latency() > 0; }
+  // Game thread, before WaitToBegin: L from now on (1-3; the settings HUD's Frame latency, live).
+  // The delay estimate starts over, as for a new swapchain.
+  void SetFrameLatency(uint32_t frames);
+  // The mean time from a frame beginning (the game reading its input) to the display showing it,
+  // over the frames shown since the last call, in ms (0: none): the stats line's latency.
+  double TakeShownLatencyMs();
 
   // Render thread. Attach: the swapchain the frames are presented to from here on, by its frame
   // latency waitable (D3D12Device::TakeFrameLatencyWaitable before its first Present; owned by
@@ -153,7 +160,7 @@ class FramePacer {
   // Sleeps until `deadline_ns` (NowNs clock).
   void SleepUntil(uint64_t deadline_ns) const;
 
-  const uint32_t latency_;
+  std::atomic<uint32_t> latency_;  // L: written by the game thread (SetFrameLatency)
   const bool low_latency_;
   const int64_t margin_ns_;
   const std::unique_ptr<AsyncFile> log_;
@@ -181,6 +188,9 @@ class FramePacer {
   uint64_t armed_ = 0;    // the fence value fence_event_ was last set to wait for
   uint64_t retired_ = 0;  // frames shown or retired unshown
   std::array<uint64_t, kRing> retired_ns_{};  // by frame number: when retired_ reached it
+  // By frame number: when it began (0: not yet), for TakeShownLatencyMs.
+  std::array<uint64_t, kRing> begin_ns_{};
+  uint64_t shown_latency_sum_ns_ = 0, shown_latency_count_ = 0;  // mutex_
   // By frame number: how long after its gate opened the frame began (kNoLag: no gate).
   std::array<uint64_t, kRing> lag_ns_{};
   bool stopped_ = false;
