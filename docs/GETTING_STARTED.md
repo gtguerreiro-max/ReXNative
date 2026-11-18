@@ -79,9 +79,11 @@ ia configure
 ```
 
 `ia configure` asks for the account's e-mail and password and keeps the account's cookies in
-`%USERPROFILE%\.config\internetarchive\ia.ini`, where ReXNative reads them (or set
-`IA_ACCESS_KEY_ID` and `IA_SECRET_ACCESS_KEY` to the account's S3 keys,
-archive.org/account/s3.php). A game's archives are found by its title;
+`%USERPROFILE%\.config\internetarchive\ia.ini`, where ReXNative reads them. An account that signs
+in with Google has no password: `scripts\ia-keys.ps1` opens archive.org/account/s3.php (signed in
+with Google in the browser, it shows the account's S3 keys) and keeps the two keys you paste in
+that ia.ini instead (`IA_ACCESS_KEY_ID` and `IA_SECRET_ACCESS_KEY` work too). A game's archives
+are found by its title;
 `<work>\<game>\dlc-archives.txt` names them by hand (one file name a line, or `none`). Each is
 checked against the collection's MD5, its packages for the game's title are installed and the
 archive deleted; `<work>\<game>\dlc.json` records them, and an archive is fetched again only when
