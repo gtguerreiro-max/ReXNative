@@ -135,6 +135,29 @@ cookies `ia configure` keeps (or S3 keys), which are never logged and go to arch
 HTTPS only (a redirect elsewhere gets none). A connection that stops keeps its part for the
 next run; one archive's failure is reported and the others go on.
 
+## Saves: asynchronous file IO
+
+On the console a content package's STFS driver queues every request: an overlapped `ReadFile`
+or `WriteFile` on a save or DLC file always answers `ERROR_IO_PENDING`, and the result comes
+from the overlapped later. Titles count on it. Minecraft's storage state machine
+(`sub_82A15CF0`, sub-state 22 in `sub_82A20F68`) reads `_MinecraftSaveInfo` with an overlapped
+`ReadFile` and only goes on from a pending read: when the read succeeded at once, its Load tab
+loaded forever as soon as a save existed (new worlds were fine, there was nothing to read). SDK
+patch 0036 follows Xenia canary's rule from hardware tests (976c3578b1): a file under
+`\Device\Content\` is pending after a request that succeeded or stopped at the end of the file;
+elsewhere only an unbuffered one (`FILE_NO_INTERMEDIATE_BUFFERING`) that succeeded is, and for a
+write one that does not extend the file. The request is still done at once, with the I/O status
+block written and the event set before the call returns.
+
+How it was found, worth repeating for a game that waits forever: the log showed the last XAM
+call (`XamContentCreateEx` of the save info, completed) and nothing after it, with the classic
+renderer too. A `src/game_*.cpp` of the work folder (built with the game, never committed) hooked
+the game's import wrappers, the small `sub_` that tail-calls `__imp__<name>` (a scan of
+`generated/` for `__imp__<name>(` names it), and then the state machine the caller's `LR` led to,
+logging its state fields on each change: the read that should have been pending showed.
+
+Open: the save's thumbnail (`__thumbnail.png`, 64x64) is black in the world list.
+
 ## Disc images
 
 Disc games come as images of the disc (`.iso`, on its own or in an archive): `rexnative/xiso.py`
