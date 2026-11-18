@@ -73,6 +73,25 @@ Two things went wrong with it in Minecraft, whose new worlds crashed after the b
   free's r25-r31. SDK patch 0034: the copy into ctx keeps ctx's values and the copy back
   restores them. Generated code from before it keeps the fault until codegen runs again.
 
+A review found two more gaps in the scan, fixed with it:
+
+- **A register that passes through a function.** A shared function's register has to reach it
+  through every function between it and the one that sets it, and a function with locals that
+  names no such register copies nothing of it into ctx. Halo: Combat Evolved Anniversary's
+  sub_833D0F68 sets v92 and calls sub_833D08B8, which names no v92 and calls the shared
+  sub_833D7BB8, which reads it (stale). The scan now works out, over the direct calls, which
+  registers each function takes from its caller (its own reads, and its shared callees' registers
+  it has no local for) to the end, in one pass. shares.txt keeps each function's whole list.
+- **The copy back counted as a write.** `r28 = ctx.r28;` after a call into a shared function
+  hid a register the function reads before it sets it; it no longer counts.
+
+Codegen also runs again whenever the codegen tool is not the one that generated the code
+(`codegen.ok` holds a hash of rexglue.exe): left to the build, the SDK's own codegen step would
+write the code again on its own, without `drop_outside_functions`.
+
+Still open (no case in the games prepared so far): a conditional branch or a jump table into a
+shared function copies nothing either, as an indirect call does not.
+
 ## The upscaled pass of a scene drawn in passes
 
 The upscaler takes the frame's last pass of the scene's surface whose draws write depth

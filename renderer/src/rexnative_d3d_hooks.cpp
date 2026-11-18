@@ -1737,7 +1737,7 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
     if (found >= kProbeMinConstants) {
       kept = true;  // the walk goes on from this Swap's gap
       REXLOG_INFO("ReXNative: the game's own code loads shader constants between hooked calls "
-                  "({} registers changed in {} frames): inline draws on "
+                  "({} constant registers changed in {} frames): inline draws on "
                   "(rexnative.inline_draws_auto)",
                   found, kProbeFrames - 1);
       return;
@@ -1774,6 +1774,7 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
   if (++probe_clock >= kProbeEvery) {
     probe_clock = 0;
     probe = kProbeFrames;
+    rexnative::cmdbuf::ProbeReset();
     probe_constants = rexnative::cmdbuf::GapConstants();
     g_gap_epoch.fetch_add(1, std::memory_order_relaxed);
     g_gap_probe.store(true, std::memory_order_relaxed);

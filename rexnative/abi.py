@@ -372,8 +372,12 @@ def clear_color_arg(insns, window=80):
         if not arg or arg[0] != 'r' or not 7 <= arg[1] <= 10:
             continue
         after = [_ops(t) for _, t in insns[i + 1:i + 10]]
+        # The default goes into the register tested (Iron Brigade: `cmplwi r17,0`, then
+        # `addi r17,r1,208`): a null test of the slice or the source rectangle followed by some
+        # other out-parameter's `addi rN,r1,X` is not it.
         if (any(m.startswith(('lvx', 'stvx')) for m, _ in after) and
-                any(m == 'addi' and len(o) == 3 and o[1] == 'r1' for m, o in after)):
+                any(m == 'addi' and len(o) == 3 and o[1] == 'r1' and o[0] == ops[1]
+                    for m, o in after)):
             return arg[1]
     return None
 
@@ -534,12 +538,14 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
     # The level and the slice, 0 unless the caller says otherwise: a register most calls leave as
     # it was is no argument (Overlord II's LTCG Resolve takes neither; the mapping's r9, unset by
     # EndTiling, moved each tile's destination by a whole surface per leftover unit).
+    zeroed = set()
     for i in (5, 6):
         reg = 'r%d' % regs[i] if regs[i] else None
         if reg and sites and 2 * sum(reg in last for last in sites) < len(sites):
             steps.append('%s: %s is set before only %d of the %d calls of %08X: a constant 0' % (
                 PUBLIC_NAMES[i], reg, sum(reg in last for last in sites), len(sites), target_fn))
             regs[i] = 0
+            zeroed.add(i)
             name, p, src, n, tot = public[i]
             public[i] = (name, p, ('0',), 0, 0)
     # The clear colour is the argument the function tests against 0 and then replaces with a
@@ -552,13 +558,17 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
     # Fable II's reads no r9 either (no slice), and Overlord's neither r8 nor r9.
     insns = T[target_fn]
     color = clear_color_arg(insns)
-    if color and regs[4] == 7 and regs[7] != color:
+    # After the destination point only (r7 itself is the point), and a level or a slice the
+    # calls leave unset (zeroed above) stays 0.
+    if color and regs[4] == 7 and color > regs[4] and regs[7] != color:
         between = list(range(8, color))
         steps.append('clear_color: r%d, which %08X tests against 0 and replaces with a default '
                      'vector; level and slice from %s' % (
                          color, target_fn, ', '.join('r%d' % r for r in between) or 'nothing'))
         for i, reg in ((5, between[0] if between else 0),
                        (6, between[1] if len(between) > 1 else 0), (7, color)):
+            if i in zeroed:
+                reg = 0
             regs[i] = reg
             name, p, src, n, tot = public[i]
             public[i] = (name, p, ('r', reg) if reg else ('0',), n, tot)

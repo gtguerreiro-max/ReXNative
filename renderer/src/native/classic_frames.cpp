@@ -97,6 +97,12 @@ const ResolvedImage* ClassicFrames::Take(D3D12Device& d) {
   }
   if (!copied) return nullptr;  // no frame from the driver yet
   ++fence_value_;
+  // The frame Take gave last (its serial), the plugin having drawn none since: back on the
+  // plugin after the native renderer drew, its output is still the last frame of the plugin's
+  // previous turn, maybe minutes old. Nothing is shown until it draws one (the copy into this
+  // texture is queued and done; the texture stays this Take's next).
+  if (info.serial && info.serial == shown_serial_) return nullptr;
+  shown_serial_ = info.serial;
   // The queue waits for the copy before this frame's list, which the stream submits after.
   ID3D12CommandQueue* queue = d.command_queue();
   ID3D12Fence* fence = fence_.Get();

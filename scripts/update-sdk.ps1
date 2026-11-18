@@ -144,19 +144,25 @@ if ($commit -eq $lock.REXGLUE_COMMIT -and -not $Force) {
 
 $stateFile = "$Dest\update-state.txt"
 # update-state.txt: the commit the clone was set to, then for that commit the patches dropped
-# ("drop <name>") and the one the last run stopped at ("conflict <name>").
+# ("drop <name>"), the patches applied with their SHA-1 ("hash <name> <sha1>") and the one the last
+# run stopped at ("conflict <name>").
 $state = @(if (Test-Path $stateFile) { Get-Content $stateFile }) + @('')
 $prev = $state[0].Trim()
 $knownDropped = @()
+$knownHash = @{}
 $prevConflict = ''
 if ($prev -eq $commit) {
     foreach ($l in $state[1..($state.Count - 1)]) {
         if ($l -match '^drop (.+)$') { $knownDropped += $Matches[1].Trim() }
+        elseif ($l -match '^hash (\S+) (\S+)$') { $knownHash[$Matches[1]] = $Matches[2] }
         elseif ($l -match '^conflict (.+)$') { $prevConflict = $Matches[1].Trim() }
     }
 }
+$patchHash = @{}
+foreach ($p in @(Get-ChildItem "$patchDir\*.patch")) { $patchHash[$p.Name] = (Get-FileHash -Algorithm SHA1 $p.FullName).Hash }
 function SaveState([string]$conflict) {
-    $lines = @($commit) + @($status.dropped | ForEach-Object { "drop $_" })
+    $lines = @($commit) + @($status.dropped | ForEach-Object { "drop $_" }) +
+        @($status.applied | ForEach-Object { "hash $_ $($patchHash[$_])" })
     if ($conflict) { $lines += "conflict $conflict" }
     Set-Content -Encoding ASCII $stateFile $lines
 }
@@ -164,6 +170,20 @@ $amDir = (InClone rev-parse --git-path rebase-apply | Select-Object -First 1)
 if (-not [IO.Path]::IsPathRooted($amDir)) { $amDir = Join-Path $src $amDir }
 if ($prev -eq $commit -and (Test-Path $amDir)) {
     throw "the clone is in the middle of git am: finish it (git -C $src am --continue, or --skip / --abort) and run again"
+}
+# A patch in the clone is known by its subject: one edited since the clone took it (or one taken
+# before the hashes were kept) would stay in its old form, and -Promote would write that back over
+# the edit. The clone starts over at the target then.
+if ($prev -eq $commit) {
+    $inClone = @(InClone log --format=%s "$commit..HEAD")
+    $stale = @(Get-ChildItem "$patchDir\*.patch" | Where-Object {
+            ($inClone -contains (Subject $_.FullName)) -and $knownHash[$_.Name] -ne $patchHash[$_.Name] })
+    if ($stale.Count) {
+        "patches changed since the clone took them ($(@($stale | ForEach-Object { $_.Name }) -join ', ')): the clone starts over at $target" | Write-Output
+        $prev = ''
+        $knownDropped = @()
+        $prevConflict = ''
+    }
 }
 if ($prev -ne $commit) {
     if (Test-Path $amDir) { InClone am --abort | Out-Null }
@@ -250,6 +270,12 @@ if (Test-Path $ctest) {
 }
 
 # -- 3. Games built against it and started --------------------------------------------------------
+# The candidate SDK through the environment for these builds only: the shell that runs this script
+# builds against its own SDK again afterwards (restored in the finally below).
+$envKeys = @('REXNATIVE_REXGLUE', 'REXNATIVE_SDK_INSTALL', 'REXNATIVE_SDK_SRC', 'REXNATIVE_FIDELITYFX', 'REXNATIVE_LLVM')
+$envSaved = @{}
+foreach ($k in $envKeys) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process') }
+try {
 $env:REXNATIVE_REXGLUE = "$Dest\sdk-install\bin\rexglue.exe"
 $env:REXNATIVE_SDK_INSTALL = "$Dest\sdk-install"
 $env:REXNATIVE_SDK_SRC = $src
@@ -286,6 +312,9 @@ foreach ($w in $Games) {
     elseif (-not $g.running) { "stopped before $Seconds s (exit $($proc.ExitCode)); log $($glog.FullName)" }
     else { "running but only $($g.frames) frames drawn; log $($glog.FullName)" }
     $status.games += $g
+}
+} finally {
+    foreach ($k in $envKeys) { [Environment]::SetEnvironmentVariable($k, $envSaved[$k], 'Process') }
 }
 $gamesOk = -not ($status.games | Where-Object { $_.result -notlike 'ok:*' })
 $passed = $status.build -eq 'ok' -and -not $status.tests.failed.Count -and $gamesOk

@@ -36,6 +36,7 @@
 #include <iterator>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 REXCVAR_DEFINE_INT32(rexnative_cmdbuf, -1, "ReXNative",
@@ -365,6 +366,7 @@ struct Walker {
   uint32_t draws_seen = 0, draws_emitted = 0, nested_followed = 0, nested_refused = 0;
   uint32_t bin_packets = 0;
   uint32_t constant_changes = 0;  // pass 1 of a probe (RunContext::probe): see Write
+  std::vector<uint16_t> constant_regs;  // which ones (- 0x4000), for CountProbeConstants
   uint64_t draw_ticks = 0;
   bool pred_shader_ran[2] = {};  // vs, ps: a predicated load ran since the last draw
   struct HashSlot {
@@ -470,7 +472,10 @@ struct Walker {
     } else {
       // The probe: a shader constant (float, fetch, bool, loop) the stream changes from what
       // the tracker holds, which no hooked call gave it.
-      if (c.probe && reg >= 0x4000 && reg < 0x4928 && gs.regs()[reg] != v) ++constant_changes;
+      if (c.probe && reg >= 0x4000 && reg < 0x4928 && gs.regs()[reg] != v) {
+        ++constant_changes;
+        constant_regs.push_back(uint16_t(reg - 0x4000));
+      }
       if (mirror && reg < kGuestRegisterCount) mirror[reg] = v;
     }
   }
@@ -996,6 +1001,17 @@ struct GapCounters {
   uint64_t gaps = 0, with_draws = 0, draws = 0, refused = 0, dwords = 0, constants = 0;
 };
 GapCounters g_gaps;
+// The constant registers a probe saw changed (- 0x4000), each counted once per probe
+// (ProbeReset): one register written again in each gap of a few frames (a video's fetch
+// constant, two float4s) counted once a gap and reached kProbeMinConstants, and a game that never
+// needed the walk kept it for good.
+std::array<bool, 0x928> g_probe_seen{};
+uint32_t CountProbeConstants(const std::vector<uint16_t>& regs) {
+  uint32_t n = 0;
+  for (const uint16_t r : regs)
+    if (!std::exchange(g_probe_seen[r], true)) ++n;
+  return n;
+}
 
 void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint32_t end) {
   State& s = g_state;
@@ -1035,7 +1051,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   uint32_t walk = dwords;
   uint32_t constants = 0;
   if (w1.Execute<false>(phys, walk, 0)) {
-    constants = w1.constant_changes;
+    constants = CountProbeConstants(w1.constant_regs);
   } else {
     // What precedes the packet the check refused is whole: walked alone. A stream that runs
     // into a hole the D3D reserved (a segment's start, data written later) ends there.
@@ -1054,7 +1070,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
     Walker again(base, pm, c, s);
     setup(again);
     if (!again.Execute<false>(phys, walk, 0)) return;
-    constants = again.constant_changes;
+    constants = CountProbeConstants(again.constant_regs);
   }
   g_gaps.constants += constants;
   if (c.probe) return;  // counted only: nothing reaches the tracker or the renderer
@@ -1082,6 +1098,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
 
 uint64_t GapDraws() { return g_gaps.draws; }
 uint64_t GapConstants() { return g_gaps.constants; }
+void ProbeReset() { g_probe_seen.fill(false); }
 
 void OnSwapGaps(int32_t stats_every) {
   static uint32_t frames = 0;

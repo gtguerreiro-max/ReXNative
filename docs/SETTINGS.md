@@ -38,9 +38,11 @@ change it.
 Every renderer option is a `rexnative.*` setting, in the `[rexnative]` section of the game's
 configuration file (`run/<game>.toml`) or on the command line.
 
-- `rexnative.classic = true` (what the HUD's Renderer saves) starts the game on ReXGlue's
-  renderer with the HUD and the switch at hand; `--rexnative=false` starts it on ReXGlue's
-  renderer alone, without them.
+- `rexnative.classic = true` (what the HUD's Renderer saves; F9 does not save) starts the game on
+  ReXGlue's renderer with the HUD and the switch at hand; `--rexnative=false` starts it on
+  ReXGlue's renderer alone, without them. Under Proton the switch needs the Xenos driver's frames
+  in ReXNative's swap chain (its D3D12 backend on one GPU, as on the Steam Deck): without them the
+  game stays on the native renderer, and `--rexnative=false` is the way to ReXGlue's.
 - `rexnative.menu_fps` limits the frame rate: 60 by default, so menus made for a console's 60 Hz
   keep their speed on a faster display; 30 for a game the console ran at 30; 0 for no limit.
 - `rexnative.upscaler_depth_test`: the upscaler takes the frame's last pass of the scene whose

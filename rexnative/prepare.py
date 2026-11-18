@@ -209,11 +209,21 @@ def _function_table_base(work):
 def _shares(work):
     """Functions codegen must not localize the non-volatile registers of (shares.txt, written by
     _add_shares): their entries get `share_registers = true`."""
+    return set(_share_regs(work))
+
+
+def _share_regs(work):
+    """shares.txt as {address: the registers the function takes from its caller}, from each
+    line's comment (an older line cut its list at eight with "...": those eight)."""
     p = os.path.join(work, 'shares.txt')
     if not os.path.exists(p):
-        return set()
-    return {int(line.split('#')[0].split()[0], 16) for line in open(p, encoding='utf-8')
-            if line.split('#')[0].split()}
+        return {}
+    out = {}
+    for line in open(p, encoding='utf-8'):
+        code, _, comment = line.partition('#')
+        if code.split():
+            out[int(code.split()[0], 16)] = {r for r in comment.split() if r != '...'}
+    return out
 
 
 _LOCAL_DECL = re.compile(r'^\s*PPC(?:V|FP)?Register\s+([rfv]\d+)\{\};')
@@ -241,7 +251,7 @@ def _idioms_only(asm, reg):
     return seen
 
 
-def live_in_nonvolatiles(gen):
+def live_in_nonvolatiles(gen, shared=None):
     """Generated functions that read a non-volatile register they never write, {address: names}.
     ReXGlue (non_volatile_as_local) keeps r14-r31, f14-f31, v14-v31 and v64-v127 as locals of each
     function, zero at its start, on the ABI's word that a function does not take them from its
@@ -252,31 +262,50 @@ def live_in_nonvolatiles(gen):
     XDK's video decoder (XMV: WMV3, VC-1) passes v64, v65, v69 and v72 to its helpers the same
     way: Jet Set Radio's, Syndicate's and Dark Souls II's videos decoded as green and magenta
     bands. A function given `share_registers` keeps them in ctx, and its callers copy their
-    locals there around each call."""
-    found = {}
+    locals there around each call.
+
+    `shared` ({address: registers}, shares.txt): the functions that have it already. A register a
+    shared function takes also has to reach it through the functions between it and the one that
+    sets it: one with locals that names no such register copies nothing of it into ctx for the
+    call (Halo: Combat Evolved Anniversary's sub_833D0F68 sets v92 and calls sub_833D08B8, which
+    names no v92 and calls the shared sub_833D7BB8, which reads it). Those functions take the
+    register from their caller too: worked out here to the end, over the direct calls (an
+    indirect call gives no callee). Returns {address: registers} for the functions to share and
+    for the shared ones whose list grew."""
+    shared = shared or {}
+    locs, own, calls = {}, {}, {}
+    # A copy back from ctx after a call into a shared function (`r28 = ctx.r28;`) is no write of
+    # the function's own: counted as one, it hid a register the function reads before it sets it.
+    copy_back = re.compile(r'^\s*([rfv]\d+) = ctx\.\1;\s*$')
+    call = re.compile(r'(?<![\w])sub_([0-9A-Fa-f]{8})\(ctx, base\)')
     for path in glob.glob(os.path.join(gen, '*_recomp.*.cpp')):
         name, body = None, []
 
         def check():
             if not name:
                 return
-            locs = [m.group(1) for line in body for m in [_LOCAL_DECL.match(line)] if m]
-            if not locs:
+            a = int(name, 16)
+            names = [m.group(1) for line in body for m in [_LOCAL_DECL.match(line)] if m]
+            locs[a] = set(names)
+            lines = [line for line in body
+                     if not _LOCAL_DECL.match(line) and not line.lstrip().startswith('//')]
+            text = '\n'.join(lines)
+            calls[a] = {int(c, 16) for c in call.findall(text)}
+            if not names:
                 return
-            text = '\n'.join(line for line in body
-                             if not _LOCAL_DECL.match(line) and not line.lstrip().startswith('//'))
+            writes = '\n'.join(line for line in lines if not copy_back.match(line))
             asm = [line.strip()[2:].strip() for line in body if line.lstrip().startswith('//')]
-            regs = []
-            for r in locs:
+            regs = set()
+            for r in names:
                 if not re.search(r'\b%s\b' % r, text):
                     continue
-                written = (re.search(r'\(simde__m128i?\*\)%s\.\w+,' % r, text) or
-                           re.search(r'store_ps\(%s\.' % r, text) or
-                           re.search(r'(?<![\w.])%s(\.\w+(\[\d+\])?)?\s*=[^=]' % r, text))
+                written = (re.search(r'\(simde__m128i?\*\)%s\.\w+,' % r, writes) or
+                           re.search(r'store_ps\(%s\.' % r, writes) or
+                           re.search(r'(?<![\w.])%s(\.\w+(\[\d+\])?)?\s*=[^=]' % r, writes))
                 if not written and not _idioms_only(asm, r):
-                    regs.append(r)
+                    regs.add(r)
             if regs:
-                found[int(name, 16)] = regs
+                own[a] = regs
 
         with open(path, encoding='utf-8', errors='replace') as f:
             for line in f:
@@ -287,19 +316,51 @@ def live_in_nonvolatiles(gen):
                 else:
                     body.append(line.rstrip('\n'))
         check()
-    return found
+    # What each function takes from its caller: its own, and what the shared functions it calls
+    # (or will) take and it has no local for.
+    needs = {a: set(r) for a, r in shared.items()}
+    for a, r in own.items():
+        needs.setdefault(a, set()).update(r)
+    callers = {}
+    for a, cs in calls.items():
+        for c in cs:
+            callers.setdefault(c, set()).add(a)
+    todo = [a for a in needs if needs[a]]
+    while todo:
+        c = todo.pop()
+        for a in callers.get(c, ()):
+            more = {r for r in needs[c] if r not in locs.get(a, ())} - needs.get(a, set())
+            if more:
+                needs.setdefault(a, set()).update(more)
+                todo.append(a)
+    return {a: sorted(r, key=_reg_order) for a, r in needs.items()
+            if r and (a not in shared or r - shared[a])}
+
+
+def _reg_order(reg):
+    return ('rfv'.index(reg[0]), int(reg[1:]))
 
 
 def _add_shares(work, found, log, rnd):
-    """Adds the functions live_in_nonvolatiles found to shares.txt; True when any was new."""
-    have = _shares(work)
+    """Adds the functions live_in_nonvolatiles found to shares.txt, and the registers it found
+    for functions there already (each line's whole list); True when a function was new (codegen
+    has to run again)."""
+    have = _share_regs(work)
     new = {a: r for a, r in found.items() if a not in have}
+    grown = {a: r for a, r in found.items() if a in have and set(r) - have[a]}
+    if not new and not grown:
+        return False
+    merged = dict(have)
+    for a, r in list(new.items()) + list(grown.items()):
+        merged[a] = set(merged.get(a, ())) | set(r)
+    with open(os.path.join(work, 'shares.txt'), 'w', encoding='utf-8', newline='\n') as f:
+        for a in sorted(merged):
+            f.write('0x%08X  # %s\n' % (a, ' '.join(sorted(merged[a], key=_reg_order))))
+    if grown:
+        log('  codegen round %d: %d shared functions take more registers through their callees'
+            % (rnd, len(grown)))
     if not new:
         return False
-    with open(os.path.join(work, 'shares.txt'), 'a', encoding='utf-8', newline='\n') as f:
-        for a in sorted(new):
-            regs = new[a]
-            f.write('0x%08X  # %s%s\n' % (a, ' '.join(regs[:8]), ' ...' if len(regs) > 8 else ''))
     names = ' '.join('%08X' % a for a in sorted(new)[:12])
     log('  codegen round %d: %d functions read non-volatile registers their caller set, given '
         'share_registers: %s%s' % (rnd, len(new), names, ' ...' if len(new) > 12 else ''))
@@ -500,14 +561,44 @@ def drop_outside_functions(work, text, log=print):
     return outside
 
 
+_TOOL_IDS = {}
+
+
+def _tool_id(rexglue):
+    """The codegen tool's identity for codegen.ok: a hash of its executable. Its --version names
+    the SDK's last tagged commit, the same for two builds of a patched SDK (patch 0034 changed
+    what codegen writes, not its version)."""
+    if rexglue not in _TOOL_IDS:
+        import hashlib
+        try:
+            with open(rexglue, 'rb') as f:
+                _TOOL_IDS[rexglue] = hashlib.sha1(f.read()).hexdigest()[:16]
+        except OSError:
+            _TOOL_IDS[rexglue] = ''
+    return _TOOL_IDS[rexglue]
+
+
+def _made_by(done, rexglue):
+    """Whether codegen.ok says the code was generated by this codegen tool. Code from another one
+    is generated again here, whole: left to the build, the SDK's codegen step would write it again
+    on its own (its fingerprint holds the SDK's version), without drop_outside_functions."""
+    try:
+        text = open(done, encoding='utf-8').read()
+    except OSError:
+        return False
+    tool = _tool_id(rexglue)
+    return bool(tool) and ('rexglue %s' % tool) in text
+
+
 def codegen(work, name, rexglue, max_rounds, log):
     gen = os.path.join(work, 'generated', 'default')
     done = os.path.join(work, 'codegen.ok')
-    # Reused only when made under this name (prepare's older runs used names with '_').
-    if (os.path.exists(done) and os.path.isdir(gen) and
+    # Reused only when made under this name (prepare's older runs used names with '_'), by this
+    # codegen tool.
+    if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and
             os.path.exists(os.path.join(gen, '%s_init.h' % name))):
         if not (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
-                _add_shares(work, live_in_nonvolatiles(gen), log, 0)):
+                _add_shares(work, live_in_nonvolatiles(gen, _share_regs(work)), log, 0)):
             _shares_scanned(work, gen, True)
             return {'reused': True, 'rounds': 0}
         os.remove(done)
@@ -515,8 +606,9 @@ def codegen(work, name, rexglue, max_rounds, log):
         if old.endswith('_manifest.toml') and old != '%s_manifest.toml' % name:
             os.remove(os.path.join(work, old))
     if os.path.exists(done):
-        # Made under another name: codegen writes it again (the hints stay); a
-        # generated/rexglue.cmake of the old SDK goes (v0.11 writes generated/sources.cmake).
+        # Made under another name or by another codegen tool: codegen writes it again (the hints
+        # stay); a generated/rexglue.cmake of the old SDK goes (v0.11 writes
+        # generated/sources.cmake).
         os.remove(done)
         stale = os.path.join(work, 'generated', 'rexglue.cmake')
         if os.path.exists(stale):
@@ -575,11 +667,11 @@ def codegen(work, name, rexglue, max_rounds, log):
                     rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
             if OPTIONS['non_volatile_as_local'] and _add_shares(
-                    work, live_in_nonvolatiles(gen), log, rnd):
+                    work, live_in_nonvolatiles(gen, _share_regs(work)), log, rnd):
                 continue
             drop_outside_functions(work, text, log)
             _shares_scanned(work, gen, True)
-            open(done, 'w').write('round %d\n' % rnd)
+            open(done, 'w').write('round %d\nrexglue %s\n' % (rnd, _tool_id(rexglue)))
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}
         pairs = [(int(t, 16), int(s, 16)) for t, s in re.findall(

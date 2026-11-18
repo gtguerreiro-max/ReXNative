@@ -1032,7 +1032,7 @@ void NativeRenderer::OnQueryGetData(uint8_t* base, const HookArgs& args) {
 void NativeRenderer::OnSwapSuspended() {
   const uint32_t draws = suspended_draws_.exchange(0, std::memory_order_relaxed);
   TakeChoice();
-  if (SwitchRequested()) {
+  if (SwitchRequested(/*native_now=*/false)) {
     auto_handed_over_ = false;
     auto_off_ = true;  // F9 decides from here on (HandOverRequested)
     // The choice as the settings HUD shows and saves it (its Renderer, rexnative.classic).
@@ -1069,7 +1069,8 @@ bool NativeRenderer::SwitchRefusedUnderWine() const {
   if (!UnderWine() || classic_) return false;
   REXLOG_WARN("ReXNative: renderer switch ignored under Wine: the window cannot change hands "
               "under vkd3d-proton, and the Xenos driver gives no frames to show through "
-              "ReXNative's swap chain (rexnative.classic picks the renderer for the next start)");
+              "ReXNative's swap chain (rexnative.enabled = false starts the game on ReXGlue's "
+              "renderer)");
   return true;
 }
 
@@ -1107,7 +1108,7 @@ bool NativeRenderer::AutoHandOverDue() {
 }
 
 bool NativeRenderer::HandOverRequested() {
-  if (!SwitchRequested()) return false;
+  if (!SwitchRequested(/*native_now=*/true)) return false;
   // F9 decides from here on: the automatic hand-over stays off for the rest of the run.
   auto_off_ = true;
   if (FrameHeight() == kGameFrameHeight) {
@@ -1425,7 +1426,11 @@ bool NativeRenderer::OwnGameWindow(bool own) {
         d.TakeFrameLatencyWaitable(FramePacer::kMaxFrameLatency * D3D12Device::kMaxFramePresents);
     if (!waitable) return false;
     pacer_->Attach(waitable, d.fence());
-    paces_frames_.store(pacer_->pacing(), std::memory_order_relaxed);
+    // The pacing only while the native renderer draws: the window taken back after an XAM
+    // dialog while the Xenos plugin draws (ExecuteClassicSwap) leaves the game waiting for the
+    // plugin's vblanks, as HandOver set.
+    paces_frames_.store(pacer_->pacing() && live_.load(std::memory_order_relaxed) != nullptr,
+                        std::memory_order_relaxed);
   }
   return true;
 }

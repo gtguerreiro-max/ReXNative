@@ -43,6 +43,7 @@ does; in short:
 | 0032 | An overlapped receive (`WSARecvFrom` with an `OVERLAPPED`) on a datagram socket never bound fails too, as 0027's blocking ones do |
 | 0033 | The D3D12 presenter's guest output for a host renderer that presents the title itself (`rex/xenos/draw_hook.h`, `CopyGuestOutput`): copied into the host renderer's texture on the driver's queue, which signals the host renderer's fence. ReXNative shows ReXGlue's frames through its own swap chain while ReXGlue's renderer draws, so the window never changes hands (under vkd3d-proton it could not) |
 | 0034 | Codegen: a function with its nonvolatiles in locals that calls a register-sharing function puts ctx's own values back after the call (a shared caller further up keeps its registers there; Minecraft's new worlds crashed) |
+| 0035 | 0033's copies keep the guest output they read until they are done: a front buffer of another size released the image a copy still read |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
 prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).

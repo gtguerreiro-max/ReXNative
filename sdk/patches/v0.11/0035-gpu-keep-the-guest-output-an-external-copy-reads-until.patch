@@ -1,0 +1,51 @@
+From 8262cf1ae098e7a8729763f9923e6f8bb5c7493b Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 20:17:26 +0000
+Subject: [PATCH] gpu: keep the guest output an external copy reads until the
+ copy is done
+
+DriverRefreshGuestOutput releases a mailbox image of another size once the
+commands that wrote it are done, not the external copy submitted after them:
+a host renderer showing the driver's frames could copy from a released
+texture when the front buffer's size changed. Each copy allocator now keeps a
+reference to the image its copy reads until it is reused, which waits for that
+copy first.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/host/d3d12/d3d12_presenter.cpp | 2 ++
+ src/gpu/xenos/host/d3d12/d3d12_presenter.h   | 5 +++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+index f4e6308e..77c7edb7 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+@@ -295,6 +295,8 @@ bool D3D12Presenter::CopyGuestOutputExternal(const xenos::GuestOutputCopy& reque
+   ID3D12CommandAllocator* allocator =
+       external_copy_allocators_[submission % kExternalCopyAllocators].Get();
+   allocator->Reset();
++  // Alive until this allocator's next copy, which waits for this one first (above).
++  external_copy_sources_[submission % kExternalCopyAllocators] = source.second;
+   ID3D12GraphicsCommandList* list = external_copy_list_.Get();
+   list->Reset(allocator, nullptr);
+   D3D12_RESOURCE_BARRIER barrier;
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.h b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+index 75177d2b..6f4487ec 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+@@ -226,6 +226,11 @@ class D3D12Presenter final : public Presenter {
+       external_copy_allocators_;
+   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> external_copy_list_;
+   D3D12SubmissionTracker external_copy_submission_tracker_;
++  // The guest output each allocator's copy reads, kept until that allocator is reused (its copy
++  // done): DriverRefreshGuestOutput releases a mailbox image of another size after the commands
++  // that wrote it, not after a copy submitted later.
++  std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kExternalCopyAllocators>
++      external_copy_sources_;
+ 
+   const D3D12Provider& provider_;
+ 
+-- 
+2.55.0.windows.5
+

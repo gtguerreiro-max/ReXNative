@@ -355,11 +355,39 @@ Place PlaceOf(std::string_view cvar) {
   return {full.substr(0, dot), full.substr(dot + 1)};
 }
 
-// The table a `[name]` header line opens, or nullopt for any other line.
+// The table a `[name]` header line opens (its comment and a quoted name allowed:
+// `[log] # note`, `["log"]`), "[[name]]" for an array of tables (no setting's table, but still
+// where the table before it ends), or nullopt for any other line.
 std::optional<std::string> TableOf(std::string_view line) {
   line = Trim(line);
-  if (!line.starts_with('[') || line.starts_with("[[") || !line.ends_with(']')) return {};
-  return std::string(Trim(line.substr(1, line.size() - 2)));
+  line = Trim(line.substr(0, line.size() - Comment(line, 0).size()));
+  if (!line.starts_with('[') || !line.ends_with(']')) return {};
+  const bool array = line.starts_with("[[") && line.ends_with("]]") && line.size() >= 4;
+  std::string name(Trim(array ? line.substr(2, line.size() - 4) : line.substr(1, line.size() - 2)));
+  if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') && name.back() == name.front())
+    name = name.substr(1, name.size() - 2);
+  return array ? "[[" + name + "]]" : name;
+}
+
+// How many brackets a value leaves open (its strings and comment aside): a multi-line array
+// (`key = [` up to its `]`) is one value, after which a line may go.
+int OpenBrackets(std::string_view value) {
+  value = value.substr(0, value.size() - Comment(value, 0).size());
+  int depth = 0;
+  char quote = 0;
+  for (size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (quote) {
+      if (c == quote && !(quote == '"' && i && value[i - 1] == '\\')) quote = 0;
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      --depth;
+    }
+  }
+  return depth;
 }
 
 // `set` written into the configuration file in place. Every line that sets a cvar takes its
@@ -393,7 +421,16 @@ bool Write(const Lines& set) {
     std::vector<size_t> found;
     std::optional<size_t> table_end;
     std::string table;
+    // Keys before the first table that are its table's dotted keys (`log.file = ...`): a [log]
+    // table after them would not parse, so the setting goes beside them.
+    bool dotted_root = false;
+    int depth = 0;  // brackets a multi-line array left open
     for (size_t i = 0; i < lines.size(); ++i) {
+      if (depth > 0) {  // a line of the array above: the value goes on
+        depth += OpenBrackets(lines[i]);
+        if (table == place.table && !place.table.empty()) table_end = i;
+        continue;
+      }
       if (std::optional<std::string> t = TableOf(lines[i])) {
         table = std::move(*t);
         if (table == place.table) table_end = i;
@@ -401,6 +438,9 @@ bool Write(const Lines& set) {
       }
       const std::optional<Entry> e = Parse(lines[i]);
       if (!e) continue;
+      depth = std::max(0, OpenBrackets(e->value));
+      if (table.empty() && !place.table.empty() && e->name.starts_with(place.table + "."))
+        dotted_root = true;
       if (table == place.table && !place.table.empty()) table_end = i;
       const bool flat = table.empty() &&
                         (e->name == cvar || e->name == full || (old && e->name == old));
@@ -416,11 +456,12 @@ bool Write(const Lines& set) {
     const rex::cvar::FlagEntry* flag = rex::cvar::GetFlagInfo(cvar);
     if (flag && ('"' + flag->default_value + '"' == value || flag->default_value == value))
       continue;
-    if (place.table.empty()) {
-      // Before the first table.
+    if (place.table.empty() || (dotted_root && !table_end)) {
+      // Before the first table: a key of no table, or a dotted key beside its table's others.
       size_t at = 0;
       while (at < lines.size() && !TableOf(lines[at])) ++at;
-      lines.insert(lines.begin() + std::ptrdiff_t(at), place.key + " = " + value);
+      lines.insert(lines.begin() + std::ptrdiff_t(at), (place.table.empty() ? place.key : full) +
+                                                           " = " + value);
     } else if (table_end) {
       lines.insert(lines.begin() + std::ptrdiff_t(*table_end + 1), place.key + " = " + value);
     } else {

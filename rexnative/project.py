@@ -322,11 +322,15 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     # earlier configure stored, so a build run from another checkout compiled the first one's
     # renderer without a word. rexglue_DIR likewise: find_package keeps the SDK it found first,
     # whatever CMAKE_PREFIX_PATH says later, so a game moved to another SDK (a newer ReXGlue)
-    # kept the old one's headers.
+    # kept the old one's headers. SDL3_DIR too: rexglue's package finds SDL3 (find_dependency),
+    # whose cached folder stayed the old SDK's while that folder was there.
+    sdl3 = os.path.join(sdk_install, 'cmake')
+    sdl3_dir = ('"-DSDL3_DIR=%s" ' % sdl3.replace('\\', '/')
+                if os.path.exists(os.path.join(sdl3, 'SDL3Config.cmake')) else '')
     configure = ('cmake -S "{w}" -B "{b}" -G Ninja -DCMAKE_BUILD_TYPE=Release '
                  '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
                  '"-DCMAKE_PREFIX_PATH={sdk}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF '
-                 '"-Drexglue_DIR={pkg}" '
+                 '"-Drexglue_DIR={pkg}" ' + sdl3_dir +
                  '"-DREXNATIVE_DIR={rx}" '
                  '"-DREXNATIVE_REXGLUE_SDK_SRC={src}" "-DREXNATIVE_FIDELITYFX_SDK={ffx}" '
                  '"-DREXNATIVE_DLSS_SDK={dlss}" "-DREXNATIVE_DLSS_NR={nr}" '

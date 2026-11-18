@@ -58,6 +58,7 @@ class ClassicFrames {
   std::array<uint64_t, kTextures> used_ = {};  // the renderer's frame fence that last read each
   uint32_t width_ = 0, height_ = 0;
   uint32_t next_ = 0, current_ = kTextures;  // current_: Take's, until Release
+  uint64_t shown_serial_ = 0;  // the driver's serial of the frame Take last gave
   bool logged_ = false;
 };
 

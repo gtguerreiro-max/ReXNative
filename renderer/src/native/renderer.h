@@ -181,10 +181,11 @@ class NativeRenderer {
   // Primary mode: the native renderer (true) or the Xenos plugin draws from the next Swap on,
   // as the renderer switch does. A choice: the automatic hand-over stops deciding (TakeChoice),
   // also when that renderer draws already.
+  // The renderer chosen, not a switch: two choices before the next Swap (the HUD's Classic then
+  // Native) end on the last one, where a switch flag set twice switched once.
   void RequestRenderer(bool native) {
     choice_made_.store(true, std::memory_order_relaxed);
-    if (native != (live_.load(std::memory_order_relaxed) != nullptr))
-      switch_requested_.store(true, std::memory_order_relaxed);
+    wanted_.store(native ? kWantNative : kWantClassic, std::memory_order_relaxed);
   }
 
   ~NativeRenderer();
@@ -253,11 +254,18 @@ class NativeRenderer {
   // Swap. A key rather than a pad combination: the game reads every button of the pad.
   // HandOver: the Xenos plugin draws from the next frame on (also after a failed frame, Fail);
   // TakeBack: native again.
-  // F9, once a press; never under Wine (UnderWine), where it is logged and dropped.
-  bool SwitchRequested() {
-    return switch_requested_.load(std::memory_order_relaxed) &&
-           switch_requested_.exchange(false, std::memory_order_relaxed) && !SwitchRefusedUnderWine();
+  // F9, once a press, or the renderer RequestRenderer chose when it is not the one drawing
+  // (native_now); never under Wine without classic_ (SwitchRefusedUnderWine), where it is logged
+  // and dropped. A choice decides over F9 presses taken with it.
+  bool SwitchRequested(bool native_now) {
+    const int wanted = wanted_.exchange(kWantNone, std::memory_order_relaxed);
+    const bool flip = switch_requested_.load(std::memory_order_relaxed) &&
+                      switch_requested_.exchange(false, std::memory_order_relaxed);
+    const bool requested = wanted != kWantNone ? (wanted == kWantNative) != native_now : flip;
+    return requested && !SwitchRefusedUnderWine();
   }
+  static constexpr int kWantNone = 0, kWantNative = 1, kWantClassic = 2;
+  std::atomic<int> wanted_{kWantNone};
   // Under Wine (the Steam Deck's Proton) the window does not change hands: once one renderer's
   // swap chain was released, the other's Present waited in vkd3d-proton for good. The switch
   // keeps the window instead (classic_), and is refused there only without it.

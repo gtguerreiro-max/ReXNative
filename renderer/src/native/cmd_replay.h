@@ -76,6 +76,8 @@ uint64_t GapDraws();
 // far: constants the game's own code gives the GPU, which no hooked call shows the tracker
 // (rexnative.inline_draws_auto's probe).
 uint64_t GapConstants();
+// A probe starts: its shader constant registers counted once each again (GapConstants).
+void ProbeReset();
 // At each Swap with inline draws on: their counts every `stats_every` frames.
 void OnSwapGaps(int32_t stats_every);
 // The same on any other thread: the tracker's EndCommandBuffer, and a count. Touches no state of
