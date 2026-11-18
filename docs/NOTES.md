@@ -287,6 +287,27 @@ skipped while it compiles (what it writes would be lost for good).
   that one 16x512 resolve wrote, a slice every 32 rows (`Resolver::FindContaining`: a slice or
   level inside a resolved image is copied from its rows; only the first slice was).
 
+## The renderer switch keeps the window
+
+The renderer switch (F9, the HUD's Renderer, `rexnative.classic`, `rexnative.auto_handover`)
+gives the game to ReXGlue's Xenos renderer and back. The game window used to go with it: ReXNative
+released its swap chain and ReXGlue's presenter made one. Under vkd3d-proton that never worked:
+once a swap chain on the window was released, the next one's Present waited for good (Orcs Must
+Die! stayed black at its title), so the switch was off under Proton and a game the native renderer
+drew wrong had to be set to one renderer for the whole run.
+
+The window now keeps ReXNative's swap chain whichever renderer draws. While ReXGlue's renderer
+draws, each guest Swap has its D3D12 presenter copy the frame it would have shown (its guest
+output, the gamma ramp applied) into one of three textures of ReXNative's, on ReXGlue's direct
+queue, which then signals a fence of ReXNative's; ReXNative's queue waits for that value before the
+frame that shows the texture (`renderer/src/native/classic_frames.h`, SDK patch 0033). The texture
+is drawn as ReXNative's own front buffer is, scaled and with FSR 1, and the HUD goes over it, so
+the HUD can always switch back. The two queues must be on one `ID3D12Device`. D3D12 and
+vkd3d-proton give one device per adapter (`D3D12CreateDevice` returns the one made before), and
+they were the same on the PC (an RTX GPU) and on the Steam Deck. Where they are not (two GPUs
+picked apart), the window goes to ReXGlue's presenter as before, and under Proton the switch stays
+off. An XAM dialog still goes to ReXGlue's presenter, whose overlay draws it.
+
 ## Pipelines compiled ahead
 
 The pipelines a game creates are stored (`<cache_root>\rexnative\pipelines.bin`, plus a D3D12

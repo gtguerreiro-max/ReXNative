@@ -37,8 +37,9 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
   configuration file.
 - **Less shader compile stutter:** pipelines from earlier sessions are compiled again in the
   background at start-up.
-- **The stock renderer one key away:** F9 switches to ReXGlue's Xenos GPU emulation and back, to
-  compare them.
+- **The stock renderer one setting away:** the HUD's Renderer (or F9) switches to ReXGlue's Xenos
+  GPU emulation, Xenia's renderer, and back while the game runs, on the Steam Deck too, and keeps
+  the choice: a game the native renderer does not draw right yet stays playable.
 - **Windows and Steam Deck** (under Proton, through vkd3d-proton).
 
 ## Games

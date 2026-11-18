@@ -45,6 +45,7 @@ REXCVAR_DECLARE(bool, rexnative_render_thread);  // record on a render thread (s
 
 namespace rexnative {
 
+class ClassicFrames;
 class CommandStream;
 class D3D12Device;
 class DrawRenderer;
@@ -112,6 +113,16 @@ class NativeRenderer {
   // (RexNativePresentationInterval in rexnative_d3d_trace.cpp). Any thread.
   static bool PacesFrames() { return paces_frames_.load(std::memory_order_relaxed); }
 
+  // Whether the native renderer draws the game now (false: the Xenos plugin, after the renderer
+  // switch or the automatic hand-over). Any thread.
+  static bool NativeDraws() { return live_.load(std::memory_order_relaxed) != nullptr; }
+  // Whether the renderer shows the game's frames, its own or the Xenos plugin's through its swap
+  // chain (classic_frames.h): the settings HUD is drawn over them. Any thread.
+  static bool ShowsFrames() {
+    NativeRenderer* r = Get();
+    return r && (NativeDraws() || r->classic_);
+  }
+
   // Hook entry points. `base` is the guest memory base the hook received (guest virtual
   // address a is at base + a, plus 0x1000 for a >= 0xE0000000 like the generated code).
   void OnDraw(const uint8_t* base, const HookArgs& args);
@@ -122,8 +133,9 @@ class NativeRenderer {
   // of GetData.
   void OnQueryIssue(const uint8_t* base, const HookArgs& args);
   void OnQueryGetData(uint8_t* base, const HookArgs& args);
-  // A Swap while the Xenos plugin draws (Live() is null): the renderer switch takes the game
-  // back, or the automatic hand-over when the game's draw calls are back.
+  // A Swap while the Xenos plugin draws (Live() is null), after the guest's Swap ran: the
+  // plugin's frame shown through the renderer's swap chain (classic_frames.h), then the renderer
+  // switch takes the game back, or the automatic hand-over when the game's draw calls are back.
   void OnSwapSuspended();
   // A draw call while the Xenos plugin draws (the hooks, on the presenting device).
   static void NoteSuspendedDraw() { suspended_draws_.fetch_add(1, std::memory_order_relaxed); }
@@ -167,8 +179,10 @@ class NativeRenderer {
   // The GPU's PCI vendor (D3D12Device::GpuVendor; 0 before the device exists).
   static uint32_t GpuVendor();
   // Primary mode: the native renderer (true) or the Xenos plugin draws from the next Swap on,
-  // as the renderer switch does.
+  // as the renderer switch does. A choice: the automatic hand-over stops deciding (TakeChoice),
+  // also when that renderer draws already.
   void RequestRenderer(bool native) {
+    choice_made_.store(true, std::memory_order_relaxed);
     if (native != (live_.load(std::memory_order_relaxed) != nullptr))
       switch_requested_.store(true, std::memory_order_relaxed);
   }
@@ -245,9 +259,17 @@ class NativeRenderer {
            switch_requested_.exchange(false, std::memory_order_relaxed) && !SwitchRefusedUnderWine();
   }
   // Under Wine (the Steam Deck's Proton) the window does not change hands: once one renderer's
-  // swap chain was released, the other's Present waited in vkd3d-proton for good.
+  // swap chain was released, the other's Present waited in vkd3d-proton for good. The switch
+  // keeps the window instead (classic_), and is refused there only without it.
   static bool UnderWine();
-  static bool SwitchRefusedUnderWine();
+  bool SwitchRefusedUnderWine() const;
+  // The Xenos plugin's frames through the renderer's swap chain (classic_frames.h), primary mode:
+  // null when the Xenos driver gives none on this device, and the window then goes to ReXGlue's
+  // presenter while the plugin draws. ClassicSwap on the guest thread at each of the plugin's
+  // Swaps queues ExecuteClassicSwap (the thread that records), which shows the frame.
+  std::unique_ptr<ClassicFrames> classic_;
+  void ClassicSwap();
+  void ExecuteClassicSwap(const SwapCall& swap);
   // SwitchRequested, while the native renderer draws: false (logged) when the frame is one the
   // plugin does not draw (frame_height.h).
   bool HandOverRequested();
@@ -258,6 +280,13 @@ class NativeRenderer {
   // with more than kAutoTakeBackDraws take it back (OnSwapSuspended). F9 turns it off for the
   // rest of the run.
   bool AutoHandOverDue();
+  // Guest thread: after RequestRenderer, the automatic hand-over is off for the rest of the run.
+  void TakeChoice() {
+    if (!choice_made_.exchange(false, std::memory_order_relaxed)) return;
+    auto_off_ = true;
+    auto_handed_over_ = false;
+  }
+  std::atomic<bool> choice_made_{false};
   static constexpr uint32_t kAutoTakeBackDraws = 16;
   uint32_t frame_draw_calls_ = 0;  // OnDraw calls since the last Swap (guest thread)
   uint32_t idle_swaps_ = 0, busy_swaps_ = 0;

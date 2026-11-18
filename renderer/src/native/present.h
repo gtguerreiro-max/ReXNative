@@ -98,8 +98,11 @@ class Presenter {
   // In NativeRenderer::ExecuteSwap before D3D12Device::EndFrame: records the blit into the back
   // buffer (PRESENT state on entry and exit) and, for a capture, the readback copy. Sets its own
   // root signature, pipeline and descriptor heap on the list. `shown`: the frame is presented
-  // (false: held, no blit). `copy`: also drawn, when not null.
-  void OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy = nullptr);
+  // (false: held, no blit). `copy`: also drawn, when not null. `classic`: the Xenos plugin's frame
+  // (classic_frames.h) drawn in place of the Swap's front buffer, its gamma ramp already applied;
+  // captured only without the Xenos copy (--rexnative_capture_xenos=false), as it is that copy.
+  void OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy = nullptr,
+              const ResolvedImage* classic = nullptr);
 
   // In NativeRenderer::ExecuteSwap after EndFrame: finishes a pending capture (with the Xenos
   // copy: waits for the frame's fence, holds the guest thread, reads guest memory, writes the

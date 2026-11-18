@@ -31,8 +31,9 @@ the console's MSAA. Settings changed on the Deck (the HUD: View + Menu) are kept
 installs.
 
 - `<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as
-  `[rexnative] enabled = false` for a game ReXGlue's renderer draws better (one renderer for the
-  whole run: F9 and `auto_handover` stay off under Proton).
+  `[rexnative] classic = true` for a game ReXGlue's renderer draws better: it starts on that
+  renderer, and the HUD's Renderer (View + Menu) switches to the native one and back while it
+  runs, as F9 and `auto_handover` do on the PC.
 - On the Deck, `deck.env` beside `play.sh` gives Proton variables (`PROTON_LOG=1`), and
   `REXNATIVE_PROTON` picks another Proton.
 

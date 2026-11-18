@@ -1,0 +1,283 @@
+From d3255cc76915c8e75e326aa789bd20fcec6dfdc5 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 18:40:39 +0000
+Subject: [PATCH] gpu: give a host renderer that presents the title the D3D12
+ guest output
+
+A host renderer that presents the title itself (present_external) and
+hands the drawing to the Xenos driver (a renderer switch) had to give the
+window back to the driver's presenter. Under vkd3d-proton the second swap
+chain made on the window after the first was released never presented, so
+the switch could not be used there.
+
+rex/xenos/draw_hook.h now has a guest output source, which the D3D12
+presenter registers while it exists: CopyGuestOutput consumes the guest
+output the presenter would paint next, copies it into the host renderer's
+texture on the provider's direct queue (after the commands that drew it)
+and signals the host renderer's fence. GetGuestOutputDevice tells the host
+renderer which ID3D12Device the copies run on. The window can then keep the
+host renderer's swap chain whichever renderer draws.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/xenos/draw_hook.h                | 38 ++++++++
+ src/base/draw_hook.cpp                       | 31 +++++++
+ src/gpu/xenos/host/d3d12/d3d12_presenter.cpp | 92 ++++++++++++++++++++
+ src/gpu/xenos/host/d3d12/d3d12_presenter.h   | 16 ++++
+ 4 files changed, 177 insertions(+)
+
+diff --git a/include/rex/xenos/draw_hook.h b/include/rex/xenos/draw_hook.h
+index 45a54db7..85d31e56 100644
+--- a/include/rex/xenos/draw_hook.h
++++ b/include/rex/xenos/draw_hook.h
+@@ -42,4 +42,42 @@ struct GammaRampView {
+ REX_API void SetGammaRampView(const GammaRampView& view);
+ REX_API GammaRampView GetGammaRampView();
+ 
++/**
++ * The Xenos driver's frames for a host renderer that presents the title itself
++ * (gpu.xenos.present_external) while the driver draws (a renderer switch): the window keeps the
++ * host renderer's swap chain, which shows the driver's frames, so it never changes hands (under
++ * vkd3d-proton a second swap chain on the window after the first one was released never
++ * presented). The D3D12 presenter is the source while it exists.
++ *
++ * A copy request: `dest` an ID3D12Resource of the source's device (GetGuestOutputDevice), at
++ * least the guest output's size, DXGI_FORMAT_R10G10B10A2_UNORM, in D3D12_RESOURCE_STATE_COPY_DEST
++ * before and after; `fence` an ID3D12Fence of that device, signaled to `fence_value` on the
++ * driver's direct queue once the copy ran (after the commands that drew the frame).
++ */
++struct GuestOutputCopy {
++  void* dest = nullptr;
++  u32 dest_width = 0, dest_height = 0;
++  void* fence = nullptr;
++  u64 fence_value = 0;
++};
++/// The guest output the presenter would paint next, gamma applied: its size (0 before the first
++/// frame) and a serial that grows with each frame the driver drew.
++struct GuestOutputInfo {
++  u32 width = 0, height = 0;
++  u64 serial = 0;
++};
++struct GuestOutputSource {
++  void* context = nullptr;
++  void* d3d12_device = nullptr;  // ID3D12Device the copies run on
++  bool (*copy)(void* context, const GuestOutputCopy& request, GuestOutputInfo* info) = nullptr;
++};
++REX_API void SetGuestOutputSource(const GuestOutputSource& source);
++/// Clears the source if it is still `context`'s, after any copy running through it.
++REX_API void ClearGuestOutputSource(void* context);
++/// The source's ID3D12Device, null without a source.
++REX_API void* GetGuestOutputDevice();
++/// Fills `info` (when not null) and, when the request's dest and fence are set and dest is large
++/// enough, submits the copy: true once submitted. The source stays set while it runs.
++REX_API bool CopyGuestOutput(const GuestOutputCopy& request, GuestOutputInfo* info);
++
+ }  // namespace rex::xenos
+diff --git a/src/base/draw_hook.cpp b/src/base/draw_hook.cpp
+index cbda132f..e3634803 100644
+--- a/src/base/draw_hook.cpp
++++ b/src/base/draw_hook.cpp
+@@ -6,6 +6,7 @@
+ #include <rex/xenos/draw_hook.h>
+ 
+ #include <atomic>
++#include <mutex>
+ 
+ namespace rex::xenos {
+ 
+@@ -36,4 +37,34 @@ GammaRampView GetGammaRampView() {
+           g_gamma_pwl_rgb.load(std::memory_order_acquire)};
+ }
+ 
++namespace {
++// Held across a copy, so clearing the source waits for a copy running through it.
++std::mutex g_guest_output_mutex;
++GuestOutputSource g_guest_output_source;
++}  // namespace
++
++void SetGuestOutputSource(const GuestOutputSource& source) {
++  std::lock_guard<std::mutex> lock(g_guest_output_mutex);
++  g_guest_output_source = source;
++}
++
++void ClearGuestOutputSource(void* context) {
++  std::lock_guard<std::mutex> lock(g_guest_output_mutex);
++  if (g_guest_output_source.context == context) g_guest_output_source = {};
++}
++
++void* GetGuestOutputDevice() {
++  std::lock_guard<std::mutex> lock(g_guest_output_mutex);
++  return g_guest_output_source.copy ? g_guest_output_source.d3d12_device : nullptr;
++}
++
++bool CopyGuestOutput(const GuestOutputCopy& request, GuestOutputInfo* info) {
++  std::lock_guard<std::mutex> lock(g_guest_output_mutex);
++  GuestOutputInfo local;
++  if (!info) info = &local;
++  *info = {};
++  const GuestOutputSource& s = g_guest_output_source;
++  return s.copy && s.copy(s.context, request, info);
++}
++
+ }  // namespace rex::xenos
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+index 5d8983cd..f4e6308e 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+@@ -35,6 +35,8 @@ namespace shaders {
+ }  // namespace shaders
+ 
+ D3D12Presenter::~D3D12Presenter() {
++  xenos::ClearGuestOutputSource(this);
++  external_copy_submission_tracker_.Shutdown();
+   paint_context_.AwaitSwapChainUsageCompletion();
+   guest_output_resource_refresher_submission_tracker_.Shutdown();
+   ui_submission_tracker_.Shutdown();
+@@ -235,6 +237,96 @@ bool D3D12Presenter::DriverRefreshGuestOutput(
+   return refresher_succeeded;
+ }
+ 
++bool D3D12Presenter::CopyGuestOutputThunk(void* context, const xenos::GuestOutputCopy& request,
++                                          xenos::GuestOutputInfo* info) {
++  return static_cast<D3D12Presenter*>(context)->CopyGuestOutputExternal(request, *info);
++}
++
++bool D3D12Presenter::CopyGuestOutputExternal(const xenos::GuestOutputCopy& request,
++                                             xenos::GuestOutputInfo& info) {
++  std::lock_guard<std::mutex> lock(external_copy_mutex_);
++  u32 mailbox_index;
++  // Held while the copy is submitted: the refresher writes another mailbox image meanwhile, and
++  // this one only after a later consume, in queue order after this copy.
++  std::unique_lock<std::mutex> consumer_lock(
++      ConsumeGuestOutput(mailbox_index, nullptr, nullptr));
++  if (mailbox_index == UINT32_MAX) {
++    return false;
++  }
++  const std::pair<UINT64, Microsoft::WRL::ComPtr<ID3D12Resource>>& source =
++      guest_output_resources_[mailbox_index];
++  if (!source.second) {
++    return false;
++  }
++  const D3D12_RESOURCE_DESC source_desc = source.second->GetDesc();
++  info.width = static_cast<u32>(source_desc.Width);
++  info.height = source_desc.Height;
++  info.serial = source.first;
++  if (!request.dest || !request.fence || request.dest_width < info.width ||
++      request.dest_height < info.height) {
++    return false;
++  }
++
++  ID3D12Device* device = provider_.GetDevice();
++  ID3D12CommandQueue* queue = provider_.GetDirectQueue();
++  if (!external_copy_list_) {
++    for (auto& allocator : external_copy_allocators_) {
++      if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
++                                                IID_PPV_ARGS(&allocator)))) {
++        REXUI_ERROR("D3D12Presenter: Failed to create an external guest output copy allocator");
++        return false;
++      }
++    }
++    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
++                                         external_copy_allocators_[0].Get(), nullptr,
++                                         IID_PPV_ARGS(&external_copy_list_))) ||
++        FAILED(external_copy_list_->Close()) ||
++        !external_copy_submission_tracker_.Initialize(device, queue)) {
++      REXUI_ERROR("D3D12Presenter: Failed to create the external guest output copy list");
++      external_copy_list_.Reset();
++      return false;
++    }
++  }
++  const UINT64 submission = external_copy_submission_tracker_.GetCurrentSubmission();
++  if (submission > kExternalCopyAllocators) {
++    external_copy_submission_tracker_.AwaitSubmissionCompletion(submission -
++                                                                kExternalCopyAllocators);
++  }
++  ID3D12CommandAllocator* allocator =
++      external_copy_allocators_[submission % kExternalCopyAllocators].Get();
++  allocator->Reset();
++  ID3D12GraphicsCommandList* list = external_copy_list_.Get();
++  list->Reset(allocator, nullptr);
++  D3D12_RESOURCE_BARRIER barrier;
++  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
++  barrier.Transition.pResource = source.second.Get();
++  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  barrier.Transition.StateBefore = kGuestOutputInternalState;
++  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++  list->ResourceBarrier(1, &barrier);
++  D3D12_TEXTURE_COPY_LOCATION dest_location, source_location;
++  dest_location.pResource = static_cast<ID3D12Resource*>(request.dest);
++  dest_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  dest_location.SubresourceIndex = 0;
++  source_location.pResource = source.second.Get();
++  source_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  source_location.SubresourceIndex = 0;
++  const D3D12_BOX box = {0, 0, 0, info.width, info.height, 1};
++  list->CopyTextureRegion(&dest_location, 0, 0, 0, &source_location, &box);
++  std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
++  list->ResourceBarrier(1, &barrier);
++  if (FAILED(list->Close())) {
++    REXUI_ERROR("D3D12Presenter: Failed to close the external guest output copy list");
++    return false;
++  }
++  ID3D12CommandList* lists[] = {list};
++  queue->ExecuteCommandLists(1, lists);
++  queue->Signal(static_cast<ID3D12Fence*>(request.fence), request.fence_value);
++  external_copy_submission_tracker_.NextSubmission();
++  return true;
++}
++
+ void D3D12Presenter::PaintContext::DestroySwapChain() {
+   if (!swap_chain) {
+     return;
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.h b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+index f6953799..75177d2b 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+@@ -13,6 +13,7 @@
+ 
+ #include <array>
+ #include <memory>
++#include <mutex>
+ #include <utility>
+ 
+ #include <rex/math.h>
+@@ -22,6 +23,7 @@
+ #include "gpu/xenos/host/surface.h"
+ #include <rex/types.h>
+ #include <rex/utility.h>
++#include <rex/xenos/draw_hook.h>
+ 
+ namespace rex::gpu::d3d12 {
+ 
+@@ -86,6 +88,8 @@ class D3D12Presenter final : public Presenter {
+     if (!presenter->InitializeSurfaceIndependent()) {
+       return nullptr;
+     }
++    // The guest output for a host renderer presenting the title itself (rex/xenos/draw_hook.h).
++    xenos::SetGuestOutputSource({presenter.get(), provider.GetDevice(), &CopyGuestOutputThunk});
+     return presenter;
+   }
+ 
+@@ -211,6 +215,18 @@ class D3D12Presenter final : public Presenter {
+ 
+   bool InitializeSurfaceIndependent();
+ 
++  // rex/xenos/draw_hook.h's GuestOutputSource: copies the guest output the presenter would paint
++  // next (consuming it, as a paint does) into the host renderer's texture, on the direct queue.
++  static bool CopyGuestOutputThunk(void* context, const xenos::GuestOutputCopy& request,
++                                   xenos::GuestOutputInfo* info);
++  bool CopyGuestOutputExternal(const xenos::GuestOutputCopy& request, xenos::GuestOutputInfo& info);
++  static constexpr u32 kExternalCopyAllocators = 3;
++  std::mutex external_copy_mutex_;
++  std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kExternalCopyAllocators>
++      external_copy_allocators_;
++  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> external_copy_list_;
++  D3D12SubmissionTracker external_copy_submission_tracker_;
++
+   const D3D12Provider& provider_;
+ 
+   /** True when DXGI supports DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, used for variable refresh rate. */
+-- 
+2.55.0.windows.5
+

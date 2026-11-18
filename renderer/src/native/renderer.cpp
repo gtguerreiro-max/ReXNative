@@ -4,6 +4,7 @@
 #include "legacy_names.h"
 
 #include "async_file.h"
+#include "classic_frames.h"
 #include "clock.h"
 #include "d3d12_device.h"
 #include "d3d_state.h"
@@ -297,6 +298,7 @@ struct NativeRenderer::Queue {
     DrawRenderer::PrepareCounters prep;
     uint64_t ticks[profile::kStageCount];
     uint32_t log_frames;  // a marked Swap with --rexnative_mark_audit: the frames to log
+    bool classic;         // the Xenos plugin's frame (ExecuteClassicSwap), not a native one
   };
   struct Batch {
     std::vector<Cmd> cmds;
@@ -496,6 +498,10 @@ bool NativeRenderer::Initialize() {
   if (!draw_->Initialize()) return false;
   present_ = std::make_unique<Presenter>(*this);
   if (!present_->Initialize()) return false;
+  if (primary) {
+    classic_ = std::make_unique<ClassicFrames>();
+    if (!classic_->Initialize(device_->device())) classic_.reset();
+  }
   // Beside the Xenos plugin (debug window) the plugin's fake counts are the game's.
   if (primary && REXCVAR_GET(rexnative_occlusion)) {
     occlusion_ = std::make_unique<OcclusionQueries>();
@@ -771,7 +777,9 @@ void NativeRenderer::RenderThreadMain() {
           break;
         case Queue::kSwap: {
           const Queue::SwapCmd& s = b->swaps[c.index];
-          if (!g_failed) {
+          if (s.classic) {
+            if (!g_failed) ExecuteClassicSwap(s.call);
+          } else if (!g_failed) {
             stats_.hook_ns = s.hook_ns;
             stats_.hook_wait_ns = s.hook_wait_ns;
             stats_.hook_max_ns = s.hook_max_ns;
@@ -1023,11 +1031,15 @@ void NativeRenderer::OnQueryGetData(uint8_t* base, const HookArgs& args) {
 
 void NativeRenderer::OnSwapSuspended() {
   const uint32_t draws = suspended_draws_.exchange(0, std::memory_order_relaxed);
+  TakeChoice();
   if (SwitchRequested()) {
     auto_handed_over_ = false;
     auto_off_ = true;  // F9 decides from here on (HandOverRequested)
+    // The choice as the settings HUD shows and saves it (its Renderer, rexnative.classic).
+    rex::cvar::SetFlagByName("rexnative_classic", "false");
     return TakeBack();
   }
+  if (classic_ && !g_failed) ClassicSwap();
   if (!auto_handed_over_) return;
   // The game's draw calls are back (its level after the menus): two frames of them in a row.
   // More than a few: the screens handed over can reach a hooked draw call or two that the
@@ -1053,22 +1065,25 @@ bool NativeRenderer::UnderWine() {
   return wine;
 }
 
-bool NativeRenderer::SwitchRefusedUnderWine() {
-  if (!UnderWine()) return false;
-  REXLOG_WARN("ReXNative: renderer switch (F9) ignored under Wine: the window cannot change "
-              "hands under vkd3d-proton (rexnative.enabled picks the renderer for the run)");
+bool NativeRenderer::SwitchRefusedUnderWine() const {
+  if (!UnderWine() || classic_) return false;
+  REXLOG_WARN("ReXNative: renderer switch ignored under Wine: the window cannot change hands "
+              "under vkd3d-proton, and the Xenos driver gives no frames to show through "
+              "ReXNative's swap chain (rexnative.classic picks the renderer for the next start)");
   return true;
 }
 
 bool NativeRenderer::AutoHandOverDue() {
   const uint32_t draws = std::exchange(frame_draw_calls_, 0);
   const int32_t frames = REXCVAR_GET(rexnative_auto_handover);
+  TakeChoice();
   if (frames <= 0 || !primary_ || auto_off_) return false;
   // Under Wine (the Steam Deck's Proton) the window does not change hands: once ReXNative's
   // swap chain was released, the Xenos driver's Present waited in vkd3d-proton for good and its
-  // GPU thread with it (Orcs Must Die! black at its title). There the game's setting picks one
-  // renderer for the whole run (<work>/deck.toml).
-  if (UnderWine()) {
+  // GPU thread with it (Orcs Must Die! black at its title). The window keeps ReXNative's swap
+  // chain while the plugin draws (classic_); without that, the game's setting picks one renderer
+  // for the whole run (<work>/deck.toml).
+  if (UnderWine() && !classic_) {
     auto_off_ = true;
     REXLOG_WARN("ReXNative: rexnative.auto_handover off under Wine (the window cannot change "
                 "hands under vkd3d-proton)");
@@ -1095,7 +1110,11 @@ bool NativeRenderer::HandOverRequested() {
   if (!SwitchRequested()) return false;
   // F9 decides from here on: the automatic hand-over stays off for the rest of the run.
   auto_off_ = true;
-  if (FrameHeight() == kGameFrameHeight) return true;
+  if (FrameHeight() == kGameFrameHeight) {
+    // The choice as the settings HUD shows and saves it (its Renderer, rexnative.classic).
+    rex::cvar::SetFlagByName("rexnative_classic", "true");
+    return true;
+  }
   REXLOG_WARN(
       "ReXNative: renderer switch: the Xenos plugin draws only the game's {}-row frame, not "
       "this {}-row one (frame_height.h); it draws from the start with the Classic renderer",
@@ -1112,7 +1131,8 @@ void NativeRenderer::HandOver(uint8_t* base, uint32_t device) {
   MarkAllDirty(base, device);
   rex::cvar::SetFlagByName("gpu_skip_draws", "false");
   if (occlusion_) rex::cvar::SetFlagByName("occlusion_query_external", "false");
-  // The plugin presents on its own: the game waits for its vblanks again.
+  // The game waits for the plugin's vblanks again: the plugin's frames are shown as they come
+  // (through the renderer's swap chain with classic_, by ReXGlue's presenter without).
   paces_frames_.store(false, std::memory_order_relaxed);
   live_.store(nullptr, std::memory_order_relaxed);
   if (g_failed)
@@ -1127,8 +1147,72 @@ void NativeRenderer::TakeBack() {
   GuestState().Resync();
   rex::cvar::SetFlagByName("gpu_skip_draws", "true");
   if (occlusion_) rex::cvar::SetFlagByName("occlusion_query_external", "true");
+  // The window kept its swap chain (classic_): OwnGameWindow has nothing to take back, so the
+  // pacing comes back here.
+  if (classic_ && pacer_)
+    paces_frames_.store(pacer_->pacing(), std::memory_order_relaxed);
   live_.store(this, std::memory_order_release);
   REXLOG_INFO("ReXNative: renderer switch: native draws");
+}
+
+void NativeRenderer::ClassicSwap() {
+  SwapCall swap;
+  // A capture of the plugin's frame, without the Xenos copy only (Presenter::OnSwap).
+  swap.capture_request =
+      !present_->capture_holds_guest() &&
+      present_->CaptureRequested(queue_ ? queue_->frame : frame_index_);
+  if (queue_) {
+    Queue& q = *queue_;
+    Queue::SwapCmd& s = q.current->swaps.emplace_back();
+    s.call = swap;
+    s.classic = true;
+    // At most one frame ahead, as the native frames.
+    q.WaitFrames(q.frame);
+    q.Push(Queue::kSwap, uint32_t(q.current->swaps.size() - 1));
+    q.Publish();
+    ++q.frame;
+  } else {
+    ExecuteClassicSwap(swap);
+  }
+  // The frames shown stay within the frame latency, as the native ones (frame_pacer.h).
+  if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
+  if (pacer_) pacer_->WaitToBegin();
+}
+
+void NativeRenderer::ExecuteClassicSwap(const SwapCall& swap) {
+  D3D12Device& d = *device_;
+  // An XAM dialog is ReXGlue's presenter's overlay: the window is its own while one is up, as
+  // while the native renderer draws.
+  if (!OwnGameWindow(!host::XamUIActive())) return Fail();
+  const ResolvedImage* image = d.has_swapchain() ? classic_->Take(d) : nullptr;
+  const bool shown = image != nullptr;
+  if (shown) {
+    present_->OnSwap(swap, true, nullptr, image);
+    classic_->Release(d);
+  }
+  const uint64_t fence = d.frame_fence();
+  if (!d.EndFrame(shown)) return Fail();
+  present_->AfterEndFrame();  // a capture's PNG
+  const D3D12Device::EndFrameTimes& et = d.end_frame_times();
+  if (pacer_ && et.presented)
+    pacer_->Presented(fence, et.frame_presents);
+  else if (pacer_)
+    pacer_->RetireUnshown();
+  ++frame_index_;
+  d.SetTitleFrame(frame_index_);
+  // The plugin's frames are not in the stats; the next native frame's time starts here.
+  frame_start_ns_ = NowNs();
+  if (queue_) {
+    // The native frames' upload memory is tagged with the frames queued (QueueDraw): these count.
+    Queue& q = *queue_;
+    const uint64_t completed = d.completed_fence();
+    q.frame_fences.emplace_back(frame_index_, fence);
+    while (!q.frame_fences.empty() && q.frame_fences.front().second <= completed) {
+      q.gpu_frames_done.store(q.frame_fences.front().first, std::memory_order_release);
+      q.frame_fences.pop_front();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1357,7 +1441,8 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   // stays on screen while the next one waits for them.
   const bool incomplete = draw_->FrameIncomplete();
   if (incomplete) ++stats_.frames_held;
-  if (primary_ && !OwnGameWindow(!swap.hand_over && !host::XamUIActive()))
+  // Handing over, the window keeps the swap chain when the plugin's frames go through it.
+  if (primary_ && !OwnGameWindow((!swap.hand_over || classic_) && !host::XamUIActive()))
     return Fail();
   const bool shown = !incomplete && d.has_swapchain();
   FrameGeneration* const fg = frame_generation_.get();

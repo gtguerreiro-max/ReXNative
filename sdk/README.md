@@ -41,6 +41,7 @@ does; in short:
 | 0030 | XAM gets a title workspace that follows the current heap: the one it kept a reference to was replaced when the executable asks for another workspace size, and Brothers - A Tale of Two Sons crashed in `XamAlloc` |
 | 0031 | A fetch constant written again with its own value still drops its vertex buffer's residency (0021's early return had kept it: a buffer the title refilled in place was drawn with the previous draw's vertices on ReXGlue's renderer) |
 | 0032 | An overlapped receive (`WSARecvFrom` with an `OVERLAPPED`) on a datagram socket never bound fails too, as 0027's blocking ones do |
+| 0033 | The D3D12 presenter's guest output for a host renderer that presents the title itself (`rex/xenos/draw_hook.h`, `CopyGuestOutput`): copied into the host renderer's texture on the driver's queue, which signals the host renderer's fence. ReXNative shows ReXGlue's frames through its own swap chain while ReXGlue's renderer draws, so the window never changes hands (under vkd3d-proton it could not) |
 | 0034 | Codegen: a function with its nonvolatiles in locals that calls a register-sharing function puts ctx's own values back after the call (a shared caller further up keeps its registers there; Minecraft's new worlds crashed) |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the

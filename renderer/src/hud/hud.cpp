@@ -96,6 +96,23 @@ int RefreshRate() { return 60; }
 std::vector<Option> MakeOptions() {
   const std::vector<Choice> on_off = {{"Off", "false"}, {"On", "true"}};
   std::vector<Option> o;
+  // Which renderer draws the game: live (the renderer switch, as F9, at the next Swap) and kept
+  // for the next start (rexnative.classic: the Xenos plugin from the first frame). The value is
+  // the choice, which F9 keeps in step; the automatic hand-over (rexnative.auto_handover) does
+  // not change it. Under vkd3d-proton too, as the window keeps ReXNative's swap chain
+  // (classic_frames.h).
+  o.push_back({"Display", "renderer", "Renderer",
+               {{"Native (ReXNative)", "native"}, {"Classic (Xenia)", "classic"}}, false,
+               [] { return std::string(Flag("rexnative_classic") == "true" ? "classic" : "native"); },
+               [](const std::string& v) {
+                 return Bool("rexnative_classic", v == "classic" ? "true" : "false");
+               },
+               [] {
+                 if (NativeRenderer* r = NativeRenderer::Get())
+                   r->RequestRenderer(Flag("rexnative_classic") != "true");
+               },
+               "Native: ReXNative, with the settings below. Classic: Xenia's renderer, for a "
+               "game the native one does not draw right yet. At once, and kept."});
   o.push_back({"Display", "antialiasing", "Antialiasing",
                {{"Off", "1"},
                 {"MSAA 2x (console)", "2"},
@@ -576,31 +593,43 @@ void CreateContext() {
   BuildFont(kBaseFont);
 }
 
-// The pads' buttons since the last frame as ImGui gamepad keys; `reset`: the ones held now (the
-// chord that opened the menu) are not presses.
+// Left and Right (the D-pad, the left stick, the arrow keys) since the last frame: the steps of
+// the focused row's value (Row), which they never reach as ImGui keys. ImGui's navigation takes
+// them first, as moves: in the menu's one column ImGui 1.92 moved the focus to the row below, and
+// IsKeyPressed then saw nothing. UI thread.
+int g_step = 0;
+
+// The pads' buttons since the last frame as ImGui gamepad keys (Left and Right as g_step);
+// `reset`: the ones held now (the chord that opened the menu) are not presses.
 void FeedPad(ImGuiIO& io, bool reset) {
   static uint32_t fed = 0;
+  static int stick = 0;  // the left stick's side past half its travel: -1, 0 or 1
   uint32_t buttons = 0;
   for (const auto& b : g_pad_buttons) buttons |= b.load(std::memory_order_relaxed);
   if (reset) fed = buttons;
   static const std::pair<uint32_t, ImGuiKey> kKeys[] = {
-      {kPadUp, ImGuiKey_GamepadDpadUp},     {kPadDown, ImGuiKey_GamepadDpadDown},
-      {kPadLeft, ImGuiKey_GamepadDpadLeft}, {kPadRight, ImGuiKey_GamepadDpadRight},
-      {kPadStart, ImGuiKey_GamepadStart},   {kPadBack, ImGuiKey_GamepadBack},
-      {0x0100, ImGuiKey_GamepadL1},         {0x0200, ImGuiKey_GamepadR1},
-      {kPadA, ImGuiKey_GamepadFaceDown},    {kPadB, ImGuiKey_GamepadFaceRight},
-      {0x4000, ImGuiKey_GamepadFaceLeft},   {0x8000, ImGuiKey_GamepadFaceUp}};
+      {kPadUp, ImGuiKey_GamepadDpadUp},   {kPadDown, ImGuiKey_GamepadDpadDown},
+      {kPadStart, ImGuiKey_GamepadStart}, {kPadBack, ImGuiKey_GamepadBack},
+      {0x0100, ImGuiKey_GamepadL1},       {0x0200, ImGuiKey_GamepadR1},
+      {kPadA, ImGuiKey_GamepadFaceDown},  {kPadB, ImGuiKey_GamepadFaceRight},
+      {0x4000, ImGuiKey_GamepadFaceLeft}, {0x8000, ImGuiKey_GamepadFaceUp}};
   for (const auto& [bit, key] : kKeys)
     if ((buttons ^ fed) & bit) io.AddKeyEvent(key, (buttons & bit) != 0);
+  const uint32_t pressed = buttons & ~fed;
+  if (pressed & kPadLeft) --g_step;
+  if (pressed & kPadRight) ++g_step;
   fed = buttons;
   // The left stick as a D-pad, past XInput's dead zone (7849 of 32767).
-  const auto axis = [&](ImGuiKey negative, ImGuiKey positive, int32_t v) {
-    const float f = std::clamp((std::abs(float(v)) - 7849.0f) / (32767.0f - 7849.0f), 0.0f, 1.0f);
-    io.AddKeyAnalogEvent(negative, v < 0 && f > 0.5f, v < 0 ? f : 0.0f);
-    io.AddKeyAnalogEvent(positive, v > 0 && f > 0.5f, v > 0 ? f : 0.0f);
+  const auto travel = [](int32_t v) {
+    return std::clamp((std::abs(float(v)) - 7849.0f) / (32767.0f - 7849.0f), 0.0f, 1.0f);
   };
-  axis(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, g_pad_lx.load());
-  axis(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, g_pad_ly.load());
+  const int32_t lx = g_pad_lx.load(), ly = g_pad_ly.load();
+  const int side = travel(lx) > 0.5f ? (lx < 0 ? -1 : 1) : 0;
+  if (side && side != stick && !reset) g_step += side;
+  stick = side;
+  const float f = travel(ly);
+  io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0 && f > 0.5f, ly < 0 ? f : 0.0f);
+  io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0 && f > 0.5f, ly > 0 ? f : 0.0f);
 }
 
 bool Pressed(std::initializer_list<ImGuiKey> keys) {
@@ -635,11 +664,9 @@ void Row(const Option& o, const Option** focused) {
                 is_focused || hovered ? IM_COL32(255, 210, 120, 255) : IM_COL32(230, 220, 200, 255),
                 arrows.c_str());
   int step = 0;
-  if (is_focused) {
-    if (Pressed({ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft, ImGuiKey_LeftArrow}))
-      step = -1;
-    if (Pressed({ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight, ImGuiKey_RightArrow}))
-      step = 1;
+  if (is_focused && g_step) {
+    step = g_step < 0 ? -1 : 1;
+    g_step = 0;
   }
   if (clicked) step = 1;
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) step = -1;
@@ -699,6 +726,7 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
     first = false;
     Row(o, &focused);
   }
+  g_step = 0;  // no row was focused to take it
   ImGui::EndChild();
   ImGui::Spacing();
   ImGui::Separator();
@@ -853,9 +881,13 @@ bool Key(const rex::InputEvent& e, bool down) {
     case VirtualKey::kDown:
     case VirtualKey::kNumpad2: key = ImGuiKey_DownArrow; break;
     case VirtualKey::kLeft:
-    case VirtualKey::kNumpad4: key = ImGuiKey_LeftArrow; break;
+    case VirtualKey::kNumpad4:
+      if (down) --g_step;  // the value's step, not ImGui's navigation (g_step)
+      return true;
     case VirtualKey::kRight:
-    case VirtualKey::kNumpad6: key = ImGuiKey_RightArrow; break;
+    case VirtualKey::kNumpad6:
+      if (down) ++g_step;
+      return true;
     case VirtualKey::kReturn: key = ImGuiKey_Enter; break;
     case VirtualKey::kSpace: key = ImGuiKey_Space; break;
     case VirtualKey::kEscape: key = ImGuiKey_Escape; break;

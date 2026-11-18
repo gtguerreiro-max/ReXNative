@@ -256,7 +256,8 @@ struct Presenter::Impl {
   }
 
   bool Initialize();
-  void OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy);
+  void OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,
+              const ResolvedImage* classic);
   // Copies the guest's current ramp of the mode into the frame's slot; false without one.
   bool WriteRamp(RampMode mode, uint32_t slot);
   bool CaptureRequested(uint64_t frame);
@@ -502,14 +503,15 @@ void Presenter::Impl::FinishCapture() {
   }
 }
 
-void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy) {
+void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,
+                             const ResolvedImage* classic) {
   D3D12Device& d = r.device();
   CommandStream* list = d.command_list();
   ID3D12Device* device = r.d3d12();
 
-  const uint32_t tex = swap.texture;
+  const uint32_t tex = classic ? 0 : swap.texture;
   uint32_t fetch[6] = {};
-  const ResolvedImage* image = nullptr;
+  const ResolvedImage* image = classic;
   if (tex) {
     std::memcpy(fetch, swap.fetch, sizeof(fetch));
     // The object holds the D3D's virtual address; the GPU (and the Resolver) use the physical one.
@@ -531,7 +533,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     }
     found = false;
   }
-  if (!image && !log_missing) {
+  if (!image && !log_missing && !classic) {
     log_missing = true;
     REXLOG_WARN(
         "ReXNative present: no resolved image for the front buffer {:08X} (texture {:08X})",
@@ -546,11 +548,13 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
   D3D12_RESOURCE_DESC desc = {};
   Extent extent;
   if (found) {
-    mapping = GuestToHostComponentMapping((fetch[3] >> 1) & 0xFFF, host->host_swizzle);
+    // The Xenos plugin's frame is RGB already (its presenter's guest output).
+    if (!classic)
+      mapping = GuestToHostComponentMapping((fetch[3] >> 1) & 0xFFF, host->host_swizzle);
     desc = image->texture->GetDesc();
     extent = ImageExtent(*image, desc);
   }
-  if (glitch.on()) glitch.Collect(d.frame_slot());
+  if (glitch.on() && !classic) glitch.Collect(d.frame_slot());
   // A held frame (DrawRenderer::FrameIncomplete) never reaches the screen: it is neither blitted
   // nor recorded, so the glitch catcher and the luma probe see what was shown.
   if (shown) {
@@ -602,12 +606,14 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       UINT clears = 0;
       for (const D3D12_RECT& bar : bars)
         if (bar.right > bar.left && bar.bottom > bar.top) clear[clears++] = bar;
-      const RampMode wanted = rgb10a2 ? kRampPwl : kRampTable;
+      // The Xenos plugin applied the ramp to its frame already.
+      const RampMode wanted = classic ? kRampNone : rgb10a2 ? kRampPwl : kRampTable;
       const uint32_t ramp_slot = d.frame_slot();
       const float paper_white = float(std::max(1, REXCVAR_GET(rexnative_hdr_paper_white)));
       const float peak = d.hdr_peak_nits() / paper_white;
       BlitConstants constants = {{iw, ih},
-                                 WriteRamp(wanted, ramp_slot) ? wanted : kRampNone,
+                                 wanted != kRampNone && WriteRamp(wanted, ramp_slot) ? wanted
+                                                                                     : kRampNone,
                                  vw == iw && vh == ih,
                                  hdr,
                                  paper_white / 10000.0f,
@@ -648,7 +654,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       const bool use_fsr = fsr_ok && !hdr && REXCVAR_GET(rexnative_fsr) && vw >= iw && vh >= ih &&
                            (vw > iw || vh > ih);
       if (!use_fsr) blit(*image, rtv);
-      if (glitch.on()) {
+      if (glitch.on() && !classic) {
         // The catcher keeps SDR frames: the front buffer's display values through the ramp, as
         // without HDR (the linear image's above 1 would index past the ramp's end).
         if (hdr) {
@@ -687,11 +693,13 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                      overlay_frame);
     std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
     list->ResourceBarrier(1, &b);
-    if (found && REXCVAR_GET(rexnative_luma_probe))
+    if (found && !classic && REXCVAR_GET(rexnative_luma_probe))
       probe.Record(device, list, d.frame_slot(), image->texture, extent.width, extent.height,
                    mapping, rgb10a2, r.frame_index());
   }
 
+  // The Xenos plugin's frame is captured alone (its own copy is the image).
+  if (classic && REXCVAR_GET(rexnative_capture_xenos)) return;
   // A request arms the capture of the next shown frame. With the Xenos copy, that frame's
   // resolves must reach guest memory synchronously (HoldFullReadback) from its start, or the
   // copy is the previous frame's; the native image alone is this frame's.
@@ -756,8 +764,9 @@ void Presenter::ReadSwap(const uint8_t* base, const HookArgs& args, SwapCall* ou
     for (int i = 0; i < 6; ++i) out->fetch[i] = Load32(base, out->texture + 28 + 4 * i);
 }
 
-void Presenter::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy) {
-  impl_->OnSwap(swap, shown, copy);
+void Presenter::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,
+                       const ResolvedImage* classic) {
+  impl_->OnSwap(swap, shown, copy, classic);
 }
 
 bool Presenter::front_buffer_found() const { return impl_->front_buffer_found; }

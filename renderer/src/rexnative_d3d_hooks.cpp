@@ -1871,7 +1871,8 @@ float RexNativeMotionBlurStep(float step) {
 // moment, a lone Back or Start) from the game and gives the game a neutral pad while it is up.
 // Here, on the thread the game reads its pads on: the runtime's input system is not made for
 // reads from two threads at once (a poll from the Swap thread corrupted the heap). Only while the
-// native renderer runs (it draws the HUD). A port that hooks the function itself defines
+// native renderer shows the frames, its own or the Xenos plugin's (it draws the HUD over them). A
+// port that hooks the function itself defines
 // REXNATIVE_GAME_HOOKS_XINPUT (From Dust: frame_rate.cpp).
 #if defined(REXNATIVE_XINPUT_GET_STATE_FOUND) && REXNATIVE_XINPUT_GET_STATE_FOUND && \
     !defined(REXNATIVE_GAME_HOOKS_XINPUT)
@@ -1902,7 +1903,7 @@ REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_XINPUT_GET_STATE)) {
       rex::memory::store_and_swap<uint16_t>(s + 10, uint16_t(pad >> 32));
     }
   }
-  if (ctx.r3.u32 != 0 || !state || user >= 4 || !rexnative::NativeRenderer::Live()) return;
+  if (ctx.r3.u32 != 0 || !state || user >= 4 || !rexnative::NativeRenderer::ShowsFrames()) return;
   rexnative::hud::FilterPad(user, base + state + 4);  // XINPUT_STATE: packet, then the pad
 }
 #endif
