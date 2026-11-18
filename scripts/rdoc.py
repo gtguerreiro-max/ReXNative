@@ -115,6 +115,22 @@ def main():
             controller.SaveTexture(s, path)
             with open(os.path.join(out, "save.txt"), "w") as f:
                 f.write("%s %s\n" % (path, describe(tex)))
+        elif cmd == "reads":
+            # Every draw from `event` on (0: all): what its pixel shader reads and where it
+            # draws, one line each, to follow an image through a frame's passes.
+            with open(os.path.join(out, "reads-e%d.txt" % job["event"]), "w") as f:
+                for a in actions:
+                    if a.eventId < job["event"] or not (a.flags & rd.ActionFlags.Drawcall):
+                        continue
+                    controller.SetFrameEvent(a.eventId, False)
+                    state = controller.GetPipelineState()
+                    reads = [describe(u.descriptor.resource)
+                             for u in state.GetReadOnlyResources(rd.ShaderStage.Pixel, True)
+                             if u.descriptor.resource != null]
+                    outs = [describe(o) for o in list(a.outputs) + [a.depthOut] if o != null]
+                    f.write("%d n=%d ps %d | reads %s | -> %s\n" % (
+                        a.eventId, a.numIndices, int(state.GetShader(rd.ShaderStage.Pixel)),
+                        ", ".join(reads) or "-", "; ".join(outs)))
         elif cmd == "inputs":
             # What the draw at `event` reads: its pixel shader's textures (the ones it used,
             # through the bindless heaps too), each saved as PNG, and its targets.

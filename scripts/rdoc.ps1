@@ -3,6 +3,8 @@
 #   scripts\rdoc.ps1 history <capture.rdc> -X 400 -Y 120 [-X1 410] [-Event 0] [-Texture 0]
 #   scripts\rdoc.ps1 save <capture.rdc> -Event 1234 [-Texture 0]
 #   scripts\rdoc.ps1 inputs <capture.rdc> -Event 1234      # its textures (as PNG) and targets
+#   scripts\rdoc.ps1 reads <capture.rdc> [-Event 1234]     # every draw from there: what its pixel
+#                    shader reads and where it draws, one line each (reads-e<event>.txt)
 #   scripts\rdoc.ps1 mesh <capture.rdc> -Event 1234         # its vertex shader's output positions
 #   scripts\rdoc.ps1 disasm <capture.rdc> -Event 1234       # its shaders, disassembled
 #   scripts\rdoc.ps1 cbuffers <capture.rdc> -Event 1234     # its shaders' constant buffers
@@ -13,7 +15,7 @@
 # RenderDoc's folder: -RenderDoc, else $env:REXNATIVE_RENDERDOC (the one with qrenderdoc.exe).
 # Output: <capture>.rdoc\ (actions.txt, history-X-Y.txt, tex-*.png), printed when done.
 param(
-    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
+    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'reads', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
     [Parameter(Position = 1, Mandatory)][string]$Capture,
     [int]$X = 0, [int]$X1 = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC

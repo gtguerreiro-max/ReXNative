@@ -341,7 +341,11 @@ switch ($Command) {
         # qrenderdoc's Python): the game's window need not be in front.
         Get-Game $s | Out-Null
         if (-not $s.renderdoc) { throw 'the live game was not started with -RenderDoc' }
-        $qrd = Join-Path $RenderDocDir 'qrenderdoc.exe'
+        if (-not $RenderDocDir) {
+            $RenderDocDir = Get-ChildItem (Join-Path $PSScriptRoot '..\..\Tools') -Directory -Filter 'RenderDoc*' -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+        }
+        $qrd = if ($RenderDocDir) { Join-Path $RenderDocDir 'qrenderdoc.exe' } else { '' }
         if (-not $RenderDocDir -or -not (Test-Path $qrd)) { throw 'RenderDoc not found: -RenderDocDir or REXNATIVE_RENDERDOC' }
         $dir = Join-Path $s.live 'rdoc'
         $log = Join-Path $dir 'trigger.log'
