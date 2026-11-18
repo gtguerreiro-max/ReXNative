@@ -7,11 +7,36 @@ XCONTENT_AGGREGATE_DATA and the package's license mask), so the game finds it as
 content. `rexnative deck` sends it along (userdata/ beside the game on the Deck).
 
   python -m rexnative dlc <work>/<game> <package | folder | .rar/.7z/.zip>...
+
+Without packages, the game's DLC comes from the Internet Archive's Xbox 360 DLC collection
+(archive.org item msx360gcdlc: a RAR per game, named after it, holding
+<title id>/00000002/<package>), as title updates come from XboxUnity:
+
+  python -m rexnative dlc <work>/<game> | <prepare's --work>  [--list]
+  python -m rexnative prepare ... --dlc
+
+An archive is the game's when its name's words are the game's title's (roman numerals as
+digits; "1", "Complete Edition" and "Director's Cut" left out); <work>/dlc-archives.txt names
+them by hand, or says `none`. One whose listing names other titles only is not downloaded. Each
+is checked against the collection's MD5, installed as above (packages of another title left
+out) and deleted; <work>/dlc.json records what each installed, and an archive is fetched again
+only when the collection's copy changes. The collection lends its files to logged-in accounts
+only (HTTP 401 without): the account's cookies from the internetarchive tool's configuration
+(`ia configure` writes ia.ini), or its S3 keys (IA_ACCESS_KEY_ID and IA_SECRET_ACCESS_KEY, or
+ia.ini's [s3]). Nothing is downloaded unless asked.
 """
+import configparser
+import hashlib
+import json
 import os
+import re
 import shutil
 import struct
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from . import prepare, stfs, title_update, xex
 
@@ -136,3 +161,235 @@ def deck_items(work):
                     rel = os.path.relpath(p, base).replace(os.sep, '/')
                     items.append((p, 'userdata/%s/%s' % (COMMON_XUID, rel)))
     return items
+
+
+# --- The Internet Archive's collection ----------------------------------------------------------
+
+ITEM = 'msx360gcdlc'
+METADATA_URL = 'https://archive.org/metadata/' + ITEM
+DOWNLOAD_URL = 'https://archive.org/download/' + ITEM + '/%s'
+# Words left out when names are compared: "Midnight Club: Los Angeles - Complete Edition" and
+# "Deus Ex: Human Revolution - Director's Cut" are the base game's archives; "Halo 1" and
+# "Overlord 1" are the first game's.
+FILLER = {'the', 'complete', 'edition', 'director', 'directors', 's', 'cut', 'goty', '1'}
+ROMAN = {'ii': '2', 'iii': '3', 'iv': '4', 'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9'}
+# A path in an archive: <title id>/<content type>/<package>.
+PACKAGE_PATH = re.compile(r'(?<![0-9A-Fa-f])([0-9A-F]{8})[\\/](0000000[0-9A-F])[\\/]([0-9A-F]{8,64})')
+LOGIN = ('archive.org lends the DLC collection to logged-in accounts only%s: sign in with `ia '
+         'configure` (pip install internetarchive), or set IA_ACCESS_KEY_ID and '
+         'IA_SECRET_ACCESS_KEY to the account\'s S3 keys (archive.org/account/s3.php)')
+
+
+def words(name):
+    """'Midnight Club: Los Angeles - Complete Edition' -> ['midnight', 'club', 'los', 'angeles']."""
+    name = name.lower().replace('&', ' and ').replace("'", '')
+    out = []
+    for w in re.findall(r'[a-z0-9]+', name):
+        w = ROMAN.get(w, w)
+        if w not in FILLER:
+            out.append(w)
+    return out
+
+
+def archive_game(name):
+    """'Overlord.1.DLC.RF.X360-ZTM.rar' -> 'Overlord.1'."""
+    return re.sub(r'\.DLC\..*$', '', name, flags=re.I)
+
+
+def catalog(cache={}):
+    """The collection's archives: [{'name', 'size' (int), 'md5'}] (its metadata is public)."""
+    if 'files' not in cache:
+        req = urllib.request.Request(METADATA_URL, headers={'User-Agent': title_update.USER_AGENT})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read().decode('utf-8', 'replace'))
+        cache['files'] = [{'name': f['name'], 'size': int(f.get('size') or 0),
+                           'md5': f.get('md5', '').lower()}
+                          for f in data.get('files', []) if f.get('format') == 'RAR']
+    return cache['files']
+
+
+def archives_for(work, files):
+    """The collection's archives for this game: by hand (<work>/dlc-archives.txt: one name a line,
+    or `none`), else those whose game words are the game's title's."""
+    by_name = {f['name']: f for f in files}
+    hand = os.path.join(work, 'dlc-archives.txt')
+    if os.path.exists(hand):
+        names = [ln.split('#')[0].strip() for ln in open(hand, encoding='utf-8')]
+        names = [n for n in names if n and n.lower() != 'none']
+        missing = [n for n in names if n not in by_name]
+        if missing:
+            raise SystemExit('%s: not in the collection: %s' % (hand, ', '.join(missing)))
+        return [by_name[n] for n in names]
+    from .deck import title_of
+    want = words(title_of(work) or os.path.basename(work))
+    return [f for f in files if words(archive_game(f['name'])) == want]
+
+
+def credentials():
+    """The headers archive.org lends the collection's files for: an account's cookies or S3 keys
+    (see the module's notes); {} when there are none. Never logged."""
+    cp = configparser.RawConfigParser()
+    home = os.path.expanduser('~')
+    for p in (os.environ.get('IA_CONFIG_FILE'),
+              os.path.join(home, '.config', 'internetarchive', 'ia.ini'),
+              os.path.join(home, '.config', 'ia.ini'), os.path.join(home, '.ia')):
+        if p and os.path.exists(p):
+            cp.read(p, encoding='utf-8')
+            break
+    headers = {}
+    cookies = []
+    for k in ('logged-in-user', 'logged-in-sig'):
+        v = cp.get('cookies', k, fallback='').split(';')[0].strip()
+        if v:
+            cookies.append('%s=%s' % (k, v))
+    if len(cookies) == 2:
+        headers['Cookie'] = '; '.join(cookies)
+    access = os.environ.get('IA_ACCESS_KEY_ID') or cp.get('s3', 'access', fallback='')
+    secret = os.environ.get('IA_SECRET_ACCESS_KEY') or cp.get('s3', 'secret', fallback='')
+    if access and secret:
+        headers['Authorization'] = 'LOW %s:%s' % (access, secret)
+    return headers
+
+
+class NotLoggedIn(SystemExit):
+    pass
+
+
+def _open(url, auth, offset=0, end=None, timeout=120):
+    headers = dict(auth, **{'User-Agent': title_update.USER_AGENT})
+    if offset or end is not None:
+        headers['Range'] = 'bytes=%d-%s' % (offset, '' if end is None else end)
+    try:
+        return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise NotLoggedIn(LOGIN % (' (HTTP %d)' % e.code)) from None
+        raise
+
+
+def archive_packages(name, auth):
+    """The (title id, content type, package) paths an archive holds, from archive.org's listing
+    of it; else from its first 64 KB (each file's header comes before its data); [] when neither
+    names one."""
+    found = []
+    try:
+        with _open(DOWNLOAD_URL % urllib.parse.quote(name) + '/', auth) as r:
+            found = PACKAGE_PATH.findall(urllib.parse.unquote(r.read().decode('utf-8', 'replace')))
+    except NotLoggedIn:
+        raise
+    except (OSError, ValueError):
+        pass
+    if not found:
+        try:
+            with _open(DOWNLOAD_URL % urllib.parse.quote(name), auth, 0, 65535) as r:
+                found = PACKAGE_PATH.findall(r.read(65536).decode('latin-1'))
+        except NotLoggedIn:
+            raise
+        except (OSError, ValueError):
+            pass
+    return sorted(set(found))
+
+
+def download(entry, folder, auth, log=print):
+    """The archive in folder (a part a stopped run left goes on from where it stopped), checked
+    against the collection's MD5."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, entry['name'])
+    part = path + '.part'
+    md5 = hashlib.md5()
+    done = 0
+    if os.path.exists(part):
+        with open(part, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                md5.update(chunk)
+                done += len(chunk)
+    size = entry['size']
+    if done > size:
+        os.remove(part)
+        md5, done = hashlib.md5(), 0
+    if done < size:
+        log('  downloading %s (%.1f MB%s)' % (entry['name'], size / 1e6,
+                                             ', from %.1f MB' % (done / 1e6) if done else ''))
+        t0, start, shown = time.time(), done, done
+        with _open(DOWNLOAD_URL % urllib.parse.quote(entry['name']), auth, done) as r:
+            if done and r.status != 206:  # the server sends it whole
+                md5, done, start, shown = hashlib.md5(), 0, 0, 0
+            with open(part, 'ab' if done else 'wb') as f:
+                for chunk in iter(lambda: r.read(1 << 20), b''):
+                    f.write(chunk)
+                    md5.update(chunk)
+                    done += len(chunk)
+                    if done - shown >= max(size // 10, 50 << 20):
+                        shown = done
+                        log('    %d%% (%.1f MB/s)' % (done * 100 // max(size, 1),
+                                                     (done - start) / 1e6 / max(time.time() - t0, 1e-3)))
+    if entry['md5'] and md5.hexdigest() != entry['md5']:
+        os.remove(part)
+        raise RuntimeError('%s: MD5 %s, the collection lists %s (removed)' % (
+            entry['name'], md5.hexdigest(), entry['md5']))
+    os.replace(part, path)
+    return path
+
+
+def _record(work):
+    p = os.path.join(work, 'dlc.json')
+    return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+
+
+def _save_record(work, rec):
+    with open(os.path.join(work, 'dlc.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(rec, f, indent=1, sort_keys=True)
+
+
+def fetch(work, log=print, list_only=False, keep=False):
+    """Fetches the game's archives from the collection and installs their packages; returns
+    {archive: {'md5', 'titles', 'installed'}}. list_only: says what it would fetch, downloads
+    nothing. keep: the downloaded archives stay in <work>/dlc-download."""
+    work = os.path.abspath(work)
+    title_id = int(xex.read(title_update.game_xex(work))['title_id'], 16)
+    tid, kind = '%08X' % title_id, '%08X' % MARKETPLACE
+    entries = archives_for(work, catalog())
+    if not entries:
+        log('  no archive in the collection for %s (%s); <work>/dlc-archives.txt names them by '
+            'hand' % (os.path.basename(work), tid))
+        return {}
+    auth = {} if list_only else credentials()
+    if not list_only and not auth:
+        raise NotLoggedIn(LOGIN % '')
+    rec = _record(work)
+    root = content_root(work, title_id)
+    out = {}
+    for e in entries:
+        have = rec.get(e['name'])
+        if have and have.get('md5') == e['md5']:
+            log('  %s: installed before (%d packages)' % (e['name'], len(have.get('installed', []))))
+            out[e['name']] = have
+            continue
+        if list_only:
+            log('  %s: %.1f MB, to fetch' % (e['name'], e['size'] / 1e6))
+            continue
+        paths = archive_packages(e['name'], auth)
+        titles = sorted({p[0] for p in paths})
+        mine = sorted(p[2] for p in paths if p[0] == tid and p[1] == kind)
+        if titles and tid not in titles:
+            log('  %s: packages of %s only, not %s: left out' % (e['name'], ', '.join(titles), tid))
+            names = []
+        elif mine and all(os.path.isdir(os.path.join(root, kind, n)) and
+                          os.path.exists(os.path.join(root, 'Headers', kind, n + '.header'))
+                          for n in mine):
+            log('  %s: its %d packages are installed already' % (e['name'], len(mine)))
+            names = mine
+        else:
+            folder = os.path.join(work, 'dlc-download')
+            path = download(e, folder, auth, log)
+            try:
+                names = install(work, [path], log)
+            finally:
+                if not keep:
+                    os.remove(path)
+                    if not os.listdir(folder):
+                        os.rmdir(folder)
+        rec[e['name']] = {'md5': e['md5'], 'titles': titles, 'installed': sorted(names)}
+        _save_record(work, rec)
+        out[e['name']] = rec[e['name']]
+    return out

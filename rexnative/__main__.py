@@ -11,6 +11,7 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative project WORK/GAME [--build]         a prepared game -> a project that runs
   python -m rexnative title-update WORK...                the title updates XboxUnity lists
   python -m rexnative dlc WORK/GAME SOURCE...             install downloadable content
+  python -m rexnative dlc WORK... [--list]                its DLC from archive.org's collection
   python -m rexnative deck WORK/GAME... [--steam] [--try S]  copy built games to the Steam Deck
   python -m rexnative art WORK/GAME CAPTURE.png [--title T]   Steam artwork for its shortcut
   python -m rexnative survey --work DIR                   table of the prepared games
@@ -153,7 +154,7 @@ def cmd_prepare(a):
     failed = []
     for s in sources:
         st = prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
-                             title_update=a.title_update)
+                             title_update=a.title_update, dlc=a.dlc)
         if a.project and st.get('ok'):
             # One game's failed build or run does not stop the others: it is reported at the end.
             try:
@@ -279,9 +280,33 @@ def cmd_title_update(a):
 
 
 def cmd_dlc(a):
-    from . import dlc
-    names = dlc.install(a.work, a.sources)
-    print('%d package(s) installed in %s' % (len(names), os.path.join(a.work, 'run', 'userdata')))
+    from . import dlc, title_update as tu
+    if a.sources:
+        names = dlc.install(a.work, a.sources)
+        print('%d package(s) installed in %s' % (len(names), os.path.join(a.work, 'run', 'userdata')))
+        return
+    # No packages: the game's (or each prepared game's) DLC from archive.org's collection.
+    if os.path.exists(tu.game_xex(a.work)):
+        works = [a.work]
+    else:
+        works = [os.path.join(a.work, n) for n in sorted(os.listdir(a.work))
+                 if os.path.exists(tu.game_xex(os.path.join(a.work, n)))]
+    failed = []
+    for w in works:
+        print('== %s' % os.path.basename(w))
+        try:
+            got = dlc.fetch(w, list_only=a.list, keep=a.keep)
+        except dlc.NotLoggedIn:
+            raise
+        except (OSError, RuntimeError) as e:
+            print('  FAILED: %s' % e)
+            failed.append(os.path.basename(w))
+            continue
+        n = sum(len(v.get('installed', [])) for v in got.values())
+        if got and not a.list:
+            print('  %d package(s) of %d archive(s)' % (n, len(got)))
+    if failed:
+        sys.exit('DLC not fetched: ' + ', '.join(failed))
 
 
 def cmd_survey(a):
@@ -345,6 +370,9 @@ def main(argv=None):
                    help='download the newest title update XboxUnity lists for each game and '
                         'install it before codegen (the code is recompiled from the patched '
                         'image); see `rexnative title-update`')
+    s.add_argument('--dlc', action='store_true',
+                   help="download each game's DLC from archive.org's Xbox 360 DLC collection "
+                        '(msx360gcdlc; an archive.org login, see `rexnative dlc`) and install it')
     s.add_argument('--project', action='store_true',
                    help='then make each game a built project that runs, as `rexnative project '
                         '--build --find-functions`, the layer made again over the functions found, '
@@ -367,9 +395,15 @@ def main(argv=None):
     s.set_defaults(fn=cmd_title_update)
     s = sub.add_parser('dlc', parents=[lang_opt],
                        help="install a game's downloadable content (STFS packages, or folders "
-                            'and archives holding them) where the game finds it')
-    s.add_argument('work', help="the game's folder in prepare's --work")
-    s.add_argument('sources', nargs='+', help='packages, folders or .rar/.7z/.zip archives')
+                            'and archives holding them) where the game finds it; without them, '
+                            "fetch it from archive.org's Xbox 360 DLC collection (msx360gcdlc)")
+    s.add_argument('work', help="the game's folder in prepare's --work (without sources: or "
+                                'the --work folder, every game in it)')
+    s.add_argument('sources', nargs='*', help='packages, folders or .rar/.7z/.zip archives')
+    s.add_argument('--list', action='store_true',
+                   help="the collection's archives for each game, nothing downloaded")
+    s.add_argument('--keep', action='store_true',
+                   help='keep the downloaded archives in <work>/<game>/dlc-download')
     s.set_defaults(fn=cmd_dlc)
     s = sub.add_parser('deck', parents=[lang_opt],
                        help='copy built games to the Steam Deck, add them to Steam, try them')

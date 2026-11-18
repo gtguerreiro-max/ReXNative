@@ -49,11 +49,12 @@ $env:REXNATIVE_DLSS_NR     = "C:\path\to\dlss_nr"
 From an archive, a folder, an Xbox Live (STFS) package or a disc image:
 
 ```powershell
-python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --title-update --project
+python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --title-update --dlc --project
 ```
 
 This extracts the game, downloads and installs its newest title update (listed by XboxUnity,
-checked against the listing), runs ReXGlue's codegen until it is clean, generates the game's
+checked against the listing) and its downloadable content (`--dlc`: the Internet Archive's Xbox
+360 DLC collection, which needs an archive.org login, below), runs ReXGlue's codegen until it is clean, generates the game's
 layer (`layer/report.md` says what was found, how and how sure), writes a ReXGlue project with
 ReXNative and the settings HUD, builds it, finds the functions codegen missed, and builds again.
 The game is then in `D:\rexnative-work\<game>\run\`: run its executable. Reports are in English;
@@ -65,6 +66,27 @@ looks for them beside the executable first (a port that keeps them there goes on
 `..\common` and `..\..\common` (`--rexnative_common_dir` names another folder). On the Steam Deck
 they are in `~/Games/ReXNative/common`.
 
+## Downloadable content
+
+`--dlc` (or `python -m rexnative dlc <work>`, for games prepared before) takes each game's DLC
+from the Internet Archive's Xbox 360 DLC collection
+([msx360gcdlc](https://archive.org/details/msx360gcdlc): one RAR per game). The collection lends
+its files to logged-in archive.org accounts only, so sign in once on this PC:
+
+```powershell
+pip install internetarchive
+ia configure
+```
+
+`ia configure` asks for the account's e-mail and password and keeps the account's cookies in
+`%USERPROFILE%\.config\internetarchive\ia.ini`, where ReXNative reads them (or set
+`IA_ACCESS_KEY_ID` and `IA_SECRET_ACCESS_KEY` to the account's S3 keys,
+archive.org/account/s3.php). A game's archives are found by its title;
+`<work>\<game>\dlc-archives.txt` names them by hand (one file name a line, or `none`). Each is
+checked against the collection's MD5, its packages for the game's title are installed and the
+archive deleted; `<work>\<game>\dlc.json` records them, and an archive is fetched again only when
+the collection's copy changes.
+
 ## Other commands
 
 `python -m rexnative <command> --help` gives each one's options.
@@ -74,6 +96,7 @@ they are in `~/Games/ReXNative/common`.
 | `info <xex>` | title, version, XDK libraries |
 | `title-update <work>` | the title updates listed, nothing downloaded |
 | `dlc <work>/<game> <packages, folders or archives>` | its downloadable content, where the game finds it: `run/userdata/0000000000000000/<title id>/00000002` with its header files; `deck` takes it along |
+| `dlc <work>[/<game>] [--list]` | the game's (or every game's) downloadable content from the Internet Archive's Xbox 360 DLC collection, fetched and installed; `--list` downloads nothing |
 | `project <work>/<game> --build` | rebuild one game; the game's own hooks in `src/game_*.cpp` are built with it |
 | `survey --work <work>` | a table of the prepared games |
 | `deck <work>/<game>...` | built games onto a Steam Deck ([STEAM_DECK.md](STEAM_DECK.md)) |

@@ -18,8 +18,9 @@ it.
 ## Scope
 
 In scope: the renderer (`renderer/`), the tool (`rexnative/`: it extracts archives, disc images
-and Xbox Live packages, downloads title updates, and copies games to a Steam Deck over SSH), the
-SDK patches (`sdk/`) and the scripts (`scripts/`, `deck/`).
+and Xbox Live packages, downloads title updates and downloadable content (with the user's
+archive.org login, read from the internetarchive tool's configuration), and copies games to a
+Steam Deck over SSH), the SDK patches (`sdk/`) and the scripts (`scripts/`, `deck/`).
 
 Out of scope, to be reported to their own projects: the ReXGlue SDK itself
 ([rexglue-sdk](https://github.com/rexglue/rexglue-sdk)), NVIDIA's and AMD's SDKs and DLLs,

@@ -629,7 +629,7 @@ def codegen(work, name, rexglue, max_rounds, log):
 
 
 def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=40,
-            title_update=False):
+            title_update=False, dlc=False):
     name = slug(source)
     work = os.path.join(work_root, name)
     os.makedirs(work, exist_ok=True)
@@ -650,6 +650,17 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
         if title_update:
             from . import title_update as tu
             status['steps']['title_update'] = tu.update(work, log)
+            save()
+        # Its downloadable content from archive.org's collection (dlc.py). Content, not code:
+        # a failure (no archive.org login) is recorded and the game goes on.
+        if dlc:
+            from . import dlc as dlcmod
+            try:
+                got = dlcmod.fetch(work, log)
+                status['steps']['dlc'] = {k: v['installed'] for k, v in got.items()}
+            except (SystemExit, OSError, RuntimeError) as e:
+                status['steps']['dlc'] = {'error': str(e)}
+                log('  DLC: %s' % e)
             save()
         info = xex.read(os.path.join(work, 'game-data', 'default.xex'))
         lib, ver = xex.d3d_library(info)

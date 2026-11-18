@@ -101,6 +101,19 @@ id, the SHA-1 of its header, and every block of its hash tree). Its XEX patches 
 is recompiled from the patched image), the rest of it is mounted as `update:`
 (`run/title-update`), and what came from the old image is made again.
 
+## Downloadable content
+
+`prepare --dlc` and `rexnative dlc <work>` fetch a game's DLC from the Internet Archive's Xbox
+360 DLC collection (`msx360gcdlc`, `rexnative/dlc.py`): a RAR per game, its paths
+`<title id>/00000002/<package>`. The archive is matched by the game's title (roman numerals as
+digits; "1", "Complete Edition" and "Director's Cut" left out), and archive.org's listing of it
+(or its first 64 KB, where the first file's header is) says which titles it holds before
+anything is downloaded: an archive of other titles only is left out, and one whose packages are
+installed already is not fetched. The download goes on from a part a stopped run left, is
+checked against the collection's MD5, and its packages of the game's title are installed as
+`rexnative dlc` installs local ones. The collection's files need an archive.org login: the
+cookies `ia configure` keeps (or S3 keys), which are never logged.
+
 ## Disc images
 
 Disc games come as images of the disc (`.iso`, on its own or in an archive): `rexnative/xiso.py`

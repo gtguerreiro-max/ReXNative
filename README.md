@@ -66,7 +66,7 @@ scripts\build-sdk.ps1 -Llvm C:\path\to\LLVM-20\bin
 #    REXNATIVE_* variables (docs/GETTING_STARTED.md)
 
 # 3. Prepare a game: extract, title update, codegen, layer, project, build
-python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --title-update --project
+python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --title-update --dlc --project
 ```
 
 The game is then in `D:\rexnative-work\<game>\run\`; F1 opens its settings. To put it on a Steam
