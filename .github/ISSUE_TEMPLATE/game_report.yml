@@ -1,0 +1,70 @@
+name: Game report
+description: How a game runs with ReXNative, on the PC or the Steam Deck.
+title: "[Game] "
+labels: ["game report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing a game. The results so far are in [docs/GAMES.md](https://github.com/gtguerreiro-max/ReXNative/blob/main/docs/GAMES.md).
+        **Do not attach anything from the game**: no game files, generated code, file listings or the game's layer (`results/`). Logs and screenshots are welcome.
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: Its name, and its title ID if you know it (`python -m rexnative info <xex>` shows it).
+      placeholder: "My Game (XXXXXXXX)"
+    validations:
+      required: true
+  - type: input
+    id: title_update
+    attributes:
+      label: Title update
+      description: The title update installed, or "none".
+      placeholder: "TU 1"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Windows PC
+        - Steam Deck (Proton)
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: How far it gets with ReXNative
+      options:
+        - Plays (menus and into the game)
+        - Menus only
+        - Intro or start-up only
+        - Does not start
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What you saw
+      description: What works, what is wrong (missing or broken drawing, speed, crashes), and the frame rate. Is it the same with ReXGlue's own renderer (`--rexnative=false`)?
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU and driver, or Proton version
+      placeholder: "RTX 4070, driver 581.xx / Steam Deck OLED, GE-Proton 11"
+  - type: input
+    id: commit
+    attributes:
+      label: ReXNative commit
+      description: "`git rev-parse --short HEAD` in your ReXNative checkout."
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The game's log from its `run\` folder (or `logs/` on the Deck). You can drag the file here.
+      render: text

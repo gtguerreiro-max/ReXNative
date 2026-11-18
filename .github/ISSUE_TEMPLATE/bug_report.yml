@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in the renderer, the tool or the scripts does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For how one particular game runs, use the **Game report** form instead. For a security problem, see [SECURITY.md](https://github.com/gtguerreiro-max/ReXNative/blob/main/SECURITY.md): do not open a public issue.
+        **Do not attach anything from a game**: no game files, generated code or the game's layer.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Part
+      options:
+        - Renderer
+        - Settings HUD
+        - The tool (python -m rexnative)
+        - SDK build (scripts/build-sdk.ps1, sdk/patches)
+        - Steam Deck (deck, play.sh)
+        - Debugging scripts
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The command you ran, or the steps in the game.
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: System
+      description: Windows version, GPU and driver, or the Steam Deck and its Proton.
+  - type: input
+    id: commit
+    attributes:
+      label: ReXNative commit
+      description: "`git rev-parse --short HEAD` in your ReXNative checkout."
+  - type: textarea
+    id: log
+    attributes:
+      label: Log or output
+      render: text
