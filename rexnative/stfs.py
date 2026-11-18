@@ -11,7 +11,8 @@ PER_LEVEL = 170
 MAGICS = (b'CON ', b'LIVE', b'PIRS')
 CONTENT_TYPES = {0x000D0000: 'Xbox Live Arcade title', 0x00000002: 'marketplace content (DLC)',
                  0x000B0000: 'title update', 0x00007000: 'Games on Demand',
-                 0x00080000: 'demo', 0x00000001: 'saved game'}
+                 0x00080000: 'demo', 0x00000001: 'saved game', 0x00009000: 'avatar item',
+                 0x00020000: 'gamer picture', 0x00030000: 'theme'}
 
 
 def u24le(b, o):
