@@ -2,10 +2,14 @@
 
 ## Next
 
+- Deus Ex: Human Revolution on the native renderer: its resolves decode another destination
+  than the one its D3D writes, so the front buffer is never resolved and the picture stays black.
+- Fable II on the Steam Deck past its title screen, and Diablo III's replayed command buffers
+  with the shader tracking of 2026-11-18 (neither tried yet).
+- Midnight Club's races on the Steam Deck at frame latency 2: they fell to 22-29 FPS at 1.
 - Find the HDR pass before the game's tone mapping, for DLSS 5.
 - The open problems in [GAMES.md](GAMES.md#open-problems): Perfect Dark's broken levels,
-  Spelunky's missing text, Halo's dark and striped surfaces, the WMV videos of Dark Souls II and
-  Jet Set Radio.
+  Spelunky's missing text, Halo's dark and striped surfaces.
 - A reactive mask for the upscalers (FSR's own, made from the scene before and after its
   transparent draws), where motion vectors cannot be right: particles, and the draws whose mesh
   the previous frame did not have.
@@ -22,4 +26,12 @@
   more games end to end.
 - 2026-11-16: the move to ReXGlue v0.11.0 and the Steam Deck on it.
 - 2026-11-17: Midnight Club's cars and Dark Souls II, Jet Set Radio's motion vectors and camera
-  cuts, inline draws found at run time.
+  cuts, inline draws found at run time; Overlord and Overlord II (their tiled G-buffers),
+  tessellated patches, DLSS 5 in every game the tool prepares with a look per kind of game, one
+  shared folder for the DLSS and FSR files, and the settings menu on a pad (Back + Start).
+- 2026-11-18: the registers a function takes from its caller (`share_registers`), which drew
+  Fable II's world black and garbled the XMV videos of Jet Set Radio, Syndicate and Dark Souls II.
+  Fable II on the native renderer, now its default on the PC and the Steam Deck: its tone
+  mapping, its DXT3A terrain, resolves into 1:5:5:5, the Resolve's level, and the shaders its own
+  code loads between the hooks. The settings menu saves again, the Steam Deck runs at frame
+  latency 2, and the README's details moved into `docs/`.
