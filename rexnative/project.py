@@ -385,6 +385,9 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     toml = os.path.join(work, '%s.toml' % name)
     if os.path.exists(toml) and not os.path.exists(os.path.join(run, '%s.toml' % name)):
         shutil.copy2(toml, run)
+    # The DLSS 5 look that suits the game (dlss5.py), unless the player chose one in the HUD.
+    from . import dlss5
+    dlss5.apply(work, [toml, os.path.join(run, '%s.toml' % name)], log=log)
     # game/ -> game-data/; title-update/ -> the installed title update's files (title_update.py),
     # which the app mounts as update: when it finds the folder beside it.
     links = [('game', os.path.join(work, 'game-data')),

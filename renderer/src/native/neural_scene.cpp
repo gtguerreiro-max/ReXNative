@@ -22,6 +22,8 @@
 // The scene target keeps its tracked state (RenderTarget::state) for the resolve after it.
 #include "neural.h"
 
+#include "dlss5_looks.h"
+
 #include "command_stream.h"
 #include "log.h"
 
@@ -584,7 +586,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   // The model's working size (--rexnative_dlss5_scale, the forks' WorkingScale; its cost falls
   // with the square); the comparison split needs the full one.
   const int32_t split = REXCVAR_GET(rexnative_dlss5_split);
-  double work_scale = std::clamp(REXCVAR_GET(rexnative_dlss5_scale), 0.5, 1.0);
+  double work_scale = CurrentDlss5Values().scale;
   if (split == 2) work_scale = 1.0;
   uint32_t work_width = width, work_height = height;
   if (work_scale < 0.999) {
@@ -615,8 +617,9 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   // 0 (or less): no clamp, the change as the model made it.
   const double max_ratio = REXCVAR_GET(rexnative_dlss5_max_ratio);
   c.max_ratio = max_ratio <= 0.0 ? 0.0f : float(std::clamp(max_ratio, 1.0, 16.0));
-  c.transfer = float(std::clamp(REXCVAR_GET(rexnative_dlss5_transfer), 0.0, 2.0));
-  c.colour = float(std::clamp(REXCVAR_GET(rexnative_dlss5_colour), 0.0, 1.0));
+  const Dlss5Values look = CurrentDlss5Values();  // the look's, or the separate settings
+  c.transfer = look.transfer;
+  c.colour = look.colour;
   c.white_fixed = float(std::max(REXCVAR_GET(rexnative_dlss5_white), 0.0));
   c.dt = std::clamp(in.frame_ms * 0.001f, 0.0f, 0.25f);
   c.flags = (split == 1 ? 1u : 0u) | (gap ? 2u : 0u) |
@@ -629,7 +632,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   c.tau_up = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_up), 0.05, 60.0));
   c.tau_down = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_down), 0.05, 60.0));
   c.dead_band = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_band), 0.0, 4.0));
-  c.stability = float(std::clamp(REXCVAR_GET(rexnative_dlss5_stability), 0.0, 0.95));
+  c.stability = look.stability;
 
   D3D12_RESOURCE_BARRIER bs[4];
   uint32_t nb = 0;

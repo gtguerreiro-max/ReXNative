@@ -1,6 +1,8 @@
 // ReXNative renderer: DLSS 5 before the HUD. See neural.h.
 #include "neural.h"
 
+#include "dlss5_looks.h"
+
 #include "command_stream.h"
 #include "guest_memory.h"
 #include "log.h"
@@ -26,8 +28,15 @@ REXCVAR_DEFINE_BOOL(rexnative_dlss5, false, "ReXNative",
                     "(nvngx_dlssnr.dll beside the executable or in the common folder, an RTX GPU and "
                     "its driver), with "
                     "--rexnative_upscaler");
+REXCVAR_DEFINE_STRING(rexnative_dlss5_look, "cinematic", "ReXNative",
+                      "DLSS 5's look (dlss5_looks.h): cinematic, cinematic2, natural, stylized, "
+                      "cel, strong, or custom (the separate --rexnative_dlss5_* settings)");
+REXCVAR_DECLARE(double, rexnative_dlss5_transfer);
+REXCVAR_DECLARE(double, rexnative_dlss5_colour);
+REXCVAR_DECLARE(double, rexnative_dlss5_stability);
 REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_intensity, 1.0, "ReXNative",
-                      "DLSS 5: intensity (0-2; 1 the modding community's baseline)");
+                      "DLSS 5: intensity (0-2; 1 the modding community's baseline); with a look "
+                      "other than custom, a factor on the look's");
 REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_structure, 1.0, "ReXNative",
                       "DLSS 5: local structure strength, fine detail (0-2)");
 REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_tone, 1.0, "ReXNative",
@@ -174,6 +183,22 @@ std::vector<SweepStep> ParseSweep() {
 
 }  // namespace
 
+Dlss5Values CurrentDlss5Values() {
+  const double factor = std::clamp(REXCVAR_GET(rexnative_dlss5_intensity), 0.0, 2.0);
+  if (const Dlss5Look* l = FindDlss5Look(REXCVAR_GET(rexnative_dlss5_look)))
+    return {l->style, l->passes, float(std::min(2.0, l->intensity * factor)), l->structure,
+            l->tone, l->transfer, l->colour, l->stability, l->scale};
+  return {std::clamp(REXCVAR_GET(rexnative_dlss5_style), 0, 2),
+          std::clamp(REXCVAR_GET(rexnative_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)),
+          float(factor),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_structure), 0.0, 2.0)),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_tone), 0.0, 2.0)),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_transfer), 0.0, 2.0)),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_colour), 0.0, 1.0)),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_stability), 0.0, 0.95)),
+          float(std::clamp(REXCVAR_GET(rexnative_dlss5_scale), 0.5, 1.0))};
+}
+
 bool NeuralPass::Requested() { return REXCVAR_GET(rexnative_dlss5); }
 
 bool NeuralPass::CarsSimulated() {
@@ -217,14 +242,14 @@ bool NeuralPass::Skipped(uint64_t composite_ps) {
 }
 
 void NeuralPass::ReadSettings(Dlss::NeuralSettings& s, uint32_t& passes) {
-  s.intensity = float(std::clamp(REXCVAR_GET(rexnative_dlss5_intensity), 0.0, 2.0));
-  s.structure = float(std::clamp(REXCVAR_GET(rexnative_dlss5_structure), 0.0, 2.0));
-  s.tone = float(std::clamp(REXCVAR_GET(rexnative_dlss5_tone), 0.0, 2.0));
-  s.style = uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_style), 0, 2));
+  const Dlss5Values v = CurrentDlss5Values();  // the look's, or the separate settings
+  s.intensity = v.intensity;
+  s.structure = v.structure;
+  s.tone = v.tone;
+  s.style = uint32_t(v.style);
   s.preset = std::clamp(REXCVAR_GET(rexnative_dlss5_preset), 0, 7);
   s.automask = std::clamp(REXCVAR_GET(rexnative_dlss5_automask), 0, 2);
-  passes =
-      uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
+  passes = uint32_t(v.passes);
   static const std::vector<SweepStep> sweep = ParseSweep();
   if (sweep.empty()) return;
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count();
@@ -514,7 +539,7 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   width = color->scale.Extent(guest_width, 0);
   height = color->scale.Extent(guest_height, 1);
   // DLSS 5's working size (--rexnative_dlss5_scale); the comparison split needs the full one.
-  double work_scale = std::clamp(REXCVAR_GET(rexnative_dlss5_scale), 0.5, 1.0);
+  double work_scale = CurrentDlss5Values().scale;
   if (REXCVAR_GET(rexnative_dlss5_split) == 2) work_scale = 1.0;
   const uint32_t full_width = width, full_height = height;
   width = std::max(8u, uint32_t(std::lround(full_width * work_scale)));
@@ -585,13 +610,13 @@ bool NeuralPass::Run(CommandStream* list, uint64_t frame, RenderTargets& targets
   nf.motion_scale_x = float(in.width);
   nf.motion_scale_y = float(in.height);
   nf.reset = in.reset || last_run_frame_ + 1 != frame;
-  nf.settings.intensity = float(std::clamp(REXCVAR_GET(rexnative_dlss5_intensity), 0.0, 2.0));
-  nf.settings.structure = float(std::clamp(REXCVAR_GET(rexnative_dlss5_structure), 0.0, 2.0));
-  nf.settings.tone = float(std::clamp(REXCVAR_GET(rexnative_dlss5_tone), 0.0, 2.0));
-  nf.settings.style = uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_style), 0, 2));
+  const Dlss5Values v = CurrentDlss5Values();  // the look's, or the separate settings
+  nf.settings.intensity = v.intensity;
+  nf.settings.structure = v.structure;
+  nf.settings.tone = v.tone;
+  nf.settings.style = uint32_t(v.style);
   nf.settings.preset = std::clamp(REXCVAR_GET(rexnative_dlss5_preset), 0, 7);
-  uint32_t passes =
-      uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_passes), 1, int(Dlss::kMaxNeuralPasses)));
+  uint32_t passes = uint32_t(v.passes);
   static const std::vector<SweepStep> sweep = ParseSweep();
   if (!sweep.empty()) {
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - kStart).count();

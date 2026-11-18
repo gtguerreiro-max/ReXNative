@@ -37,6 +37,8 @@
 //   watch <address> [nan|any] [count]   a hardware breakpoint on one guest dword (native/watch.h):
 //                          logs the recompiled functions that write it (a NaN, or any value);
 //                          watch off clears it
+//   set <setting> <value>  a run-time setting, as on the command line (set rexnative_dlss5_look cel):
+//                          the live ones take effect at once, as from the settings HUD
 // --rexnative_d3d_tap, --rexnative_d3d_tap_check and --rexnative_d3d_skip set the state at the first device the
 // game creates; the one it creates at the title screen keeps what the commands changed since.
 //
@@ -1026,6 +1028,14 @@ void PollControl(Tap& t, uint8_t* base) {
         if (!(ss >> count)) count = 16;
         rexnative::watch::Set(uint32_t(std::strtoul(arg.c_str(), nullptr, 16)), mode, count);
       }
+    } else if (cmd == "set") {
+      std::string value;
+      std::getline(ss >> std::ws, value);
+      if (arg.empty() || value.empty()) {
+        REXNATIVE_LOG_FIRST(4, WARN, "ReXNative D3D control: '{}' ignored (set <setting> <value>)", l);
+        continue;
+      }
+      rex::cvar::SetFlagByName(arg, value);
     } else if (cmd == "renderer") {
       rexnative::NativeRenderer* r = rexnative::NativeRenderer::Get();
       if (!r || (arg != "native" && arg != "stock")) {

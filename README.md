@@ -45,7 +45,13 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 - **A settings HUD over the running game** (F1, or Back + Start on a pad), saved into the game's
   configuration file. Its Upscaler page switches the upscaler, its type (automatic, DLSS or FSR),
   the FSR version and the mode (native anti-aliasing to ultra performance) while the game runs,
-  and says what runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720").
+  and says what runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). Its DLSS 5 page picks a
+  look, one set of DLSS 5's settings per kind of game (Cinematic, Cinematic with two passes,
+  Natural, Stylized, Cel-shaded / 2D, Strong, or Custom), with its intensity on top; `project`
+  gives each game the look that suits it (`rexnative/dlss5.py`: cel-shaded, anime and 2D games
+  get Cel-shaded, cartoon and painterly 3D Stylized, racing two passes, realistic games
+  Cinematic), after the modding community's findings (the Cinematic style and two passes on old
+  console games; cel-shaded art only sharpened; a colour strength of 0 keeps the game's hues).
 - **Less shader compile stutter:** the pipelines a game created in earlier sessions are compiled
   again in the background at start-up.
 - **The stock renderer one key away:** F9 switches between ReXNative and ReXGlue's Xenos GPU

@@ -4,7 +4,7 @@
 #include "hud/hud.h"
 
 #include "game_layer.h"
-#include "native/d3d12_device.h"
+#include "native/dlss5_looks.h"
 #include "native/legacy_names.h"
 #include "native/overlay.h"
 #include "native/renderer.h"
@@ -212,6 +212,24 @@ std::vector<Option> MakeOptions() {
                "NVIDIA DLSS 5 on the scene, with the upscaler on: an RTX GPU, its driver and "
                "nvngx_dlssnr.dll (beside the executable or in the common folder).",
                NvidiaGpu});
+  // The looks (native/dlss5_looks.h): one set of DLSS 5's settings per kind of game, the game's
+  // own pick by default (python -m rexnative project); live.
+  std::vector<Choice> looks;
+  for (const rexnative::Dlss5Look& l : rexnative::kDlss5Looks) looks.push_back({l.label, l.id});
+  looks.push_back({"Custom", "custom"});
+  o.push_back({"DLSS 5", "dlss5_look", "DLSS 5 look", std::move(looks), false,
+               [] {
+                 const std::string v = Flag("rexnative_dlss5_look");
+                 return rexnative::FindDlss5Look(v) ? v : std::string("custom");
+               },
+               [](const std::string& v) {
+                 return Assignments{{"rexnative_dlss5_look", v, true}};
+               },
+               nullptr,
+               "Cinematic: realistic games. Cinematic, 2 passes: racing and realistic, heavier. "
+               "Natural: nearer the game's colours. Stylized: cartoon or painterly 3D, its hues "
+               "kept. Cel-shaded / 2D: gentle, flat colours kept. Strong: the most change.",
+               NvidiaGpu});
   o.push_back({"DLSS 5", "dlss5_intensity", "DLSS 5 intensity",
                {{"Low", "0.5"}, {"Medium", "0.75"}, {"Full", "1"}, {"Strong", "1.25"}}, false,
                [] {
@@ -221,7 +239,8 @@ std::vector<Option> MakeOptions() {
                [](const std::string& v) {
                  return Assignments{{"rexnative_dlss5_intensity", v}};
                },
-               nullptr, "How strongly DLSS 5 changes the picture.", NvidiaGpu});
+               nullptr, "How strongly DLSS 5 changes the picture, on top of the look's own.",
+               NvidiaGpu});
   o.push_back({"Developer", "occlusion", "Occlusion queries", on_off, true,
                [] { return Flag("rexnative_occlusion"); },
                [](const std::string& v) { return Bool("rexnative_occlusion", v); }, nullptr,

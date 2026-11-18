@@ -47,7 +47,14 @@ deixa um executável compilado que corre.
 - **Um HUD de definições por cima do jogo** (F1, ou Back + Start no comando), gravado no ficheiro
   de configuração do jogo. A página Upscaler muda o upscaler, o tipo (automático, DLSS ou FSR), a
   versão do FSR e o modo (anti-aliasing nativo a ultra performance) com o jogo a correr, e diz o
-  que está a correr ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720").
+  que está a correr ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). A página DLSS 5 escolhe um
+  aspeto, um conjunto das definições do DLSS 5 por tipo de jogo (Cinematic, Cinematic com duas
+  passagens, Natural, Stylized, Cel-shaded / 2D, Strong, ou Custom), com a intensidade por cima;
+  o `project` dá a cada jogo o aspeto que lhe convém (`rexnative/dlss5.py`: os jogos cel-shaded,
+  anime e 2D ficam com Cel-shaded, o 3D de desenho animado ou pintado com Stylized, os de corridas
+  com duas passagens, os realistas com Cinematic), segundo o que a comunidade de mods encontrou (o
+  estilo Cinematic e duas passagens em jogos antigos de consola; a arte cel-shaded só fica mais
+  nítida; uma força de cor 0 mantém as cores do jogo).
 - **Menos engasgos a compilar shaders:** os pipelines que o jogo criou em sessões anteriores são
   compilados outra vez em segundo plano no arranque.
 - **O renderer original a uma tecla:** F9 troca entre o ReXNative e a emulação da GPU Xenos do
