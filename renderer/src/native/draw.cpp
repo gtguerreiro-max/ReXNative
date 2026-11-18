@@ -4512,6 +4512,14 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
 void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   CommandStream* list = r.command_list();
   SyncListFrame();
+  // A skipped draw counts in the stats and, with the draw log on, says why there (before the
+  // index of the next draw it logs).
+  auto skip = [&](const char* why) {
+    ++stats.skipped;
+    if (draw_log)
+      std::fprintf(draw_log, "skip (before draw %u) %s fn=%08X prim=%u n=%u\n", frame_draws, why,
+                   uint32_t(s.fn), uint32_t(s.primitive), s.count);
+  };
   if (prep && prep->regs_hash[0]) {
     uint64_t now[5];
     HashRegisterBlocks(s.regs, now);
@@ -4540,7 +4548,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     }
     if (prep->audit_count) AuditDraw(list, *prep);
     if (prep->emulated) {
-      ++stats.skipped;
+      skip("emulated memory copy");
       return;
     }
     if (!prep->upload_ok) {
@@ -4561,7 +4569,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
 
   // Shaders.
   if (!s.vs.ucode || !s.vs.dwords) {
-    ++stats.skipped;
+    skip("no vertex shader");
     return;
   }
   DxbcShader* vs = prep ? prep->vs : LoadShader(vs_memo, vs_last, s.vs, xenos::ShaderType::kVertex);
@@ -4652,7 +4660,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                                        signed_is_unsigned_formats);
 
   if (!mods.draw) {
-    ++stats.skipped;
+    skip("the shader modifications draw nothing");
     return;
   }
   if (!mods.pixel_shader_used) ps = nullptr;
@@ -4751,7 +4759,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
   uint32_t count = s.count;
   if (!count) {
-    ++stats.skipped;
+    skip("no vertices");
     return;
   }
 
@@ -4799,7 +4807,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   // A memexport draw writes memory without any target too (its vertex shader alone when
   // rasterization is off): it runs with none bound.
   if (!rt_mask && !depth_used && !memexport) {
-    ++stats.skipped;  // nothing to write or test, so an occlusion query does not count it
+    skip("no target to write or test");  // so an occlusion query does not count it
     return;
   }
   Scissor scissor;

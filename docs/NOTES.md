@@ -177,6 +177,16 @@ HUD's shaders, and the world stayed black. The held draw now goes out at the ent
 call on the walked device, before the walk (no D3D call comes between BeginVertices and
 EndVertices).
 
+Fable II's buildings and characters were missing in Bowerstone: about 1100 DrawIndexedVertices
+a frame, of which the native path drew none. Its own code loads each mesh's shaders between the
+hooks, a predicated IM_LOAD pair per pass (bin masks 0x15555555 for the depth pass, 0x2AAAAAAA
+for the color pass), with SetVertexShader(NULL) and an older pixel shader object still bound,
+and dirties mask +16 bit 17 for the D3D's SQ_PROGRAM_CNTL fields. The tracker cleared the vertex
+shader for the null object (876 draws a frame "no vertex shader") and, taking bit 17 as a
+rebind, reloaded the old pixel shader object (every mesh white). A shader the stream loaded now
+stays until the D3D loads that shader again under its own bit (19 vertex, 20 pixel), as on the
+console. The draw log (`draw-debug.txt` 16) names the reason of each skipped draw.
+
 ## Motion vectors from a vertex ring
 
 The upscalers' motion vectors come from each scene draw's vertex shader run a second time with

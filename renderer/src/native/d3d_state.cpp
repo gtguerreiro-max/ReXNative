@@ -476,7 +476,17 @@ void GuestStateTracker::PutWindowScissor(const uint8_t* base, uint32_t device) {
 // constant flush, so they win over the shadow). That load, under the mask +16 bits 17..20, is
 // the only place the D3D changes which ucode the GPU runs and patches a variant for a
 // declaration, so the shader objects are read only then or when the object differs (after an
-// attach, which binds none, or a replayed command buffer, which loaded its own).
+// attach, which binds none). A shader a replayed stream loaded stays until the D3D loads that
+// shader again, under its own bit (19 vertex, 20 pixel): a RunCommandBuffer re-dirties the
+// groups it does not keep, so its next draw reloads, but the code between the hooks loads
+// shaders the D3D never hears of. Fable II writes its meshes' vertex and pixel shaders as
+// predicated IM_LOADs before each DrawIndexedVertices, with an older pixel shader object still
+// bound, and dirties bit 17 (its SQ_PROGRAM_CNTL fields) for the D3D's own load: taken as a
+// rebind, that object's shader drew every mesh white.
+namespace {
+bool Replayed(const ShaderRef& r) { return r.ucode && r.immediate_seq == kReplayedShaderSeq; }
+}  // namespace
+
 void GuestStateTracker::UpdateShaders(const uint8_t* base, uint32_t device, uint64_t rebind,
                                       bool stride_changed, bool vs_imm_new) {
   const uint32_t vs = Load32(base, device + dev::kVertexShader);
@@ -484,13 +494,19 @@ void GuestStateTracker::UpdateShaders(const uint8_t* base, uint32_t device, uint
   if (stride_changed && vs) rebind |= kVsRebind;  // BeginVertices sets it itself
   const bool shader_load = (rebind & kShaderLoadBits) != 0;
   if (!vs) {
-    vs_ = {};
+    // No object bound: the D3D loads no vertex shader and the GPU keeps the last one loaded. One
+    // the stream loaded (object 0 after the walk, EndCommandBuffer) stays: Fable II binds its
+    // meshes' vertex shaders with no object, an IM_LOAD its own code writes before each
+    // DrawIndexedVertices (876 draws a frame were skipped without a vertex shader). One that
+    // came from an object that is unbound now is dropped, as before.
+    if (vs_.object || !vs_.ucode) vs_ = {};
   } else if (vs_imm_new) {
     // ImmediateVs ran inside this draw: the GPU now holds the patched copy.
     vs_imm_.swap(vs_imm_pending_);
     vs_ = vs_imm_pending_ref_;
     vs_.immediate = vs_imm_.data();
-  } else if (vs_.immediate ? (rebind & kVsRebind) != 0 : shader_load || vs != vs_.object) {
+  } else if (vs_.immediate || Replayed(vs_) ? (rebind & kVsRebind) != 0
+                                            : shader_load || vs != vs_.object) {
     // IM_LOAD of the object's variant. After an immediate load the D3D reloads the VS only
     // under the VS rebind bit. Variant 1 is used without a pixel shader when the object has
     // one (flag 0x20).
@@ -503,8 +519,8 @@ void GuestStateTracker::UpdateShaders(const uint8_t* base, uint32_t device, uint
   if (vs && (rebind & (kVsRebind | kPsRebind)))
     LoadLiterals(base, vs + 872, Load32(base, vs + 32));
   if (!ps) {
-    ps_ = {};
-  } else if (shader_load || ps != ps_.object) {
+    if (ps_.object || !ps_.ucode) ps_ = {};  // as for the vertex shader above
+  } else if (Replayed(ps_) ? (rebind & kPsRebind) != 0 : shader_load || ps != ps_.object) {
     const uint32_t sub = ps + Load32(base, ps + 64);
     ps_ = {ps, GpuAddress(Load32(base, ps + 24) + Load32(base, sub + 40)),
            Load32(base, sub + 44) >> 2};
