@@ -206,6 +206,96 @@ def _function_table_base(work):
     return base + ((base_alloc + 0xFFFF) & ~0xFFFF)
 
 
+def _shares(work):
+    """Functions codegen must not localize the non-volatile registers of (shares.txt, written by
+    _add_shares): their entries get `share_registers = true`."""
+    p = os.path.join(work, 'shares.txt')
+    if not os.path.exists(p):
+        return set()
+    return {int(line.split('#')[0].split()[0], 16) for line in open(p, encoding='utf-8')
+            if line.split('#')[0].split()}
+
+
+_LOCAL_DECL = re.compile(r'^\s*PPC(?:V|FP)?Register\s+([rfv]\d+)\{\};')
+
+
+def live_in_nonvolatiles(gen):
+    """Generated functions that read a non-volatile register they never write, {address: names}.
+    ReXGlue (non_volatile_as_local) keeps r14-r31, f14-f31, v14-v31 and v64-v127 as locals of each
+    function, zero at its start, on the ABI's word that a function does not take them from its
+    caller; code that does (an internal helper the 360 compiler gave register arguments, a
+    function split from the one it belongs to) reads zero. Fable II's animation decoder
+    (sub_822340C8) reads the constants its caller sub_822E16A8 keeps in v77-v94: every rotation
+    key decoded as zero, the camera following the hero turned NaN and the world drew black. The
+    XDK's video decoder (XMV: WMV3, VC-1) passes v64, v65, v69 and v72 to its helpers the same
+    way: Jet Set Radio's, Syndicate's and Dark Souls II's videos decoded as green and magenta
+    bands. A function given `share_registers` keeps them in ctx, and its callers copy their
+    locals there around each call."""
+    found = {}
+    for path in glob.glob(os.path.join(gen, '*_recomp.*.cpp')):
+        name, body = None, []
+
+        def check():
+            if not name:
+                return
+            locs = [m.group(1) for line in body for m in [_LOCAL_DECL.match(line)] if m]
+            if not locs:
+                return
+            text = '\n'.join(line for line in body
+                             if not _LOCAL_DECL.match(line) and not line.lstrip().startswith('//'))
+            regs = []
+            for r in locs:
+                if not re.search(r'\b%s\b' % r, text):
+                    continue
+                written = (re.search(r'\(simde__m128i?\*\)%s\.\w+,' % r, text) or
+                           re.search(r'store_ps\(%s\.' % r, text) or
+                           re.search(r'(?<![\w.])%s(\.\w+(\[\d+\])?)?\s*=[^=]' % r, text))
+                if not written:
+                    regs.append(r)
+            if regs:
+                found[int(name, 16)] = regs
+
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = re.match(r'DEFINE_REX_FUNC\(sub_([0-9A-Fa-f]{8})\)', line)
+                if m:
+                    check()
+                    name, body = m.group(1), []
+                else:
+                    body.append(line.rstrip('\n'))
+        check()
+    return found
+
+
+def _add_shares(work, found, log, rnd):
+    """Adds the functions live_in_nonvolatiles found to shares.txt; True when any was new."""
+    have = _shares(work)
+    new = {a: r for a, r in found.items() if a not in have}
+    if not new:
+        return False
+    with open(os.path.join(work, 'shares.txt'), 'a', encoding='utf-8', newline='\n') as f:
+        for a in sorted(new):
+            regs = new[a]
+            f.write('0x%08X  # %s%s\n' % (a, ' '.join(regs[:8]), ' ...' if len(regs) > 8 else ''))
+    names = ' '.join('%08X' % a for a in sorted(new)[:12])
+    log('  codegen round %d: %d functions read non-volatile registers their caller set, given '
+        'share_registers: %s%s' % (rnd, len(new), names, ' ...' if len(new) > 12 else ''))
+    return True
+
+
+def _shares_scanned(work, gen, mark=False):
+    """Whether live_in_nonvolatiles already ran on this generated code (shares.scanned holds the
+    newest generated file's mtime); with mark, records that it did."""
+    files = glob.glob(os.path.join(gen, '*_recomp.*.cpp'))
+    newest = '%d' % max((os.path.getmtime(f) for f in files), default=0)
+    stamp = os.path.join(work, 'shares.scanned')
+    if mark:
+        with open(stamp, 'w', encoding='utf-8') as f:
+            f.write(newest)
+        return True
+    return os.path.exists(stamp) and open(stamp, encoding='utf-8').read().strip() == newest
+
+
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.11.0"',
@@ -227,10 +317,18 @@ def _write_manifest(work, name):
     # codegen refuses ("Overlapping boundaries"): the piece goes.
     spans = [(a, a + s) for a, s in hints.items() if s]
     hints = {a: s for a, s in hints.items() if not any(lo < a < hi for lo, hi in spans)}
-    if hints:
+    # Not a start found not to be one (not-starts.txt): the function it was split from gets the
+    # code back, and with it the registers.
+    shares = _shares(work) - not_starts(work)
+    if hints or shares:
         lines.append('[entrypoint.functions]')
-        for a, s in sorted(hints.items()):
-            lines.append('0x%08X = { size = 0x%X }' % (a, s) if s else '0x%08X = {}' % a)
+        for a in sorted(set(hints) | shares):
+            fields = []
+            if hints.get(a):
+                fields.append('size = 0x%X' % hints[a])
+            if a in shares:
+                fields.append('share_registers = true')
+            lines.append('0x%08X = { %s }' % (a, ', '.join(fields)) if fields else '0x%08X = {}' % a)
     path = os.path.join(work, '%s_manifest.toml' % name)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
@@ -345,12 +443,25 @@ def drop_outside_functions(work, text, log=print):
     data word read as `b 0x8434A9EC`, past the image's end): codegen writes a stub for each and
     lists it in the function table, and the runtime then refuses the whole table ("func_mappings
     entries were rejected": the game does not start). Their entries go from the table; the stubs
-    stay for the calls that name them (data, never run). Returns the addresses dropped."""
+    stay for the calls that name them (data, never run). Only the addresses the runtime refuses,
+    those outside the code range (REX_CODE_BASE to + REX_CODE_SIZE + REX_THUNK_RESERVE_SIZE, as
+    GuestAddressSpace::SetFunction checks): Fable II has 24 hinted functions codegen also calls
+    "in no code region" (found running the game, inside that range), which the runtime takes and
+    its indirect calls need. Returns the addresses dropped."""
     outside = {int(a, 16) for a in re.findall(
         r'function (0x[0-9A-Fa-f]+) not in any code region', text)}
+    gen = os.path.join(work, 'generated', 'default')
+    defs = {}
+    for path in glob.glob(os.path.join(gen, '*_pch.h')):
+        for m in re.finditer(r'#define (REX_CODE_BASE|REX_CODE_SIZE|REX_THUNK_RESERVE_SIZE) '
+                             r'(0x[0-9A-Fa-f]+)', open(path, encoding='utf-8', errors='replace').read()):
+            defs[m.group(1)] = int(m.group(2), 16)
+    if 'REX_CODE_BASE' in defs and 'REX_CODE_SIZE' in defs:
+        lo = defs['REX_CODE_BASE']
+        hi = lo + defs['REX_CODE_SIZE'] + defs.get('REX_THUNK_RESERVE_SIZE', 0)
+        outside = {a for a in outside if not lo <= a < hi}
     if not outside:
         return set()
-    gen = os.path.join(work, 'generated', 'default')
     pats = [re.compile(r'^\s*\{\s*0x([0-9A-Fa-f]{8}),\s*sub_[0-9A-Fa-f]{8}\s*\},\s*$'),
             re.compile(r'^\s*registrar->SetFunction\(0x([0-9A-Fa-f]{8}),')]
     for path in glob.glob(os.path.join(gen, '*_init.cpp')) + glob.glob(os.path.join(gen, '*_register.cpp')):
@@ -372,7 +483,11 @@ def codegen(work, name, rexglue, max_rounds, log):
     # Reused only when made under this name (prepare's older runs used names with '_').
     if (os.path.exists(done) and os.path.isdir(gen) and
             os.path.exists(os.path.join(gen, '%s_init.h' % name))):
-        return {'reused': True, 'rounds': 0}
+        if not (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
+                _add_shares(work, live_in_nonvolatiles(gen), log, 0)):
+            _shares_scanned(work, gen, True)
+            return {'reused': True, 'rounds': 0}
+        os.remove(done)
     for old in os.listdir(work):
         if old.endswith('_manifest.toml') and old != '%s_manifest.toml' % name:
             os.remove(os.path.join(work, old))
@@ -436,7 +551,11 @@ def codegen(work, name, rexglue, max_rounds, log):
                 log('  codegen round %d: %d hints at an epilogue or inside a function removed: %s' % (
                     rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
+            if OPTIONS['non_volatile_as_local'] and _add_shares(
+                    work, live_in_nonvolatiles(gen), log, rnd):
+                continue
             drop_outside_functions(work, text, log)
+            _shares_scanned(work, gen, True)
             open(done, 'w').write('round %d\n' % rnd)
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}

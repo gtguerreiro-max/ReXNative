@@ -526,6 +526,8 @@ def build_fixing(work, rexglue, build_args, jobs=0, rounds=10, log=print):
     become hints, codegen runs and the build again (up to `rounds` times)."""
     from . import prepare
     name = manifest_name(work)
+    # Generated code from before the share_registers check (prepare.live_in_nonvolatiles) gets it.
+    prepare.codegen(work, name, rexglue, 40, log)
     for _ in range(rounds):
         try:
             return build(work, *build_args, jobs=jobs, log=log)

@@ -183,8 +183,8 @@ offsets do device que as feitas à mão, e encontrou erros nelas
 
 Um jogo recompilado precisa ainda de coisas que o codegen do ReXGlue não encontra sozinho, e que
 o `prepare` e o `project` lhe dão como hints: inícios de funções só alcançados por ponteiros,
-jump tables lidas curtas, os endereços do setjmp e do longjmp, fibers da XAPI, imports em falta
-([docs/NOTES.md](docs/NOTES.md)).
+jump tables lidas curtas, os endereços do setjmp e do longjmp, fibers da XAPI, imports em falta,
+e as funções que recebem registos não-voláteis de quem as chama ([docs/NOTES.md](docs/NOTES.md)).
 
 ## Num projeto ReXGlue
 

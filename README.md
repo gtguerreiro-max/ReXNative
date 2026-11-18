@@ -176,7 +176,8 @@ same hooks and device offsets as the hand-made ones, and found mistakes in them
 
 A recompiled game also needs things ReXGlue's codegen does not find alone, which `prepare` and
 `project` supply as codegen hints: function starts reached only through pointers, jump tables
-read short, the addresses of setjmp and longjmp, XAPI fibers, missing imports
+read short, the addresses of setjmp and longjmp, XAPI fibers, missing imports, and the
+functions that take non-volatile registers from their caller
 ([docs/NOTES.md](docs/NOTES.md)).
 
 ## Adding it to a ReXGlue project

@@ -41,6 +41,25 @@ The tool finds the XDK CRT's setjmp and longjmp by how they save and load f14-f3
 (`setjmp.toml`), so those calls become the host's setjmp and longjmp. Codegen takes several
 addresses with an SDK patch (Super Meat Boy calls setjmp through two thunks).
 
+## Registers a function takes from its caller
+
+The projects use ReXGlue's `non_volatile_as_local`: r14-r31, f14-f31, v14-v31 and v64-v127 are
+locals of each generated function, zero at its start, since the ABI says a function does not take
+them from its caller. Some code does: an internal helper the 360 compiler gave register arguments
+(constants in v64-v127, kept by the caller across a loop of calls), or a function codegen split
+from the one it belongs to. That function reads zero. Fable II's animation decoder read its
+caller's v77-v94 as zero, decoded every rotation key as zero, and the NaN quaternion that made
+went to the camera: the world drew black. The XDK's video decoder (XMV: WMV3, VC-1) passes v64,
+v65, v69 and v72 to its helpers the same way: Jet Set Radio's, Syndicate's and Dark Souls II's
+videos came out as green and magenta bands, while every instruction passed its tests.
+
+After each codegen, `prepare.live_in_nonvolatiles` reads the generated code for functions that
+read such a local and never write it; they go to `shares.txt` and get `share_registers = true`
+in the manifest (ReXGlue then keeps their registers in ctx, and their callers copy their locals
+there around each direct call), and codegen runs again. `project --build` does the same for a
+game prepared before (once per generated code, `shares.scanned`). A helper reached only through a
+pointer is not covered: an indirect call copies nothing.
+
 ## Fibers
 
 Double Dragon Neon and Dungeons & Dragons: Chronicles of Mystara use XAPI fibers. Their five fiber
