@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -131,6 +132,19 @@ bool RequiresRestart(std::string_view name) {
 
 namespace rex::cvar {
 
+namespace {
+// Whether a change applies at once. ReXGlue v0.11.0 says so with `life` (SettingLife::kLive);
+// later ReXGlue renamed it `mode` (SettingMode::kNormal). Either SDK builds this.
+template <typename Constraints>
+bool AppliesAtOnce(const Constraints& c) {
+  if constexpr (requires { c.mode; }) {
+    return c.mode == std::remove_cvref_t<decltype(c.mode)>::kNormal;
+  } else {
+    return c.life == std::remove_cvref_t<decltype(c.life)>::kLive;
+  }
+}
+}  // namespace
+
 std::string GetFlagByName(std::string_view name) {
   auto found = rex::GetSettingsRegistry().Find(rexnative::settings::FullName(name));
   return found ? (*found)->GetText() : std::string();
@@ -172,9 +186,8 @@ const FlagEntry* GetFlagInfo(std::string_view name) {
       e.type = FlagType::String;
       break;
   }
-  const bool restart =
-      std::ranges::find(s.restart, e.name) != s.restart.end() ||
-      setting.GetConstraints().life != rex::SettingLife::kLive;
+  const bool restart = std::ranges::find(s.restart, e.name) != s.restart.end() ||
+                       !AppliesAtOnce(setting.GetConstraints());
   e.lifecycle = restart ? Lifecycle::kRequiresRestart : Lifecycle::kHotReload;
   return &e;
 }
