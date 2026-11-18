@@ -159,6 +159,13 @@ and copies the game's files out, without the console's `$SystemUpdate`.
 - **Resolves into k_1_5_5_5.** Fable II resolves three 256x256 mip chains a frame into 1:5:5:5
   textures, which the resolve refused. They are written like k_5_6_5's without a typed store:
   R16_UINT texel bits in the cache's B5G5R5A1 layout, then copied into the image.
+- **Clears of the -32..32 formats.** Sega Rally Revo's title showed its logo as a diagonal
+  trail of pale copies, where the console shows it chrome with a moving reflection. In a
+  RenderDoc capture the logo was right until the motion blur, which reads a k_16_16 velocity
+  target the game clears to "no motion" at the start of each frame. k_16_16 and
+  k_16_16_16_16 hold -32..32 over the host's snorm -1..1 (the pixel shader writes them through a
+  color_exp_bias 5 lower), but their clears stored the colour unscaled: 32 times as far. The
+  clears now store c / 32 as well.
 
 ## Recorded command buffers
 

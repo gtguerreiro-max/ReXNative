@@ -25,7 +25,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Fable II | title, menus, the intro and Bowerstone with its buildings and people, on the native renderer (its default since 2026-11-18) | 30 FPS (title screen; gameplay not tried yet) |
 | Overlord | plays its first level | 30 FPS (first level) |
 | Overlord II | plays its first level (a tiled G-buffer) | 30 FPS (first level) |
-| Sega Rally Revo | runs, drawn from its replayed command buffers | 30 FPS |
+| Sega Rally Revo | runs, drawn from its replayed command buffers: the title (its chrome logo since 2026-11-18) and the attract races | 30 FPS |
 | Diablo III | its intro cinematics | 60 FPS (intro) |
 | Syndicate | its intro video plays | not tried |
 | Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game asks for disc 1 | not tried |

@@ -609,11 +609,17 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
     ClearValue v;
     v.flags = 1;
     std::memcpy(v.color, p.color, sizeof(v.color));
+    // k_16_16 and k_16_16_16_16 hold -32..32 over the host's snorm -1..1: the pixel shader
+    // writes them through a color_exp_bias 5 lower (draw.cpp), and a clear stores c / 32 as
+    // well. Unscaled, Sega Rally Revo's velocity target, cleared to "no motion" each frame, came
+    // back 32 times as far and its motion blur drew the title's logo as a trail of copies.
+    if (rt->guest_format == 4 || rt->guest_format == 5)
+      for (float& c : v.color) c *= 1.0f / 32.0f;
     Defer(list, rt, v, p.rects);
     if (edram.empty()) {
-      RecordFill(*rt, {0, 0, LONG(rt->pitch), LONG(edram_rows(*rt))}, p.color);
+      RecordFill(*rt, {0, 0, LONG(rt->pitch), LONG(edram_rows(*rt))}, v.color);
     } else {
-      for (const D3D12_RECT& r : edram) RecordFill(*rt, r, p.color);
+      for (const D3D12_RECT& r : edram) RecordFill(*rt, r, v.color);
     }
     // Tiling begins at BeginTiling's clear and ends at a whole-surface clear made outside it (or
     // a resolve taller than the tiles: Resolver::Resolve); the clears inside it (the game's
