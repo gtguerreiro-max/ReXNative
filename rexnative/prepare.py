@@ -340,6 +340,32 @@ def _generated_starts(gen):
     return starts
 
 
+def drop_outside_functions(work, text, log=print):
+    """Functions codegen says are in no code region (Deus Ex: Human Revolution's sub_82C63678, a
+    data word read as `b 0x8434A9EC`, past the image's end): codegen writes a stub for each and
+    lists it in the function table, and the runtime then refuses the whole table ("func_mappings
+    entries were rejected": the game does not start). Their entries go from the table; the stubs
+    stay for the calls that name them (data, never run). Returns the addresses dropped."""
+    outside = {int(a, 16) for a in re.findall(
+        r'function (0x[0-9A-Fa-f]+) not in any code region', text)}
+    if not outside:
+        return set()
+    gen = os.path.join(work, 'generated', 'default')
+    pats = [re.compile(r'^\s*\{\s*0x([0-9A-Fa-f]{8}),\s*sub_[0-9A-Fa-f]{8}\s*\},\s*$'),
+            re.compile(r'^\s*registrar->SetFunction\(0x([0-9A-Fa-f]{8}),')]
+    for path in glob.glob(os.path.join(gen, '*_init.cpp')) + glob.glob(os.path.join(gen, '*_register.cpp')):
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.read().split('\n')
+        kept = [l for l in lines
+                if not any((m := pt.match(l)) and int(m.group(1), 16) in outside for pt in pats)]
+        if len(kept) != len(lines):
+            with open(path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('\n'.join(kept))
+    log('  codegen: %d functions in no code region left out of the function table: %s' % (
+        len(outside), ' '.join('%08X' % a for a in sorted(outside))))
+    return outside
+
+
 def codegen(work, name, rexglue, max_rounds, log):
     gen = os.path.join(work, 'generated', 'default')
     done = os.path.join(work, 'codegen.ok')
@@ -410,6 +436,7 @@ def codegen(work, name, rexglue, max_rounds, log):
                 log('  codegen round %d: %d hints at an epilogue or inside a function removed: %s' % (
                     rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
+            drop_outside_functions(work, text, log)
             open(done, 'w').write('round %d\n' % rnd)
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}

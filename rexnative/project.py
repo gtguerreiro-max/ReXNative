@@ -226,6 +226,11 @@ fullscreen = false
 [kernel]
 license_mask = 1
 
+# No cap on the memory the title commits: the runtime's 480 MB stopped Syndicate's and Diablo
+# III's threads at start (Thread creation failed: C0000017) and the game went no further.
+[runtime]
+title_memory_mb = 0
+
 # ReXNative draws and presents the game; ReXGlue's Xenos GPU driver runs the GPU's fences and
 # interrupts (enabled = false: the stock renderer, to compare).
 [rexnative]
