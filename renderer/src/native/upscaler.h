@@ -29,9 +29,11 @@
 #include "dynamic_resolution.h"
 #include "fidelityfx.h"
 #include "gpu_timer.h"
+#include "log.h"
 #include "render_targets.h"
 #include "scene.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -100,6 +102,10 @@ class Upscaler {
   // pass, cleared, then draws its 2000 draw main scene in the same surface). The upscaler takes
   // the frame's last pass that wrote depth (the scene's geometry, where the post-processing and
   // the HUD write none), its number from the last frame; the first pass when none wrote depth.
+  // A pass with less than a quarter of the depth draws of the frame's largest one before it is
+  // not the scene: Minecraft resolves its world, clears the depth and draws its HUD, whose
+  // hotbar items are 3D blocks writing depth, and upscaling that pass took the HUD's text into
+  // the upscaler's history (it trailed behind the camera's turns).
   // NoteSceneDraw for each draw or clear into the scene's surface, SceneResolveDue for each
   // full-width colour resolve of it (true: upscale here), the ones after the upscaled resolve
   // too: a pass of the scene drawn there at the output's size moves the next frame's upscaling to
@@ -108,14 +114,25 @@ class Upscaler {
   // upscales an earlier one, and the next frame expects the new count.
   void NoteSceneDraw(bool writes_depth) {
     pass_drawn_ = true;
-    pass_depth_ |= writes_depth;
+    pass_depth_draws_ += writes_depth;
   }
   bool SceneResolveDue() {
     if (pass_drawn_ || !scene_passes_) {
       ++scene_passes_;
-      resolved_depth_ = pass_depth_;
-      if (pass_depth_) depth_pass_ = scene_passes_;
-      pass_drawn_ = pass_depth_ = false;
+      resolved_depth_ = pass_depth_draws_ != 0;
+      if (pass_depth_draws_) {
+        most_depth_draws_ = std::max(most_depth_draws_, pass_depth_draws_);
+        if (pass_depth_draws_ * 4 >= most_depth_draws_) {
+          depth_pass_ = scene_passes_;
+        } else {
+          REXNATIVE_LOG_FIRST(1, INFO,
+                              "ReXNative upscaler: pass {} of the scene left out, {} draws "
+                              "writing depth where an earlier pass has {} (a HUD's 3D icons)",
+                              scene_passes_, pass_depth_draws_, most_depth_draws_);
+        }
+      }
+      pass_drawn_ = false;
+      pass_depth_draws_ = 0;
     }
     return scene_passes_ >= expected_pass_ && (resolved_depth_ || !expect_depth_);
   }
@@ -290,8 +307,10 @@ class Upscaler {
   uint64_t frame_ = 0;
   // SceneResolveDue's: this frame's passes and its last that wrote depth, the last frame's one.
   uint32_t scene_passes_ = 0, depth_pass_ = 0, expected_pass_ = 1;
+  uint32_t most_depth_draws_ = 0;  // the frame's largest count of a pass's draws writing depth
   bool expect_depth_ = false, resolved_depth_ = false;
-  bool pass_drawn_ = false, pass_depth_ = false;  // since the last scene resolve
+  bool pass_drawn_ = false;        // since the last scene resolve
+  uint32_t pass_depth_draws_ = 0;  // the same, its draws writing depth
   uint64_t match_frame_ = UINT64_MAX;  // NoteMotionMatch's frame and counts
   uint32_t matches_compared_ = 0, matches_refused_ = 0, motion_cuts_ = 0;
   uint64_t upscaled_frame_ = UINT64_MAX;
