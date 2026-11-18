@@ -320,15 +320,19 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
             shutil.rmtree(bdir)
     # REXNATIVE_DIR on the command line: the CMakeLists' cached value never replaces the one an
     # earlier configure stored, so a build run from another checkout compiled the first one's
-    # renderer without a word.
+    # renderer without a word. rexglue_DIR likewise: find_package keeps the SDK it found first,
+    # whatever CMAKE_PREFIX_PATH says later, so a game moved to another SDK (a newer ReXGlue)
+    # kept the old one's headers.
     configure = ('cmake -S "{w}" -B "{b}" -G Ninja -DCMAKE_BUILD_TYPE=Release '
                  '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
                  '"-DCMAKE_PREFIX_PATH={sdk}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF '
+                 '"-Drexglue_DIR={pkg}" '
                  '"-DREXNATIVE_DIR={rx}" '
                  '"-DREXNATIVE_REXGLUE_SDK_SRC={src}" "-DREXNATIVE_FIDELITYFX_SDK={ffx}" '
                  '"-DREXNATIVE_DLSS_SDK={dlss}" "-DREXNATIVE_DLSS_NR={nr}" '
                  '"-DREXNATIVE_COMMON_DIR={common}"').format(
         w=work, b=bdir, sdk=sdk_install, rx=HERE.replace('\\', '/'), src=sdk_src, ffx=fidelityfx,
+        pkg=os.path.join(sdk_install, 'lib', 'cmake', 'rexglue').replace('\\', '/'),
         dlss=dlss_sdk, nr=dlss_nr, common=common_dir(work).replace(os.sep, '/'))
     steps = [('configure', configure), ('build', 'cmake --build "%s" -j %d' % (bdir, jobs))]
     os.makedirs(bdir, exist_ok=True)
