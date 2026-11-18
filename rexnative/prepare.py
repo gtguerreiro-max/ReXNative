@@ -217,6 +217,28 @@ def _shares(work):
 
 
 _LOCAL_DECL = re.compile(r'^\s*PPC(?:V|FP)?Register\s+([rfv]\d+)\{\};')
+# Instructions whose result does not depend on the register they name as both sources: x - x,
+# x ^ x and the like. `subfe r29,r19,r19` is ~r19 + r19 + CA, the carry alone (Minecraft's
+# compressed block storage, sub_82563428), and reads nothing from a caller.
+_SELF_IDIOM = re.compile(r'^(subf|subfc|subfe|xor|andc|eqv|orc|vxor|vxor128|vandc|vandc128|'
+                         r'vsubu[bhw]m)\.?$')
+
+
+def _idioms_only(asm, reg):
+    """Whether the PPC instructions in `asm` that name `reg` all name it as both sources of a
+    _SELF_IDIOM (True only when there is at least one)."""
+    seen = False
+    for ins in asm:
+        parts = ins.split(None, 1)
+        if len(parts) < 2:
+            continue
+        ops = [o.strip() for o in parts[1].split(',')]
+        if not any(o == reg or o.endswith('(%s)' % reg) for o in ops):
+            continue
+        if not (_SELF_IDIOM.match(parts[0]) and len(ops) == 3 and ops[1] == ops[2] == reg):
+            return False
+        seen = True
+    return seen
 
 
 def live_in_nonvolatiles(gen):
@@ -243,6 +265,7 @@ def live_in_nonvolatiles(gen):
                 return
             text = '\n'.join(line for line in body
                              if not _LOCAL_DECL.match(line) and not line.lstrip().startswith('//'))
+            asm = [line.strip()[2:].strip() for line in body if line.lstrip().startswith('//')]
             regs = []
             for r in locs:
                 if not re.search(r'\b%s\b' % r, text):
@@ -250,7 +273,7 @@ def live_in_nonvolatiles(gen):
                 written = (re.search(r'\(simde__m128i?\*\)%s\.\w+,' % r, text) or
                            re.search(r'store_ps\(%s\.' % r, text) or
                            re.search(r'(?<![\w.])%s(\.\w+(\[\d+\])?)?\s*=[^=]' % r, text))
-                if not written:
+                if not written and not _idioms_only(asm, r):
                     regs.append(r)
             if regs:
                 found[int(name, 16)] = regs

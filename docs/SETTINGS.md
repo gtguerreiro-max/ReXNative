@@ -36,6 +36,8 @@ configuration file (`run/<game>.toml`) or on the command line.
 - `--rexnative=false` starts the game on ReXGlue's renderer.
 - `rexnative.menu_fps` limits the frame rate: 60 by default, so menus made for a console's 60 Hz
   keep their speed on a faster display; 30 for a game the console ran at 30; 0 for no limit.
+- `rexnative.upscaler_depth_test`: the upscaler takes the frame's last pass of the scene whose
+  draws test depth, not only write it (Diablo III, whose menus draw the hero in a pass of its own).
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 

@@ -58,6 +58,11 @@ REXCVAR_DEFINE_INT32(rexnative_upscaler_target_fps, 0, "ReXNative",
 REXCVAR_DEFINE_INT32(rexnative_upscaler_min_height, 360, "ReXNative",
                      "With --rexnative_upscaler_target_fps: the least height the scene renders "
                      "at (from a quarter of the render height up to it)");
+REXCVAR_DEFINE_BOOL(rexnative_upscaler_depth_test, false, "ReXNative",
+                    "The upscaler takes the frame's last pass of the scene whose draws test depth, "
+                    "where by default it takes the last one whose draws write it: for a game that "
+                    "draws a model into the scene's surface, resolves it and puts it in the scene "
+                    "with a pass that only tests depth (Diablo III's hero creation and selection)");
 
 REXCVAR_DEFINE_STRING(rexnative_dlss_mode, "dlaa", "ReXNative",
                       "With --rexnative_upscaler: dlaa (the game's resolution, anti-aliased by DLSS), "

@@ -149,6 +149,7 @@ REXCVAR_DEFINE_BOOL(rexnative_memexport_readback_async, false, "ReXNative",
                     "Steam Deck 7 to 17 ms a frame in Iron Brigade, whose engine copies memory "
                     "with the GPU to new places every frame, so it would wait anyway)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
+REXCVAR_DECLARE(bool, rexnative_upscaler_depth_test);
 
 // The plugin's float24 depth conversion pixel shaders (rexnative.depth_float24), compiled bytecode.
 using BYTE = unsigned char;
@@ -4629,8 +4630,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   // A draw into the scene's surface after its upscaled resolve: the post-processing or the HUD,
   // at the output's size, neither jittered nor in the motion (Upscaler::EnterPostScene).
   if (Upscaler* up = r.upscaler(); up && Upscaler::IsScene(sdr.rb_surface_info)) {
-    // The scene's pass goes on, its geometry where it writes depth (Upscaler::SceneResolveDue).
-    up->NoteSceneDraw(depth_control.z_enable && depth_control.z_write_enable);
+    // The scene's pass goes on, its geometry where it writes depth (Upscaler::SceneResolveDue),
+    // or with --rexnative_upscaler_depth_test where it tests it: Diablo III draws its hero into
+    // the scene's surface, resolves it, and draws it into its menu with a pass that tests depth
+    // only. Upscaling the hero's pass left it invisible (FSR) or black (DLSS).
+    up->NoteSceneDraw(depth_control.z_enable &&
+                      (depth_control.z_write_enable || REXCVAR_GET(rexnative_upscaler_depth_test)));
     if (up->upscaled_this_frame() && !up->post_scene())
       up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
   }

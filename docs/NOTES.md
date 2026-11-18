@@ -60,6 +60,28 @@ there around each direct call), and codegen runs again. `project --build` does t
 game prepared before (once per generated code, `shares.scanned`). A helper reached only through a
 pointer is not covered: an indirect call copies nothing.
 
+Two things went wrong with it in Minecraft, whose new worlds crashed after the batch rebuild of
+2026-11-18 (a read of guest 0x438 on the "(4J) Post processing" thread):
+
+- **A false live-in.** `subfe r29,r19,r19` names r19, but its result is ~r19 + r19 + CA, the
+  carry alone. The scan now skips registers named only as both sources of such an idiom (`subf`,
+  `subfc`, `subfe`, `xor`, `andc`, `eqv`, `orc`, `vxor`, `vandc`, `vsubu*m`).
+- **A shared function's registers lost through a call.** A shared function keeps r14-r31 in ctx.
+  When it called the allocator's free (a function with locals) and free called a shared
+  function, free copied its locals into ctx for that call and never put ctx's own values back:
+  a function with locals skips the save and restore helpers. The shared caller came back with
+  free's r25-r31. SDK patch 0034: the copy into ctx keeps ctx's values and the copy back
+  restores them. Generated code from before it keeps the fault until codegen runs again.
+
+## The upscaled pass of a scene drawn in passes
+
+The upscaler takes the frame's last pass of the scene's surface whose draws write depth
+(`Upscaler::SceneResolveDue`). Diablo III's menus draw the hero into the scene's surface with
+depth, resolve it, and draw the menu (backdrop, the hero from that resolve, particles) in a second
+pass that tests depth and writes none: the hero's pass was upscaled, and the hero came out
+invisible with FSR and black with DLSS. `rexnative.upscaler_depth_test = true` (Diablo III's
+settings) counts the draws that test depth too, so the second pass is the one upscaled.
+
 ## Fibers
 
 Double Dragon Neon and Dungeons & Dragons: Chronicles of Mystara use XAPI fibers. Their five fiber
