@@ -326,9 +326,32 @@ std::optional<Entry> Parse(std::string_view line) {
 
 using Lines = std::vector<std::pair<std::string, std::string>>;
 
-// `set` written into the configuration file in place: the line of a cvar takes its value,
-// keeping its comment; a cvar the file has no line for gets one under the menu's comment unless
-// the value is its default.
+// Where a setting goes in the configuration file, as ReXGlue v0.11 writes it: its full name's
+// table and key ("rexnative_occlusion" -> [rexnative] occlusion, "log_level" -> [log] level).
+struct Place {
+  std::string table, key;
+};
+Place PlaceOf(std::string_view cvar) {
+  const std::string full = rexnative::settings::FullName(cvar);
+  const size_t dot = full.rfind('.');
+  if (dot == std::string::npos) return {"", full};
+  return {full.substr(0, dot), full.substr(dot + 1)};
+}
+
+// The table a `[name]` header line opens, or nullopt for any other line.
+std::optional<std::string> TableOf(std::string_view line) {
+  line = Trim(line);
+  if (!line.starts_with('[') || line.starts_with("[[") || !line.ends_with(']')) return {};
+  return std::string(Trim(line.substr(1, line.size() - 2)));
+}
+
+// `set` written into the configuration file in place. Every line that sets a cvar takes its
+// value, keeping its comment: its key in its table (how ReXGlue writes the file: the Deck's
+// files have [rexnative] frame_latency and [log] level), and its old flat names before the
+// first table (the command line's, which older menus wrote). Without one, a cvar whose value is
+// not its default gets a line at the end of its table, or a new table under the menu's comment.
+// Before, only the flat names were looked for: a value the file sets in a table won at the next
+// start over the flat line the menu added (or that the menu left out, a default).
 bool Write(const Lines& set) {
   std::lock_guard lock(g_mutex);
   if (g_file.empty()) return false;
@@ -344,43 +367,51 @@ bool Write(const Lines& set) {
       lines.push_back(std::move(line));
     }
   }
-  std::map<std::string, size_t, std::less<>> at;
-  size_t end = lines.size();
-  for (size_t i = 0; i < lines.size(); ++i) {
-    if (Trim(lines[i]).starts_with('[')) end = std::min(end, i);
-    if (const std::optional<Entry> e = Parse(lines[i]); e && i < end) at.emplace(e->name, i);
-  }
   constexpr std::string_view kAdded = "# Set in the settings menu (F1, ReXNative).";
-  bool header = std::ranges::contains(lines, kAdded);
   for (const auto& [cvar, value] : set) {
-    const std::string line = cvar + " = " + value;
-    auto it = at.find(cvar);
-    if (it == at.end()) {
-      // A line with the option's old name (legacy_names.cpp) takes the new name: left as it was,
-      // it would still be applied at the next start (as the command line is) over the new line.
-      if (const char* old = rexnative::OldNameOf(cvar)) {
-        if (const auto o = at.find(std::string_view(old)); o != at.end()) {
-          const size_t line = o->second;
-          at.erase(o);
-          it = at.emplace(cvar, line).first;
-        }
+    const Place place = PlaceOf(cvar);
+    const std::string full = place.table.empty() ? place.key : place.table + "." + place.key;
+    const char* old = rexnative::OldNameOf(cvar);
+    // The lines that set it, and the last line of its table.
+    std::vector<size_t> found;
+    std::optional<size_t> table_end;
+    std::string table;
+    for (size_t i = 0; i < lines.size(); ++i) {
+      if (std::optional<std::string> t = TableOf(lines[i])) {
+        table = std::move(*t);
+        if (table == place.table) table_end = i;
+        continue;
       }
+      const std::optional<Entry> e = Parse(lines[i]);
+      if (!e) continue;
+      if (table == place.table && !place.table.empty()) table_end = i;
+      const bool flat = table.empty() &&
+                        (e->name == cvar || e->name == full || (old && e->name == old));
+      if (flat || (table == place.table && e->name == place.key)) found.push_back(i);
     }
-    if (it != at.end()) {
-      std::string& old = lines[it->second];
-      old = line + std::string(Comment(old, old.find('=') + 1));
-      continue;
+    for (const size_t i : found) {
+      std::string& line = lines[i];
+      const size_t eq = line.find('=');
+      line = std::string(Trim(std::string_view(line).substr(0, eq))) + " = " + value +
+             std::string(Comment(line, eq + 1));
     }
+    if (!found.empty()) continue;
     const rex::cvar::FlagEntry* flag = rex::cvar::GetFlagInfo(cvar);
     if (flag && ('"' + flag->default_value + '"' == value || flag->default_value == value))
       continue;
-    if (!header) {
-      header = true;
-      lines.insert(lines.begin() + std::ptrdiff_t(end), {"", std::string(kAdded)});
-      end += 2;
+    if (place.table.empty()) {
+      // Before the first table.
+      size_t at = 0;
+      while (at < lines.size() && !TableOf(lines[at])) ++at;
+      lines.insert(lines.begin() + std::ptrdiff_t(at), place.key + " = " + value);
+    } else if (table_end) {
+      lines.insert(lines.begin() + std::ptrdiff_t(*table_end + 1), place.key + " = " + value);
+    } else {
+      if (!lines.empty() && !Trim(lines.back()).empty()) lines.emplace_back();
+      lines.emplace_back(kAdded);
+      lines.push_back("[" + place.table + "]");
+      lines.push_back(place.key + " = " + value);
     }
-    lines.insert(lines.begin() + std::ptrdiff_t(end), line);
-    at.emplace(cvar, end++);
   }
   std::string toml;
   for (const std::string& line : lines) toml += line + (crlf ? "\r\n" : "\n");
@@ -891,8 +922,11 @@ void SetConfigPath(const std::filesystem::path& config) {
 
 void Initialize() {
   if (g_file.empty()) {
-    // The app's configuration file (app.config_file), unless the game's app set another.
-    const std::string config = rex::cvar::GetFlagByName("app.config_file");
+    // The app's configuration file (app.config_file), unless the game's app set another. Its
+    // value resolved: the text is "{app.root}/{app.name}.toml" on ReXGlue v0.11, which no file
+    // is (every setting the menu changed, log level and occlusion queries among them, was lost:
+    // "cannot write {app.root}/{app.name}.toml.new").
+    const std::filesystem::path config = rexnative::settings::Path("app.config_file");
     if (!config.empty()) SetConfigPath(config);
   }
   g_ready = true;

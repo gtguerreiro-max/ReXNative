@@ -51,10 +51,11 @@ DECK_SETTINGS = [
     ('rexnative', 'anisotropy', '8'),
     ('rexnative', 'upscaler', 'true'),
     ('rexnative', 'upscaler_mode', '"native"'),
-    # One frame begun ahead of the display: Midnight Club with FSR 4 at 30 FPS showed a frame 33 ms
-    # after it began (the game reading its pad), against 51 ms at 2 and 54 ms at 3, still at 30 FPS
-    # (2026-11-18). The settings HUD's Frame latency changes it, live.
-    ('rexnative', 'frame_latency', '1'),
+    # Two frames begun ahead of the display. At 1 the CPU's frame and the GPU's no longer overlap:
+    # Midnight Club with FSR 4 showed a frame 33 ms after it began (51 ms at 2, 54 ms at 3) where
+    # it held 30 FPS, but its races fell to 22-29 FPS (frames of 40-46 ms, 2026-11-18). The
+    # settings HUD's Frame latency changes it, live.
+    ('rexnative', 'frame_latency', '2'),
 ]
 
 

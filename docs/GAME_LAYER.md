@@ -62,7 +62,10 @@ The renderer hooks the game's `XInputGetState` from the layer (`REXNATIVE_XINPUT
 passes each pad read through `FilterPad` for the Back + Start chord; a port that hooks the
 function itself defines `REXNATIVE_GAME_HOOKS_XINPUT` and calls `FilterPad` (From Dust's
 `frame_rate.cpp`). F1 always works. Settings are saved into the configuration file, keeping its
-other lines and comments.
+other lines and comments: a setting's line in its table (`[rexnative] frame_latency`,
+`[log] level`, as ReXGlue writes the file) and any old flat name before the first table take the
+value, else a line is added to its table. The file is `app.config_file` resolved (on v0.11 its
+text is `{app.root}/{app.name}.toml`).
 
 ## The scene at run time
 
