@@ -402,8 +402,11 @@ def _write_manifest(work, name):
     spans = [(a, a + s) for a, s in hints.items() if s]
     hints = {a: s for a, s in hints.items() if not any(lo < a < hi for lo, hi in spans)}
     # Not a start found not to be one (not-starts.txt): the function it was split from gets the
-    # code back, and with it the registers.
-    shares = _shares(work) - not_starts(work)
+    # code back, and with it the registers. Nor a piece a sized hint grew over: its entry would
+    # overlap that function as a hint's would (Forza Horizon: 8276161C, shared while it was a
+    # function, then inside 827611D8's 0x720 bytes).
+    shares = {a for a in _shares(work) - not_starts(work)
+              if not any(lo < a < hi for lo, hi in spans)}
     if hints or shares:
         lines.append('[entrypoint.functions]')
         for a in sorted(set(hints) | shares):
