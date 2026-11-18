@@ -1770,7 +1770,15 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
       gap_device && GapThreadId() == g_gap_thread.load(std::memory_order_relaxed);
   const bool foreign = gap_device && !outer;
   const uint32_t foreign_entry = foreign ? Load32(base, device + rexnative::dev::kPush) : 0;
-  if (outer) GapEntry(base, device);
+  if (outer) {
+    // The draw a top-level BeginVertices holds comes before the stream the game wrote after its
+    // vertices: the walk draws that stream and leaves its registers on the tracker. Fable II
+    // inlines EndVertices (no RestorePush call), so the held draw waited for the next flushing
+    // call: its tonemap rectangle came after the HUD's inline draws, with their shaders. The
+    // vertices are written by now: no D3D call comes between BeginVertices and EndVertices.
+    if (t_pending_vertices) QueuePendingVertices(rexnative::NativeRenderer::Live(), base);
+    GapEntry(base, device);
+  }
   ++t_gap_depth;
   OnHookInner<kId, kOriginal>(ctx, base);
   --t_gap_depth;

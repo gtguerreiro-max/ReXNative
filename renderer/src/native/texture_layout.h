@@ -65,6 +65,9 @@ enum class TextureConversion : uint8_t {
   kDepthFloat24ToFloat32,          // k_24_8_FLOAT: R32_FLOAT = float20e4(d >> 8)
   kR5G5B5A1ToB5G5R5A1,             // k_1_5_5_5: swap the 5-bit R and B fields
   kR4G4B4A4ToB4G4R4A4,             // k_4_4_4_4: swap the 4-bit R and B fields
+  // k_DXT3A: each 8-byte 4x4 block of 4-bit alphas (BC2's alpha half) into 16 R8 texels,
+  // a * 17 (ReXGlue's texture_load_dxt3a); UntileTexture decodes it a row of blocks at a time.
+  kDXT3AToR8,
 };
 
 struct HostFormat {
@@ -75,6 +78,12 @@ struct HostFormat {
   bool block_compressed;  // BCn: 4x4 blocks are copied as is
   uint32_t host_swizzle;  // REXGPU_SWIZZLE_* of the host channels
 };
+
+// Bytes per host block (a texel unless block_compressed): the guest block's, except for a
+// decompressing conversion (DXT3A -> R8: a byte per texel).
+inline uint32_t HostBytesPerBlock(const HostFormat& host, uint32_t guest_bytes_per_block) {
+  return host.conversion == TextureConversion::kDXT3AToR8 ? 1 : guest_bytes_per_block;
+}
 
 // nullptr for formats PGR4 does not use yet (or that need a decompressing load).
 const HostFormat* GetHostFormat(rex::graphics::xenos::TextureFormat base_format);

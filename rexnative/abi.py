@@ -465,9 +465,28 @@ def resolve_abi(R, T, ref_profile, matches, log=print):
     # (Overlord's EndTiling calls its public Resolve so; with PGR4's mapping each tile's resolve
     # read the rectangle's address as the level and was dropped: a white scene).
     sites = call_site_writes(T, target_fn)
-    if regs[2] == 0 and regs[5] == 5 and 'r5' in stack_address_args(sites):
-        steps.append('a call of %08X passes a stack address in r5, the public source rectangle: '
-                     'the public signature, not the reference\'s mapping' % target_fn)
+
+    def stack_sites(reg):
+        # Calls whose last write to `reg` is a stack address (addi reg,r1,X): a pointer.
+        return sum(1 for last in sites
+                   if last.get('r%d' % reg, ('', ()))[0] == 'addi' and len(last['r%d' % reg][1]) == 3
+                   and last['r%d' % reg][1][1] == 'r1')
+
+    # A level or a slice is a small number, never a pointer into the caller's frame: a mapping
+    # that takes one from a register the calls set to stack addresses more often than they set
+    # the public one is the reference's guess, not this game's signature. Fable II's EndTiling
+    # passes each tile's rectangle in r5 and destination point in r7 as the public call does;
+    # mapped as point r5, level r7 (votes 2/3 and 1/2), every resolve read the point's address as
+    # the level and was dropped: the scene never reached its texture and the world drew black
+    # (Deus Ex: Human Revolution's the same). Overlord's PGR4-shaped mapping (no source rectangle,
+    # the level in r5) is the same case: its tiles' resolves passed their rectangles in r5.
+    misplaced = [i for i in (5, 6) if regs[i] and regs[i] != 3 + i and
+                 stack_sites(regs[i]) > stack_sites(3 + i)]
+    if misplaced or (regs[2] == 0 and regs[5] == 5 and 'r5' in stack_address_args(sites)):
+        steps.append('the calls of %08X pass stack addresses where the mapping reads %s: the public '
+                     'signature, not the reference\'s mapping' % (
+                         target_fn, ', '.join('%s from r%d' % (PUBLIC_NAMES[i], regs[i])
+                                              for i in misplaced) or 'the level from r5'))
         regs = list(range(3, 11))
         public = [(name, p, p, n, tot) if i < 8 else (name, p, src, n, tot)
                   for i, (name, p, src, n, tot) in enumerate(public)]

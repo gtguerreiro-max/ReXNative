@@ -15,7 +15,8 @@
 #   "inputs", "mesh", "disasm", "cbuffers", "state" (with "event"): the draw's textures as PNG,
 #       its vertex shader's output positions, its shaders disassembled, its constant buffers,
 #       its depth, stencil, depth bias and viewport; "buffer" ("offset", "size" in hex): bytes
-#       of a buffer
+#       of a buffer; "pick" (with "event", "texture", "x", "x1", "y"): float texel values;
+#       "debug" (with "event", "x", "y"): the pixel shader run in RenderDoc's debugger
 # Writes <out>/<cmd>*.txt / .png and <out>/rdoc.log ("ok" or the traceback).
 import json
 import os
@@ -115,6 +116,50 @@ def main():
             controller.SaveTexture(s, path)
             with open(os.path.join(out, "save.txt"), "w") as f:
                 f.write("%s %s\n" % (path, describe(tex)))
+        elif cmd == "pick":
+            # The values of texture `texture` at (x, y), (x1, y) and a few points between, after
+            # the action at `event`: float data that a PNG clamps.
+            controller.SetFrameEvent(job["event"], True)
+            rid = next(r for r in textures if int(r) == job["texture"])
+            t = textures[rid]
+            xs = sorted({job["x"], job["x1"] or job["x"]} |
+                        {int(t.width * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)})
+            ys = sorted({job["y"]} | {int(t.height * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)})
+            with open(os.path.join(out, "pick-e%d-%d.txt" % (job["event"], job["texture"])), "w") as f:
+                f.write("%s after event %d\n" % (describe(rid), job["event"]))
+                for y in ys:
+                    for x in xs:
+                        v = controller.PickPixel(rid, x, y, rd.Subresource(0, 0, 0),
+                                                 rd.CompType.Float)
+                        f.write("(%d,%d) %s\n" % (x, y, " ".join("%.4g" % c for c in v.floatValue)))
+        elif cmd == "debug":
+            # The pixel shader of the draw at `event` run at (x, y) in RenderDoc's debugger: its
+            # inputs, then each instruction's changed registers, into debug-e<event>-x-y.txt.
+            controller.SetFrameEvent(job["event"], True)
+
+            def show(v):
+                vals = getattr(v.value, "f32v", None) or getattr(v.value, "f", [])
+                return "%s = %s" % (v.name, " ".join("%.6g" % c for c in
+                                                     list(vals)[:max(v.columns, 1)]))
+
+            trace = controller.DebugPixel(job["x"], job["y"], rd.DebugPixelInputs())
+            path = os.path.join(out, "debug-e%d-%d-%d.txt" % (job["event"], job["x"], job["y"]))
+            with open(path, "w") as f:
+                if trace is None or trace.debugger is None:
+                    f.write("no pixel shader ran there\n")
+                else:
+                    for v in trace.inputs:
+                        f.write("in %s\n" % show(v))
+                    steps = 0
+                    while steps < 20000:
+                        states = controller.ContinueDebug(trace.debugger)
+                        if not states:
+                            break
+                        for s in states:
+                            steps += 1
+                            for c in s.changes:
+                                f.write("%d: %s\n" % (s.nextInstruction, show(c.after)))
+                    controller.FreeTrace(trace)
         elif cmd == "reads":
             # Every draw from `event` on (0: all): what its pixel shader reads and where it
             # draws, one line each, to follow an image through a frame's passes.
@@ -132,8 +177,8 @@ def main():
                         a.eventId, a.numIndices, int(state.GetShader(rd.ShaderStage.Pixel)),
                         ", ".join(reads) or "-", "; ".join(outs)))
         elif cmd == "inputs":
-            # What the draw at `event` reads: its pixel shader's textures (the ones it used,
-            # through the bindless heaps too), each saved as PNG, and its targets.
+            # What the draw at `event` reads: its shaders' textures (the ones they used, through
+            # the bindless heaps too), each saved as PNG, and its targets.
             event = job["event"]
             controller.SetFrameEvent(event, True)
             state = controller.GetPipelineState()
@@ -152,11 +197,19 @@ def main():
                         b.colorBlend.operation, b.alphaBlend.source, b.alphaBlend.destination,
                         b.alphaBlend.operation, b.writeMask))
                 saved = 0
-                for u in state.GetReadOnlyResources(rd.ShaderStage.Pixel, True):
+                # The vertex stage's too (the domain shader's with the tessellator): its vertex
+                # texture fetches.
+                reads = [(tag, u) for stage, tag in ((rd.ShaderStage.Vertex, "vs"),
+                                                     (rd.ShaderStage.Domain, "ds"),
+                                                     (rd.ShaderStage.Pixel, "ps"))
+                         if state.GetShaderReflection(stage) is not None
+                         for u in state.GetReadOnlyResources(stage, True)]
+                for tag, u in reads:
                     rid = u.descriptor.resource
                     if rid == null:
                         continue
-                    f.write("ps reads %s as %s\n" % (describe(rid), u.descriptor.format.Name()))
+                    f.write("%s reads %s as %s\n" % (tag, describe(rid),
+                                                     u.descriptor.format.Name()))
                     t = textures.get(rid)
                     if t and saved < 12:
                         s = rd.TextureSave()
@@ -199,14 +252,16 @@ def main():
                         f.write("%d clip %.4g %.4g %.4g %.4g pixel %.1f %.1f | %s\n" % (
                             i, x, y, z, w, sx, sy, " ".join("%.4g" % v for v in rest)))
         elif cmd == "disasm":
-            # The vertex and pixel shaders of the draw at `event`, disassembled (DXBC), into
-            # disasm-e<event>-vs.txt / -ps.txt.
+            # The shaders of the draw at `event`, disassembled (DXBC), into
+            # disasm-e<event>-vs.txt / -hs / -ds / -gs / -ps.txt (the stages it has).
             event = job["event"]
             controller.SetFrameEvent(event, True)
             state = controller.GetPipelineState()
             pipe = state.GetGraphicsPipelineObject()
             targets = controller.GetDisassemblyTargets(True)
-            for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Pixel, "ps")):
+            for stage, tag in ((rd.ShaderStage.Vertex, "vs"), (rd.ShaderStage.Hull, "hs"),
+                               (rd.ShaderStage.Domain, "ds"), (rd.ShaderStage.Geometry, "gs"),
+                               (rd.ShaderStage.Pixel, "ps")):
                 refl = state.GetShaderReflection(stage)
                 if refl is None:
                     continue

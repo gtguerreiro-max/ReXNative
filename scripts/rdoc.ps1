@@ -5,6 +5,10 @@
 #   scripts\rdoc.ps1 inputs <capture.rdc> -Event 1234      # its textures (as PNG) and targets
 #   scripts\rdoc.ps1 reads <capture.rdc> [-Event 1234]     # every draw from there: what its pixel
 #                    shader reads and where it draws, one line each (reads-e<event>.txt)
+#   scripts\rdoc.ps1 pick <capture.rdc> -Event 1234 -Texture 56 [-X 10 -X1 20 -Y 5]
+#                    float values of a texture after an event at a few points (pick-e<event>-<tex>.txt)
+#   scripts\rdoc.ps1 debug <capture.rdc> -Event 1234 -X 560 -Y 600   # its pixel shader at a pixel
+#                    in RenderDoc's debugger: inputs, then each instruction's results
 #   scripts\rdoc.ps1 mesh <capture.rdc> -Event 1234         # its vertex shader's output positions
 #   scripts\rdoc.ps1 disasm <capture.rdc> -Event 1234       # its shaders, disassembled
 #   scripts\rdoc.ps1 cbuffers <capture.rdc> -Event 1234     # its shaders' constant buffers
@@ -15,7 +19,7 @@
 # RenderDoc's folder: -RenderDoc, else $env:REXNATIVE_RENDERDOC (the one with qrenderdoc.exe).
 # Output: <capture>.rdoc\ (actions.txt, history-X-Y.txt, tex-*.png), printed when done.
 param(
-    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'reads', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
+    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'reads', 'pick', 'debug', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
     [Parameter(Position = 1, Mandatory)][string]$Capture,
     [int]$X = 0, [int]$X1 = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC
@@ -49,6 +53,9 @@ switch ($Cmd) {
     'history' { Join-Path $out "history-$X-$Y.txt" }
     'save' { Get-Content (Join-Path $out 'save.txt') }
     'inputs' { Join-Path $out "inputs-e$Event.txt" }
+    'reads' { Join-Path $out "reads-e$Event.txt" }
+    'pick' { Join-Path $out "pick-e$Event-$Texture.txt" }
+    'debug' { Join-Path $out "debug-e$Event-$X-$Y.txt" }
     'buffer' { Get-Content (Join-Path $out 'buffer.txt') }
     'mesh' { Join-Path $out "mesh-e$Event.txt" }
     'disasm' { Join-Path $out "disasm-e$Event-ps.txt" }

@@ -148,6 +148,12 @@ constexpr FormatEntry kFormats[] = {
     // Brigade's intro uses one.
     {TextureFormat::k_DXT5A,
      {DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_UNKNOWN, C::kCopy, true, kRRRR}},
+    // DXT3A is a DXT3 (BC2) alpha block alone: decompressed into R8, as Xenia's host_formats_
+    // (R8 has BC2's size without its 4x4 alignment). Fable II's terrain fetches one in its
+    // tessellated vertex shader: without it the fetch read 0 and the ground blended to black.
+    {TextureFormat::k_DXT3A,
+     {DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, C::kDXT3AToR8, false,
+      kRRRR}},
 };
 
 // Fetch constant formats are 6 bits.
@@ -228,6 +234,8 @@ void Convert(TextureConversion conversion, uint8_t* row, uint32_t bytes) {
         v = Float20e4To32Bits(v >> 8);
         std::memcpy(row + i, &v, 4);
       }
+      return;
+    case C::kDXT3AToR8:  // not a row conversion: UntileTexture decodes the blocks
       return;
   }
 }
@@ -317,9 +325,9 @@ uint64_t GetHostFootprints(const TextureKey& key, bool d3d12_placement,
   const FormatInfo* info = FormatInfo::Get(key.format);
   uint32_t bw = host->block_compressed ? info->block_width : 1;
   uint32_t bh = host->block_compressed ? info->block_height : 1;
-  // Host bytes per block equal the guest ones for every format in the table (the conversions
-  // keep the size).
-  uint32_t bpb = info->GetBytesPerBlock();
+  // Host bytes per block equal the guest ones (the conversions keep the size), except DXT3A's
+  // decompression into R8.
+  uint32_t bpb = HostBytesPerBlock(*host, info->GetBytesPerBlock());
   uint64_t offset = 0;
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
@@ -372,10 +380,13 @@ bool UntileTexture(const TextureKey& key, const xenos::GuestTextureLayout& layou
   size_t mips_size = std::min<size_t>(memory.mips ? memory.mips_size : 0,
                                       key.mip_page ? layout.mips_total_extent_bytes : 0);
   const bool convert = host->conversion != TextureConversion::kCopy;
+  // DXT3A -> R8: the row of guest 4x4 blocks is gathered, then decoded into up to 4 host rows.
+  const bool dxt3a = host->conversion == TextureConversion::kDXT3AToR8;
   size_t row_scratch = 0;
   if (convert)
     for (const HostSubresource& s : subresources)
-      row_scratch = std::max<size_t>(row_scratch, s.row_bytes);
+      row_scratch = std::max<size_t>(
+          row_scratch, dxt3a ? size_t((s.width + 3) / 4) * bpb : size_t(s.row_bytes));
   scratch->resize(base_size + mips_size + row_scratch);
   uint8_t* base = scratch->data();
   uint8_t* mips = base + base_size;
@@ -411,23 +422,27 @@ bool UntileTexture(const TextureKey& key, const xenos::GuestTextureLayout& layou
     // Blocks contiguous in tiled 2D memory along X (texture_util.h): 8 at 1 byte per block,
     // otherwise 16 bytes' worth, starting at a multiple of the run length. 3D tiling: per block.
     const uint32_t tiled_run = is_3d ? 1 : (bpb == 1 ? 8 : std::max(16u / bpb, 1u));
+    // Guest blocks per row and rows of them: the host's, except where DXT3A decompresses.
+    const uint32_t columns = dxt3a ? (s.width + 3) / 4 : s.block_columns;
+    const uint32_t rows = dxt3a ? (s.height + 3) / 4 : s.block_rows;
     for (uint32_t z = 0; z < s.depth; ++z) {
-      for (uint32_t y = 0; y < s.block_rows; ++y) {
-        uint8_t* const row_out = out + (size_t(z) * s.block_rows + y) * s.row_pitch;
+      for (uint32_t y = 0; y < rows; ++y) {
+        uint8_t* const row_out =
+            dxt3a ? nullptr : out + (size_t(z) * s.block_rows + y) * s.row_pitch;
         uint8_t* const row = convert ? row_tmp : row_out;
         const uint32_t gy = oy + y, gz = oz + z;
-        for (uint32_t x = 0; x < s.block_columns;) {
+        for (uint32_t x = 0; x < columns;) {
           const uint32_t gx = ox + x;
           uint32_t run;
           int64_t off;
           if (key.tiled) {
-            run = gx % tiled_run ? 1 : std::min(tiled_run, s.block_columns - x);
+            run = gx % tiled_run ? 1 : std::min(tiled_run, columns - x);
             off = is_3d ? texture_util::GetTiledOffset3D(int32_t(gx), int32_t(gy), int32_t(gz),
                                                          pitch_blocks, z_rows, bpb_log2)
                         : texture_util::GetTiledOffset2D(int32_t(gx), int32_t(gy), pitch_blocks,
                                                          bpb_log2);
           } else {
-            run = s.block_columns - x;
+            run = columns - x;
             off = (int64_t(gz) * z_rows + gy) * row_pitch + int64_t(gx) * bpb;
           }
           off += int64_t(level_offset);
@@ -449,11 +464,22 @@ bool UntileTexture(const TextureKey& key, const xenos::GuestTextureLayout& layou
           }
           x += run;
         }
-        if (convert) {
+        if (dxt3a) {
+          // A block is four 16-bit rows of four 4-bit alphas, the first texel in the low
+          // nibble (BC2's alpha half once endian-swapped).
+          for (uint32_t r = 0; r < 4 && y * 4 + r < s.height; ++r) {
+            uint8_t* const texels = out + (size_t(z) * s.block_rows + y * 4 + r) * s.row_pitch;
+            for (uint32_t i = 0; i < s.width; ++i) {
+              const uint8_t* b = row + size_t(i / 4) * bpb + r * 2;
+              const uint32_t bits = uint32_t(b[0]) | uint32_t(b[1]) << 8;
+              texels[i] = uint8_t(((bits >> ((i & 3) * 4)) & 0xF) * 17);
+            }
+          }
+        } else if (convert) {
           Convert(host->conversion, row, s.row_bytes);
           std::memcpy(row_out, row, s.row_bytes);
         }
-        st.blocks += s.block_columns;
+        st.blocks += columns;
       }
     }
   }

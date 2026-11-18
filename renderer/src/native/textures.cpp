@@ -473,7 +473,8 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
     const uint32_t bw = host.block_compressed ? info->block_width : 1;
     const uint32_t bh = host.block_compressed ? info->block_height : 1;
     const bool small_placement =
-        uint64_t(key.width) * key.height * info->GetBytesPerBlock() / (bw * bh) <=
+        uint64_t(key.width) * key.height * HostBytesPerBlock(host, info->GetBytesPerBlock()) /
+            (bw * bh) <=
         D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     HRESULT hr = CreateTextureResource(desc, small_placement, &t.resource, &t.placed, &t.bytes);
     if (FAILED(hr)) {

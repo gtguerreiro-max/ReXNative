@@ -101,6 +101,22 @@ and copies the game's files out, without the console's `$SystemUpdate`.
   sRGB view, so it blends in linear color as the console does.
 - **Predicated tiles.** Double Dragon Neon's scene is four predicated tiles side by side, 480 x
   1080 each of 1920 x 1080, so host targets are as wide as the tiles reach, not the EDRAM pitch.
+- **Resolve's level is never a pointer.** Fable II's Resolve mapping, voted from the reference
+  game, read the level from r7, where its EndTiling passes each tile's destination point (a stack
+  address): every scene resolve had level ~0x7000xxxx and was dropped, and the world drew black.
+  `adapt` now keeps the public signature when the calls set the register a mapping reads the
+  level or slice from to stack addresses more often than the public one (Deus Ex: Human
+  Revolution's mapping had the same fault; its resolves still decode another destination than
+  the one the D3D writes, so it stays black).
+- **DXT3A.** Fable II's terrain patches (tessellated, blended `SRC_ALPHA, ZERO`) take their alpha
+  from a k_DXT3A texture fetched in the vertex shader, compared against one 4-bit step. The
+  format was unsupported, the fetch read 0 and the ground drew black under the sky. It is now
+  decompressed into R8 as Xenia does (each block is BC2's alpha half, a * 17): a lossy BC4 would
+  move values across that step. Found with RenderDoc's pixel debugger (`rdoc.ps1 debug`): the
+  interpolator holding the alpha was `1.07 * (fetch - 1/15)` with the fetch 0.
+- **Resolves into k_1_5_5_5.** Fable II resolves three 256x256 mip chains a frame into 1:5:5:5
+  textures, which the resolve refused. They are written like k_5_6_5's without a typed store:
+  R16_UINT texel bits in the cache's B5G5R5A1 layout, then copied into the image.
 
 ## Recorded command buffers
 
@@ -151,6 +167,15 @@ the D3D reserved is walked up to the packet the check refused. The shaders a str
 the inlined draw's: the next hooked draw reloads the bound ones, and an ImmediateVs that the
 inlined code called is not left pending for it ("Press Start", drawn by DrawVerticesUP, got the
 inlined draw's vertex shader and showed one letter).
+
+A top-level BeginVertices only reserves room for vertices: its draw is held until the game has
+written them, at the entry of RestorePush (EndVertices) or of the next call that flushes state.
+Fable II inlines EndVertices, so its tonemap rectangle (7 textures into the 1280 x 720 target)
+waited for the next flushing call, and the walk of the stream before that call drew the HUD's
+inline draws first and left their registers on the tracker: the rectangle came last, with the
+HUD's shaders, and the world stayed black. The held draw now goes out at the entry of any hooked
+call on the walked device, before the walk (no D3D call comes between BeginVertices and
+EndVertices).
 
 ## Motion vectors from a vertex ring
 

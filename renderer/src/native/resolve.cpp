@@ -61,6 +61,7 @@ enum DestLayout : uint32_t {
   kR16G16B16A16,
   kR32,          // one to four 32-bit components
   kB5G6R5Unorm,  // no UINT view exists: unorm floats
+  kB5G5R5A1,     // no UINT view: always the R16_UINT texel bits and a copy (UsesTexelBits)
 };
 
 // The host image of a copy destination format: the texture cache's host layout
@@ -80,6 +81,10 @@ const DestStorage* GetDestStorage(uint32_t f) {
   // k_5_6_5 and k_6_5_5 share the B5G6R5 host layout (the texture cache's load conversions).
   static constexpr DestStorage k565{1, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B5G6R5_UNORM,
                                     kB5G6R5Unorm};
+  // k_1_5_5_5 as the cache's B5G5R5A1 (R and B swapped on load). Fable II resolves three
+  // 256x256 mip chains a frame into such textures.
+  static constexpr DestStorage k1555{1, DXGI_FORMAT_B5G5R5A1_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM,
+                                     kB5G5R5A1};
   static constexpr DestStorage k16f{1, DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_R16_UINT, kR16};
   static constexpr DestStorage k8888{2, DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UINT,
                                      kR8G8B8A8};
@@ -109,6 +114,8 @@ const DestStorage* GetDestStorage(uint32_t f) {
     case xenos::TextureFormat::k_5_6_5:
     case xenos::TextureFormat::k_6_5_5:
       return &k565;
+    case xenos::TextureFormat::k_1_5_5_5:
+      return &k1555;
     case xenos::TextureFormat::k_16_FLOAT:
       return &k16f;
     case xenos::TextureFormat::k_8_8_8_8:
@@ -351,6 +358,8 @@ uint4 PackDest(float4 c) {
     // R | B << 5 | G << 11 (sampled with swizzle RBGG).
     case 4u: return uint4(U(c.b, 31.0) | (U(c.g, 63.0) << 5) | (U(c.r, 31.0) << 11), 0, 0, 0);
     case 5u: return uint4(U(c.r, 31.0) | (U(c.b, 63.0) << 5) | (U(c.g, 31.0) << 11), 0, 0, 0);
+    // k_1_5_5_5 as B5G5R5A1 (guest R in bits 0-4 moves to 10-14).
+    case 3u: return uint4(U(c.b, 31.0) | (U(c.g, 31.0) << 5) | (U(c.r, 31.0) << 10) | (U(c.a, 1.0) << 15), 0, 0, 0);
     case 6u:                                                                         // k_8_8_8_8
       if (number == 1u) return uint4(S8(c.r) | (S8(c.g) << 8) | (S8(c.b) << 16) | (S8(c.a) << 24), 0, 0, 0);
       return uint4(U(c.r, 255.0) | (U(c.g, 255.0) << 8) | (U(c.b, 255.0) << 16) | (U(c.a, 255.0) << 24), 0, 0, 0);
@@ -847,7 +856,9 @@ bool Resolver::CreatePipelines() {
 
 Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, uint32_t scale) {
   const DestStorage& storage = *GetDestStorage(p.dest_format);
-  const bool bits565 = storage.layout == kB5G6R5Unorm && !b5g6r5_store_;
+  // 16-bit packed formats without a typed UAV store: R16_UINT texel bits, then a copy.
+  const bool bits565 =
+      storage.layout == kB5G5R5A1 || (storage.layout == kB5G6R5Unorm && !b5g6r5_store_);
   const bool depth = p.source == 4;
   for (const std::unique_ptr<Image>& img : dest.images)
     if (img->storage == &storage && img->width == p.dest_width && img->height == p.dest_height &&
@@ -882,7 +893,7 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
     uint64_t bytes = 0;
     device_->GetCopyableFootprints(&bd, 0, 1, 0, &img->bits_footprint, nullptr, nullptr, &bytes);
     img->texture_footprint = img->bits_footprint;
-    img->texture_footprint.Footprint.Format = DXGI_FORMAT_B5G6R5_UNORM;
+    img->texture_footprint.Footprint.Format = storage.resource;
     D3D12_RESOURCE_DESC buf = {};
     buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     buf.Width = bytes;
@@ -892,11 +903,11 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
     if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
                                                 IID_PPV_ARGS(&img->bits)),
-               "resolve B5G6R5 texel bits") ||
+               "resolve 16-bit texel bits") ||
         Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &buf,
                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                                 IID_PPV_ARGS(&img->staging)),
-               "resolve B5G6R5 staging buffer"))
+               "resolve 16-bit staging buffer"))
       return nullptr;
   }
   if (depth) {
@@ -1149,8 +1160,8 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
             (rt->samples > 1 && rt->samples != rt->edram_samples ? 0x400u : 0u) |
             (alpha ? 0x800u : 0u) | (p.dest_number << 12) | (linear ? 0x8000u : 0u);
   c.exp_bias = p.exp_bias;
-  // The R16_UINT texel bits of B5G6R5 go through the shader's 16-bit UINT path (PackDest
-  // already packs k_5_6_5 and k_6_5_5 in the host's B5G6R5 layout).
+  // The R16_UINT texel bits go through the shader's 16-bit UINT path (PackDest already packs
+  // k_5_6_5, k_6_5_5 and k_1_5_5_5 in the host's B5G6R5 / B5G5R5A1 layout).
   c.dest_layout = bits565 ? uint32_t(kR16) : storage->layout;
   c.dest_scale = scale;
   c.src_scale[0] = rt->scale.factor(0);
@@ -1171,7 +1182,8 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   if (timer_) timer_->Pass(list, GpuTimer::KeyResolve(p, GpuTimer::kResolveRelease));
   nb = 0;
   if (bits565) {
-    // bits -> staging buffer (R16_UINT footprint) -> texture (the same bytes as B5G6R5).
+    // bits -> staging buffer (R16_UINT footprint) -> texture (the same bytes as B5G6R5 or
+    // B5G5R5A1).
     bs[0] = TransitionBarrier(img->bits.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_COPY_SOURCE);
     list->ResourceBarrier(1, bs);
