@@ -50,6 +50,7 @@ def from_result(res):
             'stride', 0),
         'scene': res['scene'], 'defaults': res['defaults'], 'devices': res['devices'],
         'xinput_state_reg': res['functions'].get('XInputGetState', {}).get('state_reg', 4),
+        'stream_only': res.get('stream_only'),
     }
 
 
@@ -96,6 +97,15 @@ def game_layer_h(layer, comments=True):
     w('')
     w('inline constexpr char kGameName[] = "%s";' % layer['title'].replace('"', "'"))
     w('inline constexpr uint32_t kTitleId = 0x%s;' % (layer['title_id'] or '00000000'))
+    so = layer.get('stream_only')
+    if so:
+        if comments:
+            w('// A D3D no reference maps (%s): the renderer draws from the push buffer alone' %
+              so.get('why', ''))
+            w("// (hook_args.h kStreamOnly); a texture's fetch constant is at +%d%s." % (
+                so['texture_fetch'], '' if so.get('texture_fetch_found') else ' (assumed)'))
+        w('inline constexpr bool kStreamOnly = true;')
+        w('inline constexpr uint32_t kTextureFetchOffset = %d;' % int(so['texture_fetch']))
     w('')
     if comments:
         w('// Guest D3D functions (0 = not found in this game).')

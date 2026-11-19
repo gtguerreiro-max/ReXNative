@@ -758,10 +758,11 @@ bool Presenter::Initialize() { return impl_->Initialize(); }
 bool Presenter::CaptureRequested(uint64_t frame) { return impl_->CaptureRequested(frame); }
 
 void Presenter::ReadSwap(const uint8_t* base, const HookArgs& args, SwapCall* out) {
-  // The front buffer texture's fetch constant (D3DBaseTexture + 28).
+  // The front buffer texture's fetch constant (D3DBaseTexture + 28; + 16 in D3D 2.0.2135).
   out->texture = args.r[1];
   if (out->texture)
-    for (int i = 0; i < 6; ++i) out->fetch[i] = Load32(base, out->texture + 28 + 4 * i);
+    for (int i = 0; i < 6; ++i)
+      out->fetch[i] = Load32(base, out->texture + game::kTextureFetchOffset + 4 * i);
 }
 
 void Presenter::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,

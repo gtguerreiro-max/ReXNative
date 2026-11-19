@@ -64,6 +64,33 @@ LWZ = re.compile(r'^lwz (r\d+),(-?\d+)\((r\d+)\)$')
 ORI_BIN_MASK_LO = re.compile(r'^ori (r\d+),\1,24576$')  # with lis rN,-16384: 0xC0006000
 
 
+MR_FROM_R4 = re.compile(r'^mr (r\d+),r4$')
+ADDI_R4 = re.compile(r'^addi r4,(r\d+),(\d+)$')
+
+
+def texture_fetch_offset(T, swap):
+    """Where a D3DBaseTexture keeps its fetch constant, from Swap(device, front buffer, ...): the
+    address it hands VdSwap, `addi r4,rT,N` with rT the front buffer kept from r4 (`mr rT,r4`).
+    D3D 2.0.2135 (Geometry Wars: Retro Evolved): 16; the later XDKs keep it at 28. None when Swap
+    has no such pair."""
+    insns = T.funcs.get(swap) if swap else None
+    if not insns:
+        return None
+    kept = None
+    for _, text in insns[:16]:
+        m = MR_FROM_R4.match(text)
+        if m:
+            kept = m.group(1)
+            break
+    if not kept:
+        return None
+    for _, text in insns:
+        m = ADDI_R4.match(text)
+        if m and m.group(1) == kept and 8 <= int(m.group(2)) <= 64:
+            return int(m.group(2))
+    return None
+
+
 def bin_mask_offset(T):
     """The D3D device's bin mask offset: where the segment start reads the two words it writes
     after SET_BIN_MASK_LO / _HI (0xC0006000, 0xC0006100), `lwz rN,off(rDevice)` then

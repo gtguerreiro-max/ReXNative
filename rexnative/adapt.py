@@ -119,6 +119,31 @@ def xinput_get_state(T, generated, funcs):
                       'or a lone b XamInputGetState)')
 
 
+# The oldest D3D a reference maps (Castlevania: Symphony of the Night's 2.0.4314). An older one
+# (Geometry Wars: Retro Evolved's 2.0.2135) keeps its device and shader objects in another
+# layout: the renderer draws from the push buffer alone (hook_args.h kStreamOnly).
+STREAM_ONLY_BELOW = 4314
+
+
+def apply_stream_only(result, T, why):
+    """game::kStreamOnly: no state is read from the device but its push pointer, and textures
+    keep their fetch constant where this D3D's Swap says. D3D 2.0.2135: the push pointer at +0
+    (the end of the segment at +8), the dirty masks from +16; its shader objects are not read
+    (ShaderLoad and ImmediateVs not hooked)."""
+    swap = result['functions'].get('Swap', {}).get('address')
+    found = constants.texture_fetch_offset(T, swap)
+    result['stream_only'] = {'texture_fetch': found or 16, 'texture_fetch_found': bool(found),
+                             'why': why}
+    for name, target in (('dev.kPush', 0), ('dev.kDirtyMasks', 16)):
+        row = result['offsets'].setdefault(name, {'ref': None, 'votes': 0, 'total': 0})
+        row.update(target=target, how='stream-only: D3D 2.0.2135')
+    for name in ('ShaderLoad', 'ImmediateVs'):
+        row = result['functions'].setdefault(name, {})
+        if row.get('address'):
+            row.update(detail='stream-only: %08X, its shader objects not read' % row['address'],
+                       address=None, how='not found', confidence=None)
+
+
 def adapt(target, refs, overrides=None, log=print):
     info = xex.read(target['xex']) if target.get('xex') else None
     lib, ver = xex.d3d_library(info) if info else (None, None)
@@ -375,6 +400,18 @@ def adapt(target, refs, overrides=None, log=print):
         },
         'overrides': {},
     }
+    # overrides.json "stream_only": true or false decides; otherwise an XDK older than every
+    # reference's.
+    build = xex.xdk_build(ver)
+    stream = (overrides or {}).get('stream_only')
+    if stream is None:
+        stream = build is not None and build < STREAM_ONLY_BELOW
+    if stream:
+        apply_stream_only(result, T, 'XDK %s, older than %d' % (build, STREAM_ONLY_BELOW)
+                          if 'stream_only' not in (overrides or {}) else 'overrides.json')
+        log('  stream-only: D3D %s; textures\' fetch constant at +%d%s' % (
+            ver, result['stream_only']['texture_fetch'],
+            '' if result['stream_only']['texture_fetch_found'] else ' (assumed)'))
     if overrides:
         apply_overrides(result, overrides)
     return result

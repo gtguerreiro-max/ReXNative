@@ -23,6 +23,17 @@ inline constexpr int32_t kDefaultCmdBuf = 0;
 // RunCommandBuffer restores after the buffer: the bin state a replay starts from. D3D 2.0.20353
 // (Iron Brigade, From Dust); PGR4's 2.0.6132 has it at 12700.
 inline constexpr uint32_t kCmdBufBinMaskOffset = 12956;
+// Where a D3DBaseTexture keeps its fetch constant (6 dwords): +28 from D3D 2.0.4314 on (every
+// layer before this constant); +16 in 2.0.2135, Geometry Wars: Retro Evolved's, whose Swap hands
+// VdSwap texture + 16.
+inline constexpr uint32_t kTextureFetchOffset = 28;
+// The D3D's device and shader objects have a layout the layer cannot map (D3D 2.0.2135, older
+// than any reference): the renderer takes the frames from the push buffer alone. No state is read
+// from the device but its push pointer (dev::kPush); every hook but Swap, CreateDevice and the
+// push buffer's own (they mark the stream's segments) runs the guest only, and the walk
+// (rexnative.inline_draws, cmd_replay.h) draws, resolves and clears from the packets, as the
+// GPU (and ReXGlue's Xenos plugin) would.
+inline constexpr bool kStreamOnly = false;
 }  // namespace rexnative::game_defaults
 namespace rexnative::game {
 using namespace rexnative::game_defaults;

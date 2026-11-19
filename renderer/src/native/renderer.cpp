@@ -1187,8 +1187,8 @@ void NativeRenderer::HandOver(uint8_t* base, uint32_t device) {
   if (!primary_) return;
   // The replaced draws (guest_d3d.h) cleared dirty bits without writing the state to the
   // stream, and the plugin skipped the shader loads: it has neither. The next draw writes all
-  // of it.
-  MarkAllDirty(base, device);
+  // of it. (Not with a device layout the layer does not know: game::kStreamOnly.)
+  if constexpr (!game::kStreamOnly) MarkAllDirty(base, device);
   rex::cvar::SetFlagByName("gpu_skip_draws", "false");
   if (occlusion_) rex::cvar::SetFlagByName("occlusion_query_external", "false");
   // The game waits for the plugin's vblanks again: the plugin's frames are shown as they come

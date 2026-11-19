@@ -559,6 +559,27 @@ The logs of The Bureau, Brothers, Midnight Club: Los Angeles, Syndicate, SSX and
 show the same aliasing of a float surface; where the upscaled resolve is one of them, it takes
 this path too.
 
+## A D3D older than every reference
+
+Geometry Wars: Retro Evolved (2005) links D3D 2.0.2135, older than any reference's (Castlevania:
+Symphony of the Night's 4314 is the next). Its device keeps the push pointer at +0 (the segment's
+end at +8) and the dirty masks from +16, its shader objects have another layout (the ucode at +40,
+its size at +600), and a texture's fetch constant is at +16, not +28: the layer, mapped from PGR4's,
+kept the reference's offsets, and the native renderer crashed reading the first vertex shader
+object (`GuestStateTracker::UpdateShaders`). The Gestor's fix step stopped there. The game plays on
+ReXGlue's Xenos plugin, so the push buffer holds everything the GPU needs: `adapt` now makes the
+layer of an XDK older than 4314 stream-only (`hook_args.h` `kStreamOnly`, or overrides.json
+`"stream_only"`). The renderer reads nothing from the device but its push pointer; every hook but
+Swap, CreateDevice and the push buffer's own runs the guest only, so the walk (`inline_draws`)
+sees every packet between Swaps and draws, resolves and clears from them, the shaders from their
+`IM_LOAD`s. Swap's front buffer fetch constant is read at the offset its own code hands `VdSwap`
+(`constants.texture_fetch_offset`). Two things the walk needed: its bin select starts at all ones
+(this D3D's segment start writes `SET_BIN_SELECT` 0xFFFFFFFFFFFFFFFF and its draws run under
+`SET_BIN_MASK` 0xFFFFFFFF00000000: the later XDKs' low-word select dropped all 16 draws a frame), and
+the Clear quads in the gaps are cleared (no hook clears: the menu drew over a white surface). The
+menus and the gameplay then draw as on the Xenos plugin, 60 FPS. The upscaler did not start there
+(no `upscaler:` line with it asked for): not looked into.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

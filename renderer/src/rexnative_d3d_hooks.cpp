@@ -519,7 +519,7 @@ std::atomic<bool> g_hook_all{false};
 // rexnative.inline_draws, read once (with g_hook_all: the pass-through hooks must run OnHook).
 std::atomic<bool> g_inline_draws{false};
 bool InlineDraws() {
-  const bool on = REXCVAR_GET(rexnative_inline_draws);
+  const bool on = rexnative::game::kStreamOnly || REXCVAR_GET(rexnative_inline_draws);
   g_inline_draws.store(on, std::memory_order_relaxed);
   return on;
 }
@@ -1503,6 +1503,7 @@ inline rexnative::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
 // Whether the state tracker (native/d3d_state) follows the guest D3D: for the native renderer
 // `r` (NativeRenderer::Live) and for the tap's compare.
 inline bool TrackState(const rexnative::NativeRenderer* r) {
+  if constexpr (rexnative::game::kStreamOnly) return false;  // no device layout to read
   return r || g_tap.enabled || REXCVAR_GET(rexnative_d3d_tap);
 }
 
@@ -1839,6 +1840,7 @@ constexpr size_t kMaxForeign = 4096;
     return;
   rexnative::NativeRenderer* r = rexnative::NativeRenderer::Live();
   if (!r) return;
+  if constexpr (rexnative::game::kStreamOnly) rexnative::GuestState().AttachStream(device);
   rexnative::cmdbuf::RunContext rc;
   rc.device = device;
   rc.renderer = r;
@@ -1890,7 +1892,7 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
   static bool kept = false;
   const uint32_t draws = std::exchange(g_auto_draws, 0);
   if (kept || !device || !REXCVAR_GET(rexnative_inline_draws_auto) ||
-      REXCVAR_GET(rexnative_inline_draws))
+      REXCVAR_GET(rexnative_inline_draws) || rexnative::game::kStreamOnly)
     return;
   if (probe) {
     if (--probe) return;
@@ -1972,6 +1974,12 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
 
 template <FnId kId, GuestFn kOriginal>
 inline void OnHook(PPCContext& ctx, uint8_t* base) {
+  // game::kStreamOnly: only Swap and the push buffer's own functions bound the walk's gaps (a
+  // gap leaves out what a hooked call writes, and the walk must see every packet); every other
+  // hook runs the guest only, its device state unread.
+  if constexpr (rexnative::game::kStreamOnly && kId != kFnSwap && kId != kFnCreateDevice &&
+                kFns[kId].cat != kPush)
+    return RunOriginal<kId, kOriginal>(ctx, base);
   if constexpr (kId == kFnSwap) InlineDrawsAuto(base, ctx.r3.u32);
   if (!g_inline_draws.load(std::memory_order_relaxed)) [[likely]] {
     if constexpr (NativeClassOf(kFns[kId].cat) == kNatDraw) ++g_auto_draws;

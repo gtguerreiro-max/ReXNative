@@ -891,7 +891,10 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
       // buffer it replays each frame; dropped, nothing cleared its scene (trails of every frame
       // before, a white screen after a minute) nor its depth. Not in the main stream's gaps:
       // the hooked clears' quads are not in them, and the rest there are other quads (Halo's).
-      if (drop == kDropInternal && emit && c.renderer && !c.gap && (regs[0x2208] & 7) == 4 &&
+      // With game::kStreamOnly no hook clears: every Clear's quad is in the gaps (Geometry Wars:
+      // Retro Evolved's menu drew over a white surface).
+      if (drop == kDropInternal && emit && c.renderer &&
+          (!c.gap || rexnative::game::kStreamOnly) && (regs[0x2208] & 7) == 4 &&
           REXCVAR_GET(rexnative_cmdbuf_clears)) {
         c.renderer->OnRegisterClear(ResolveRegisters::From([&](uint32_t reg) {
           return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
@@ -1105,6 +1108,12 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
     w.predication = REXCVAR_GET(rexnative_cmdbuf_predication);
     w.mask = mask;
     w.select = 0xFFFFFFFFull;
+    // A D3D the layer cannot map (game::kStreamOnly): no bin mask in a known place, and D3D
+    // 2.0.2135's segment start (inside the hooked StartSegment, outside every gap) writes
+    // SET_BIN_SELECT 0xFFFFFFFFFFFFFFFF; its draws then run under SET_BIN_MASK
+    // 0xFFFFFFFF00000000, which the low-word select of the later XDKs drops (Geometry Wars:
+    // Retro Evolved walked 16 draws a frame, drew none).
+    if constexpr (rexnative::game::kStreamOnly) w.mask = w.select = ~0ull;
     w.budget = kBudgetDwords;
     // An INDIRECT_BUFFER in the main stream is a recorded buffer's chunk that a RunCommandBuffer
     // no replay saw pushed: on another thread (Halo: Combat Evolved Anniversary's), or inlined.

@@ -563,7 +563,7 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
     return false;
   }
   uint32_t fetch[6];
-  for (int i = 0; i < 6; ++i) fetch[i] = Load32(base, tex + 28 + 4 * i);
+  for (int i = 0; i < 6; ++i) fetch[i] = Load32(base, tex + game::kTextureFetchOffset + 4 * i);
   TextureKey key;
   if (!TextureKeyFromFetch(fetch, &key)) {
     REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: invalid destination fetch constant {:08X} {:08X}",

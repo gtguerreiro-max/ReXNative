@@ -242,6 +242,14 @@ class GuestStateTracker {
     device_ = 0;
     vs_imm_pending_valid_ = false;
   }
+  // game::kStreamOnly: follows `device` without its shadow (a layout the layer does not know);
+  // the registers and shaders come from the walked stream alone.
+  void AttachStream(uint32_t device) {
+    if (device_ == device) return;
+    device_ = device;
+    vs_ = ps_ = {};
+    inline_vertices_ = 0;
+  }
 
   // A recorded command buffer replayed into the tracker (cmd_replay.h), on the thread that
   // drives the followed device, after AfterCall for its RunCommandBuffer: BeginReplay, then the
