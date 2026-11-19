@@ -374,6 +374,29 @@ SSX, 82% agree exactly; the rest differ only in the right edge, cut by a 4x MSAA
 the pitch or a scissor that the tap's register view holds at that point and ReXGlue's own decode
 rarely sees (its "outside the surface pitch" error came twice in three minutes).
 
+## XEX DLL modules
+
+Forza Horizon keeps its speech and media code in two XEX DLL modules beside `default.xex`
+(`SpeechFacade_default.xex` at 0x89000000, `XMediaFacade_default.xex` at 0x88000000), which it
+loads at start-up. ReXGlue recompiles such modules itself: a `[[modules]]` entry in the manifest
+(its file, the guest path the game loads it by, its own output folder) becomes a host DLL beside
+the executable (`dll_targets.cmake`) that the generated `init.cpp` registers. `prepare` now
+writes one for every `.xex` under the game's folder whose module flags say DLL, with the
+entrypoint's register options; the hints and the shared functions go to the binary whose image
+holds their address (its title update patch can make the image larger), and the non-volatile
+live-in scan reads the modules' generated code too (63 functions of `XMediaFacade`).
+
+Their title update patches then failed: "XEX patch image key does not match the base XEX". A
+patch's header delta is a list of entries (a copy, a zero fill or LZX data) up to an empty one;
+ReXGlue passed the applier the first entry's length only. The main executable's patch is one LZX
+entry; a module's starts with three copies, so its security info, and the key in it, stayed
+unpatched. SDK patch 0037 passes the descriptor's size, as Xenia does. Forza Horizon then plays
+on the native renderer.
+
+Top Spin 4 is another case: its `default.xex` has no D3D at all, and both of its modules link
+their own D3D library. The renderer's hooks are in the executable; reaching functions in a module
+needs the hooks in that module's DLL.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

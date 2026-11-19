@@ -380,6 +380,70 @@ def _shares_scanned(work, gen, mark=False):
     return os.path.exists(stamp) and open(stamp, encoding='utf-8').read().strip() == newest
 
 
+# XEX module flags (the header's second word): a DLL module, and a patch (an .xexp's).
+XEX_MODULE_DLL, XEX_MODULE_PATCH = 0x8, 0x10
+
+
+def modules(work):
+    """The game's XEX DLL modules, which ReXGlue recompiles as [[modules]] beside the entrypoint:
+    every .xex under game-data but default.xex whose module flags say DLL (Forza Horizon's
+    SpeechFacade_default.xex and XMediaFacade_default.xex). Each as a dict: file (relative to
+    work), guest_path (relative to the game's root, which the guest loads it by), out (its
+    generated folder) and span (its image's base address and size)."""
+    root = os.path.join(work, 'game-data')
+    out = []
+    for dirpath, _, files in os.walk(root):
+        for f in sorted(files):
+            rel = os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, '/')
+            if not f.lower().endswith('.xex') or rel.lower() == 'default.xex':
+                continue
+            path = os.path.join(dirpath, f)
+            with open(path, 'rb') as fh:
+                head = fh.read(8)
+            if head[:4] != b'XEX2':
+                continue
+            flags = struct.unpack('>I', head[4:8])[0]
+            if not flags & XEX_MODULE_DLL or flags & XEX_MODULE_PATCH:
+                continue
+            ident = re.sub(r'[. ]', '_', os.path.splitext(f)[0].lower())
+            # A title update's patch beside it (codegen applies it) can make the image larger.
+            base, size = xex.image_span(path)
+            if os.path.exists(path + 'p'):
+                size = max(size, xex.image_span(path + 'p')[1])
+            out.append({'file': 'game-data/' + rel, 'guest_path': rel,
+                        'out': 'generated/' + ident, 'span': (base, size)})
+    return sorted(out, key=lambda m: m['guest_path'].lower())
+
+
+def _generated_dirs(work):
+    """The generated code of the entrypoint and of each DLL module."""
+    return [os.path.join(work, 'generated', 'default')] + [
+        os.path.join(work, *m['out'].split('/')) for m in modules(work)]
+
+
+def _scan_shares(work, gen):
+    """live_in_nonvolatiles over the entrypoint's generated code and every module's."""
+    found = {}
+    regs = _share_regs(work)
+    for d in [gen] + _generated_dirs(work)[1:]:
+        if os.path.isdir(d):
+            found.update(live_in_nonvolatiles(d, regs))
+    return found
+
+
+def _function_lines(entries):
+    """[(address, size, shared)] as a functions table's lines."""
+    lines = []
+    for a, size, shared in sorted(entries):
+        fields = []
+        if size:
+            fields.append('size = 0x%X' % size)
+        if shared:
+            fields.append('share_registers = true')
+        lines.append('0x%08X = { %s }' % (a, ', '.join(fields)) if fields else '0x%08X = {}' % a)
+    return lines
+
+
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.11.0"',
@@ -407,15 +471,26 @@ def _write_manifest(work, name):
     # function, then inside 827611D8's 0x720 bytes).
     shares = {a for a in _shares(work) - not_starts(work)
               if not any(lo < a < hi for lo, hi in spans)}
-    if hints or shares:
+    # The XEX DLL modules (ReXGlue's [[modules]]): each with the entrypoint's register options,
+    # and the hints and shared functions inside its image (codegen names an address, not its
+    # binary).
+    mods = modules(work)
+    entries = {i: [] for i in range(len(mods) + 1)}
+    for a in sorted(set(hints) | shares):
+        owner = next((i + 1 for i, m in enumerate(mods)
+                      if m['span'][0] <= a < m['span'][0] + m['span'][1]), 0)
+        entries[owner].append((a, hints.get(a, 0), a in shares))
+    if entries[0]:
         lines.append('[entrypoint.functions]')
-        for a in sorted(set(hints) | shares):
-            fields = []
-            if hints.get(a):
-                fields.append('size = 0x%X' % hints[a])
-            if a in shares:
-                fields.append('share_registers = true')
-            lines.append('0x%08X = { %s }' % (a, ', '.join(fields)) if fields else '0x%08X = {}' % a)
+        lines += _function_lines(entries[0])
+    for i, m in enumerate(mods):
+        lines += ['', '[[modules]]', 'file_path = "%s"' % m['file'],
+                  'guest_path = "%s"' % m['guest_path'],
+                  'out_directory_path = "%s"' % m['out'], 'includes = []']
+        lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
+        if entries[i + 1]:
+            lines.append('[modules.functions]')
+            lines += _function_lines(entries[i + 1])
     path = os.path.join(work, '%s_manifest.toml' % name)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
@@ -601,7 +676,7 @@ def codegen(work, name, rexglue, max_rounds, log):
     if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and
             os.path.exists(os.path.join(gen, '%s_init.h' % name))):
         if not (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
-                _add_shares(work, live_in_nonvolatiles(gen, _share_regs(work)), log, 0)):
+                _add_shares(work, _scan_shares(work, gen), log, 0)):
             _shares_scanned(work, gen, True)
             return {'reused': True, 'rounds': 0}
         os.remove(done)
@@ -670,7 +745,7 @@ def codegen(work, name, rexglue, max_rounds, log):
                     rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
             if OPTIONS['non_volatile_as_local'] and _add_shares(
-                    work, live_in_nonvolatiles(gen, _share_regs(work)), log, rnd):
+                    work, _scan_shares(work, gen), log, rnd):
                 continue
             drop_outside_functions(work, text, log)
             _shares_scanned(work, gen, True)

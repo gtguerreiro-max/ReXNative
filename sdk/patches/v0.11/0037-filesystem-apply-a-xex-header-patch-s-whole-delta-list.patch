@@ -1,0 +1,44 @@
+From 09d88d81977154bab22406f6d5140bd2f69d33c0 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 06:41:04 +0000
+Subject: [PATCH] filesystem: apply a XEX header patch's whole delta list
+
+ApplyHeaderDeltaTo gave LZXApplyDelta the first entry's compressed length plus 12 bytes, so
+only the first entry of the header patch ran. A DLL module's patch starts with copies (Forza
+Horizon's SpeechFacade_default.xexp: three copies, then the LZX data), which left its security
+info, and so its key, unpatched: "XEX patch image key does not match the base XEX", status 9.
+The list now runs to its empty entry within the descriptor's size, as Xenia passes it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/filesystem/xex.cpp | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/filesystem/xex.cpp b/src/filesystem/xex.cpp
+index 5fb6e1bc..2d1004f9 100644
+--- a/src/filesystem/xex.cpp
++++ b/src/filesystem/xex.cpp
+@@ -506,11 +506,18 @@ Result<XEXImage> XEXImage::ApplyHeaderDeltaTo(const XEXImage& patch) const {
+   if (target_size < out.header_.size()) {
+     std::fill(out.header_.begin() + target_size, out.header_.end(), u8{0});
+   }
++  // The header patch is a list of delta entries (a copy, a zero fill or LZX data each) up to an
++  // empty one, as the descriptor's size covers it (Xenia passes that size too): a DLL module's
++  // patch starts with copies (Forza Horizon's SpeechFacade_default.xexp, 0x98C -> 0xB78), and the
++  // first entry alone left its security info, and so its key, unpatched.
+   const auto* info = reinterpret_cast<const u8*>(&descriptor->info);
+-  const size_t info_size = size_t{descriptor->info.compressed_len} + 12;
+-  if (info + info_size > patch.header_.data() + patch.header_.size()) {
++  const auto* header_end = patch.header_.data() + patch.header_.size();
++  const size_t info_offset = static_cast<size_t>(info - reinterpret_cast<const u8*>(descriptor));
++  if (info + 12 > header_end || descriptor->size < info_offset + 12) {
+     return FormatError<XEXImage>("XEX header patch is out of range");
+   }
++  const size_t info_size =
++      std::min<size_t>(descriptor->size - info_offset, static_cast<size_t>(header_end - info));
+   if (const int code = detail::LZXApplyDelta(
+           {info, info_size}, format->compression_info.normal.window_size, out.header_)) {
+     return Err<XEXImage>(ErrorCategory::kCompression, "XEX header patch failed", code);
+-- 
+2.55.0.windows.5
+
