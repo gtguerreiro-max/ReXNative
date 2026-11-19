@@ -45,6 +45,8 @@
 # for a game that opens a socket) is the user's to answer, and the keys are skipped meanwhile.
 # pad:<buttons joined by +>:<ms> (A B X Y START BACK UP DOWN LEFT RIGHT LB RB) presses them on the
 # game's pad instead, through the control file: no focus needed (a layer with XInputGetState).
+# More fields hold the sticks and triggers meanwhile: pad:none:600:ry=32767 looks up for 600 ms
+# (lx ly rx ry from -32768 to 32767, lt rt from 0 to 255).
 param(
     [Parameter(Position = 0)][string]$Command = 'status',
     [Parameter(Position = 1)][string]$Arg = '',
@@ -147,8 +149,9 @@ function Send-Schedule($p, [string]$schedule) {
             # XInputGetState): no focus needed.
             $parts = $key.Split(':')
             $ms = if ($parts.Count -gt 2) { $parts[2] } else { '150' }
-            Add-Content -Path (Join-Path $s.live 'control.txt') -Value "pad $($parts[1]) $ms" -Encoding ascii
-            "pad $($parts[1]) $ms ms at ${at}s"
+            $axes = if ($parts.Count -gt 3) { ' ' + ($parts[3..($parts.Count - 1)] -join ' ') } else { '' }
+            Add-Content -Path (Join-Path $s.live 'control.txt') -Value "pad $($parts[1])$axes $ms" -Encoding ascii
+            "pad $($parts[1])$axes $ms ms at ${at}s"
             continue
         }
         $h = Get-Window $p

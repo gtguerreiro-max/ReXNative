@@ -192,6 +192,11 @@ struct ClearParams {
   // EndTiling's resolve clears land at the base whatever the tile's position.
   std::vector<D3D12_RECT> edram_rects;
   bool tiling = false;  // the D3D's predicated tiling was on (its tile count above 1)
+  // A clear the registers describe (DecodeRegisterClear): the D3D's Clear quad draws a 1x
+  // surface as 4x MSAA of half its pitch and height, another view of the same EDRAM tiles. Its
+  // color reaches the other targets there as an EDRAM fill; its depth and stencil clear the
+  // other depth targets on those tiles too (ClearDepthAliases).
+  bool edram_alias = false;
 };
 
 // One Clear / ClearF call, decoded from its arguments and the device (guest memory).
@@ -377,6 +382,11 @@ class RenderTargets {
   void DropCovered(RenderTarget* rt, uint32_t flags, const D3D12_RECT* rects, size_t n);
   // Records rt's pending clears into `list`, oldest first.
   void Flush(CommandStream* list, RenderTarget* rt);
+  // ClearParams::edram_alias: `v` over `rects` (src's pixels; none: all of it) into the other
+  // depth targets of src's format whose pixels lie on the same EDRAM tiles (the same base and
+  // tile pitch, any MSAA).
+  void ClearDepthAliases(CommandStream* list, const RenderTarget& src, const ClearValue& v,
+                         const std::vector<D3D12_RECT>& rects);
 
   RenderTarget* Get(bool depth, uint32_t surface_info, uint32_t info, uint32_t height);
   bool IsOverridden(uint32_t surface_info) const {

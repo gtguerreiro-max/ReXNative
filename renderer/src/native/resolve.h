@@ -109,7 +109,8 @@ struct ResolveParams {
   bool from_registers = false;
 };
 
-// The registers a resolve reads, as the GPU has them at the resolve's draw packet.
+// The registers a resolve reads, as the GPU has them at the resolve's draw packet (and those a
+// clear quad's draw packet needs: DecodeRegisterClear).
 struct ResolveRegisters {
   SurfaceRegs surface;                       // 0x2000..0x2005
   uint32_t screen_scissor_tl = 0, screen_scissor_br = 0;               // 0x200E, 0x200F
@@ -119,6 +120,9 @@ struct ResolveRegisters {
   uint32_t copy_control = 0, copy_dest_base = 0, copy_dest_pitch = 0, copy_dest_info = 0;  // 0x2318..
   uint32_t depth_clear = 0, color_clear = 0, color_clear_lo = 0;     // 0x231D..0x231F
   uint32_t vertex_fetch[2] = {};             // vertex fetch constant 0 (0x4800, 0x4801)
+  uint32_t color_mask = 0;                   // RB_COLOR_MASK (0x2104)
+  uint32_t stencil_ref_mask = 0;             // RB_STENCILREFMASK (0x210D)
+  uint32_t depth_control = 0;                // RB_DEPTHCONTROL (0x2200)
   // Each of them through `get(reg)`.
   template <typename Get>
   static ResolveRegisters From(Get&& get) {
@@ -143,6 +147,9 @@ struct ResolveRegisters {
     r.color_clear_lo = get(0x231F);
     r.vertex_fetch[0] = get(0x4800);
     r.vertex_fetch[1] = get(0x4801);
+    r.color_mask = get(0x2104);
+    r.stencil_ref_mask = get(0x210D);
+    r.depth_control = get(0x2200);
     return r;
   }
 };
@@ -158,6 +165,16 @@ struct ResolveRegisters {
 // destinations, formats the resolve cannot write, an empty rectangle.
 bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& regs,
                            ResolveParams* out);
+
+// Decodes the D3D's Clear quad from the registers at its draw packet (RB_MODECONTROL kColorDepth,
+// DRAW_INDX_2): a clear no hooked call made, recorded in a command buffer the game replays
+// (Darwinia+ records its frame's Clear there each frame). Vertex fetch constant 0 holds its three
+// vertices, each x, y, z and the RGBA color; the surfaces are those the registers bind, the
+// color targets those RB_COLOR_MASK writes, depth and stencil those RB_DEPTHCONTROL writes (the
+// stencil value is the reference the quad writes). The Clear draws a 1x surface as 4x MSAA of
+// half its pitch and height: ClearParams::edram_alias carries it to the 1x targets. Returns
+// false (logged once) for another vertex layout, nothing written, an empty rectangle.
+bool DecodeRegisterClear(const uint8_t* physical, const ResolveRegisters& regs, ClearCall* out);
 
 // Decodes a Resolve hook call (`args` = r3..r10, f1, sp at entry; guest memory at `base`), after
 // the guest Resolve returned, and logs where its copy registers in the D3D's shadow disagree.

@@ -474,6 +474,9 @@ std::atomic<uint32_t> g_skip{0};
 // XInputGetState returns. A game is driven so where no key reaches it: another window holds the
 // focus (a firewall prompt), RenderDoc's capture, or the Steam Deck.
 std::atomic<uint64_t> g_pad_state{0};
+// And, with bit 32, the right stick (rx in bits 0-15, ry in 16-31); with bit 56, the triggers
+// (left in bits 40-47, right in 48-55).
+std::atomic<uint64_t> g_pad_state2{0};
 std::atomic<uint64_t> g_pad_until_ns{0};
 
 // "A+START", "UP", "none": XINPUT_GAMEPAD button bits; false for an unknown name.
@@ -1026,22 +1029,30 @@ void PollControl(Tap& t, uint8_t* base) {
       ss >> arg2;
       rexnative::cmdbuf::Control(arg, arg2, REXCVAR_GET(rexnative_d3d_trace_dir));
     } else if (cmd == "pad") {
-      // pad <buttons|none> [lx=N] [ly=N] [ms]: held on user 0's pad for ms (default 150).
+      // pad <buttons|none> [lx=N] [ly=N] [rx=N] [ry=N] [lt=N] [rt=N] [ms]: held on user 0's pad
+      // for ms (default 150); sticks -32768 to 32767, triggers 0 to 255.
       uint16_t buttons = 0;
       if (!ParsePadButtons(arg, &buttons)) {
         REXNATIVE_LOG_FIRST(4, WARN, "ReXNative D3D control: '{}': unknown button", l);
         continue;
       }
-      uint64_t state = buttons, ms = 150;
+      uint64_t state = buttons, state2 = 0, ms = 150;
       for (std::string tok; ss >> tok;) {
         if (tok.rfind("lx=", 0) == 0 || tok.rfind("ly=", 0) == 0) {
           const int v = std::clamp(std::atoi(tok.c_str() + 3), -32768, 32767);
           state |= uint64_t(uint16_t(int16_t(v))) << (tok[1] == 'x' ? 16 : 32) | 1ull << 48;
+        } else if (tok.rfind("rx=", 0) == 0 || tok.rfind("ry=", 0) == 0) {
+          const int v = std::clamp(std::atoi(tok.c_str() + 3), -32768, 32767);
+          state2 |= uint64_t(uint16_t(int16_t(v))) << (tok[1] == 'x' ? 0 : 16) | 1ull << 32;
+        } else if (tok.rfind("lt=", 0) == 0 || tok.rfind("rt=", 0) == 0) {
+          const int v = std::clamp(std::atoi(tok.c_str() + 3), 0, 255);
+          state2 |= uint64_t(v) << (tok[0] == 'l' ? 40 : 48) | 1ull << 56;
         } else {
           ms = std::strtoull(tok.c_str(), nullptr, 10);
         }
       }
       g_pad_state.store(state, std::memory_order_relaxed);
+      g_pad_state2.store(state2, std::memory_order_relaxed);
       g_pad_until_ns.store(rexnative::NowNs() + ms * 1000000ull, std::memory_order_release);
     } else if (cmd == "watch") {
       if (arg == "off") {
@@ -1431,9 +1442,17 @@ inline std::array<uint32_t, 8> PublicRegs(uint32_t fn, const PPCContext& ctx) {
     default:
       break;
   }
-  if (!map) return raw;
-  std::array<uint32_t, 8> r;
-  for (int i = 0; i < 8; ++i) r[i] = map[i] ? raw[map[i] - 3] : 0;
+  std::array<uint32_t, 8> r = raw;
+  if (map)
+    for (int i = 0; i < 8; ++i) r[i] = map[i] ? raw[map[i] - 3] : 0;
+  // An LTCG BeginVertices with its stride built in (Darwinia+'s multiplies the count by 44 and
+  // never reads r6, which holds whatever the caller left there): the vertex range it reserved
+  // came out a few bytes long, the rest of each quad was stale shared memory, and the intro's
+  // quads were drawn as long wedges across the screen.
+#ifdef REXNATIVE_BEGIN_VERTICES_STRIDE
+  if (rexnative::HookFn(fn) == rexnative::HookFn::kBeginVertices)
+    r[3] = REXNATIVE_BEGIN_VERTICES_STRIDE;
+#endif
   return r;
 }
 
@@ -2084,6 +2103,15 @@ REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_XINPUT_GET_STATE)) {
     if (pad >> 48 & 1) {
       rex::memory::store_and_swap<uint16_t>(s + 8, uint16_t(pad >> 16));
       rex::memory::store_and_swap<uint16_t>(s + 10, uint16_t(pad >> 32));
+    }
+    const uint64_t pad2 = g_pad_state2.load(std::memory_order_relaxed);
+    if (pad2 >> 32 & 1) {
+      rex::memory::store_and_swap<uint16_t>(s + 12, uint16_t(pad2));
+      rex::memory::store_and_swap<uint16_t>(s + 14, uint16_t(pad2 >> 16));
+    }
+    if (pad2 >> 56 & 1) {
+      s[6] = uint8_t(pad2 >> 40);
+      s[7] = uint8_t(pad2 >> 48);
     }
   }
   if (ctx.r3.u32 != 0 || !state || user >= 4 || !rexnative::NativeRenderer::ShowsFrames()) return;

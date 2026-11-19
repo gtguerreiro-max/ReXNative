@@ -913,6 +913,84 @@ bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& r,
   return true;
 }
 
+bool DecodeRegisterClear(const uint8_t* physical, const ResolveRegisters& r, ClearCall* out) {
+  constexpr uint32_t kVertexDwords = 7;  // x, y, z, r, g, b, a
+  const uint32_t f0 = r.vertex_fetch[0], f1 = r.vertex_fetch[1];
+  const uint32_t vertices = f0 & 0x1FFFFFFCu;
+  if ((f0 & 3) != 3 || ((f1 >> 2) & 0xFFFFFF) != 3 * kVertexDwords ||
+      vertices + 3 * kVertexDwords * 4 > 0x20000000u) {
+    REXNATIVE_LOG_FIRST(4, WARN,
+                        "ReXNative clear (registers): vertex fetch {:08X} {:08X} is not a clear "
+                        "quad's; left undone",
+                        f0, f1);
+    return false;
+  }
+  float v[3 * kVertexDwords];
+  for (uint32_t i = 0; i < 3 * kVertexDwords; ++i) {
+    uint32_t raw;
+    std::memcpy(&raw, physical + vertices + 4 * i, 4);
+    v[i] = std::bit_cast<float>(GpuSwap(raw, f1));
+  }
+  // The rectangle the three corners span, in pixels (centers at +0.5 unless pix_center is
+  // kD3DZero), moved by the window offset.
+  const float half_pixel = (r.vtx_cntl & 1) ? 0.0f : 0.5f;
+  auto edge = [&](uint32_t c, bool high) {
+    const float a = v[c], b = v[kVertexDwords + c], d = v[2 * kVertexDwords + c];
+    const float e = high ? std::max({a, b, d}) : std::min({a, b, d});
+    return int32_t(std::lround(std::clamp(e + half_pixel, -16384.0f, 16384.0f)));
+  };
+  int32_t x0 = edge(0, false), y0 = edge(1, false), x1 = edge(0, true), y1 = edge(1, true);
+  if (r.su_sc_mode_cntl & (1u << 16)) {  // vtx_window_offset_enable
+    const int32_t wx = int32_t(r.window_offset << 17) >> 17;
+    const int32_t wy = int32_t((r.window_offset >> 16) << 17) >> 17;
+    x0 += wx;
+    y0 += wy;
+    x1 += wx;
+    y1 += wy;
+  }
+  const int32_t pitch = int32_t(r.surface.surface_info & 0x3FFF);
+  x0 = std::clamp(x0, 0, pitch);
+  x1 = std::clamp(x1, 0, pitch);
+  y0 = std::clamp(y0, 0, 8192);
+  y1 = std::clamp(y1, 0, 8192);
+  ClearCall c;
+  ClearParams& p = c.p;
+  // The color targets the quad writes; one whose RB_COLORn_INFO repeats an earlier one's is that
+  // surface again (the D3D leaves RB_COLOR_MASK 0xFFFF and RB_COLOR1..3_INFO 0 for one target).
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (!((r.color_mask >> (4 * i)) & 0xF)) continue;
+    bool again = false;
+    for (uint32_t j = 0; j < i; ++j)
+      again |= (p.flags >> j & 1) && r.surface.color_info[j] == r.surface.color_info[i];
+    if (!again) p.flags |= 1u << i;
+  }
+  c.bound_colors = p.flags & 0xF;
+  if ((r.depth_control & 6) == 6) p.flags |= 0x10;  // z_enable, z_write_enable
+  if ((r.depth_control & 1) && (r.stencil_ref_mask >> 16 & 0xFF)) p.flags |= 0x20;
+  c.depth_bound = (p.flags & 0x30) != 0;
+  if (!p.flags || x0 >= x1 || y0 >= y1) {
+    REXNATIVE_LOG_FIRST(4, WARN,
+                        "ReXNative clear (registers): nothing to clear (mask {:08X}, depth "
+                        "control {:08X}, rectangle {},{}-{},{})",
+                        r.color_mask, r.depth_control, x0, y0, x1, y1);
+    return false;
+  }
+  for (uint32_t i = 0; i < 4; ++i) p.color[i] = v[3 + i];
+  p.depth = v[2];
+  p.stencil = uint8_t(r.stencil_ref_mask & 0xFF);
+  p.rects.push_back({LONG(x0), LONG(y0), LONG(x1), LONG(y1)});
+  p.edram_alias = true;
+  c.regs = r.surface;
+  c.height = uint32_t(y1);
+  REXNATIVE_LOG_FIRST(1, INFO,
+                      "ReXNative clear (registers): the D3D's clear quad in a replayed buffer, "
+                      "surface {:08X} flags {:X} color {},{},{},{} depth {} rectangle {},{}-{},{}",
+                      r.surface.surface_info, p.flags, p.color[0], p.color[1], p.color[2],
+                      p.color[3], p.depth, x0, y0, x1, y1);
+  *out = std::move(c);
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Resolver
 

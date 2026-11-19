@@ -246,6 +246,17 @@ the replay first refused and then drew 512 rows up:
 
 `cmdbuf dump tag:N` dumps the next N calls (a whole frame of Midnight Club's is 67).
 
+Darwinia+ records its frame's Clear in a buffer it replays each frame. The D3D's Clear is a
+quad (DRAW_INDX_2, RB_MODECONTROL kColorDepth) that the replay dropped with the other internal
+draws: nothing cleared the scene, each frame was drawn over the last (trails, then a white
+screen within a minute) and its depth was never cleared. The quad now becomes a clear of what
+the registers bind (`DecodeRegisterClear`, `rexnative.cmdbuf_clears`): its three vertices are
+x, y, z and the RGBA color (21 dwords at vertex fetch 0), RB_COLOR_MASK and RB_DEPTHCONTROL say
+what it writes. The D3D clears the 1x 1280x720 surface as 4x MSAA of 640x360, another view of
+the same EDRAM tiles: the color reaches the 1x target as an EDRAM fill, the depth through
+`ClearDepthAliases`. Only in replayed buffers: the main stream's gaps hold no hooked clear's
+quad, and Halo's internal quads there are others.
+
 ## Inline draws
 
 Orcs Must Die!'s build inlined DrawIndexedVertices into its title, menus, loading screens and

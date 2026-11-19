@@ -993,6 +993,26 @@ void NativeRenderer::OnRegisterResolve(const ResolveRegisters& regs) {
   if (ResolveParams p; DecodeRegisterResolve(physical, regs, &p)) ExecuteResolve(p);
 }
 
+void NativeRenderer::OnRegisterClear(const ResolveRegisters& regs) {
+  const uint8_t* physical = host::Memory()->GetPhysicalMembase();
+  if (queue_) {
+    const uint64_t t0 = Ticks();
+    profile::Scope scope(profile::kCapRecord);
+    Queue& q = *queue_;
+    Queue::Batch& b = *q.current;
+    ClearCall& c = b.clears.emplace_back();
+    if (DecodeRegisterClear(physical, regs, &c))
+      q.Push(Queue::kClear, uint32_t(b.clears.size() - 1));
+    else
+      b.clears.pop_back();  // logged once
+    q.AddHook(Ticks() - t0);
+    return;
+  }
+  if (g_failed) [[unlikely]]
+    return;
+  if (ClearCall c; DecodeRegisterClear(physical, regs, &c)) ExecuteClear(c);
+}
+
 uint64_t NativeRenderer::FrontEndLimit() {
   const int32_t fps = REXCVAR_GET(rexnative_menu_fps);
   const uint64_t now = NowNs();

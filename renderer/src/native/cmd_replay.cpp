@@ -73,6 +73,10 @@ REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_nested, true, "ReXNative",
 REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_internal_draws, false, "ReXNative",
                     "Replayed command buffers: also issue their DRAW_INDX_2 packets (the D3D's "
                     "own clear and copy quads, dropped by default)");
+REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_clears, true, "ReXNative",
+                    "Replayed command buffers: the D3D's Clear quads they hold (DRAW_INDX_2 in "
+                    "RB_MODECONTROL kColorDepth) clear their surfaces, as the GPU does (false: "
+                    "dropped, as the other internal draws)");
 
 namespace rexnative::cmdbuf {
 namespace {
@@ -881,6 +885,17 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
           return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
         }));
         ++resolves_issued;
+      }
+      // The D3D's Clear quad in a replayed buffer, which the recording device drew (no hook saw
+      // that Clear): its clear, from the registers. Darwinia+ records its frame's Clear in a
+      // buffer it replays each frame; dropped, nothing cleared its scene (trails of every frame
+      // before, a white screen after a minute) nor its depth. Not in the main stream's gaps:
+      // the hooked clears' quads are not in them, and the rest there are other quads (Halo's).
+      if (drop == kDropInternal && emit && c.renderer && !c.gap && (regs[0x2208] & 7) == 4 &&
+          REXCVAR_GET(rexnative_cmdbuf_clears)) {
+        c.renderer->OnRegisterClear(ResolveRegisters::From([&](uint32_t reg) {
+          return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
+        }));
       }
     }
     const bool issue = drop < 0 && emit;

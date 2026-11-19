@@ -132,6 +132,9 @@ class NativeRenderer {
   // A resolve the push buffer holds that no hooked call made (cmd_replay.h ReplayGap,
   // rexnative.inline_resolves), with the registers at its draw packet (DecodeRegisterResolve).
   void OnRegisterResolve(const ResolveRegisters& regs);
+  // The D3D's Clear quad in a replayed command buffer (cmd_replay.h), with the registers at its
+  // draw packet (DecodeRegisterClear).
+  void OnRegisterClear(const ResolveRegisters& regs);
   void OnSwap(uint8_t* base, const HookArgs& args);
   // Occlusion queries (occlusion.h), primary mode: after QueryIssue returned, and at the entry
   // of GetData.

@@ -649,7 +649,33 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
         rt->clear_depth = v.depth;
       }
       if (!fills_.empty()) DropFills(*rt, edram_rows(*rt));
+      if (p.edram_alias) ClearDepthAliases(list, *rt, v, p.rects);
     }
+  }
+}
+
+void RenderTargets::ClearDepthAliases(CommandStream* list, const RenderTarget& src,
+                                      const ClearValue& v, const std::vector<D3D12_RECT>& rects) {
+  const EdramGrid g = GridOf(src);
+  for (const auto& [key, a] : targets_) {
+    if (!a->depth || a.get() == &src || a->edram_base != src.edram_base ||
+        a->view_format != src.view_format)
+      continue;
+    const EdramGrid ga = GridOf(*a);
+    if (ga.pitch != g.pitch) continue;
+    // Dword columns and sample rows are the grid's: src's pixels in a's.
+    std::vector<D3D12_RECT> mapped;
+    for (const D3D12_RECT& r : rects)
+      mapped.push_back({LONG(r.left * g.dx / ga.dx), LONG(r.top * g.dy / ga.dy),
+                        LONG(r.right * g.dx / ga.dx), LONG(r.bottom * g.dy / ga.dy)});
+    Defer(list, a.get(), v, mapped);
+    if (v.flags & D3D12_CLEAR_FLAG_DEPTH) {
+      a->depth_seq = ++depth_seq_;
+      a->clear_depth = v.depth;
+    }
+    if (log_)
+      std::fprintf(log_, "rt depth clear of base %u pitch %u x%u also into pitch %u x%u\n",
+                   src.edram_base, src.pitch, src.edram_samples, a->pitch, a->edram_samples);
   }
 }
 
