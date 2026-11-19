@@ -13,7 +13,9 @@ window and drives it to the problem; then each experiment takes seconds on the r
 - `snap`: the render targets after given shaders (`python scripts\snaps.py` turns them into
   images); `drawlog`: one frame's draws; `trace`: the guest push buffer of one frame;
 - in `-Route`, `pad:A+START:200` presses the game's pad through the control file (no focus
-  needed, for a layer with XInputGetState).
+  needed, for a layer with XInputGetState); `pad:none:600:ry=32767` holds a stick or a trigger
+  meanwhile (`lx` `ly` `rx` `ry` from -32768 to 32767, `lt` `rt` from 0 to 255). A lone Start
+  or Back needs about half a second: the settings HUD holds a short one back (its View + Menu).
 
 ## RenderDoc
 
