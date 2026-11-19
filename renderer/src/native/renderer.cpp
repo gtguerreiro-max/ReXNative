@@ -160,6 +160,7 @@ REXCVAR_DEFINE_INT32(
     "and audits them: each shader against the guest's ucode, the render thread's "
     "registers against the game thread's, and the shared memory each draw reads "
     "against guest memory as it was when the draw was queued (0: off)");
+REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 REXCVAR_DECLARE(int32_t, rexnative_d3d_stats_frames);
 REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
 REXCVAR_DECLARE(int32_t, rexnative_dlss5_passes);
@@ -1298,7 +1299,8 @@ void NativeRenderer::ExecuteDraw(const DrawState& state, const DrawPrep* prep) {
                           prep ? DrawRenderer::ShaderHashes(*prep).second : 0))
     draw_->InvalidateListState();
   if (frame_generation_ &&
-      frame_generation_->BeforeDraw(device_->command_list(), frame_index_, state.regs))
+      frame_generation_->BeforeDraw(device_->command_list(), frame_index_, state.regs,
+                                    prep ? DrawRenderer::ShaderHashes(*prep).second : 0))
     draw_->InvalidateListState();
   draw_->OnDraw(state, prep);
   SubmitEarly();
@@ -1526,6 +1528,10 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     const ImageRect& r = present_->image_rect();
     d.SetGeneratedFrame(fg->Generate(d.command_list(), frame_index_,
                                      {r.left, r.top, r.width, r.height}, hudless.image));
+    if (hudless.image) fg->MeasureHudless(d.command_list(), frame_index_, d.frame_fence());
+    if (present_->capturing(frame_index_))
+      fg->Capture(d.command_list(), frame_index_, d.frame_fence(),
+                  REXCVAR_GET(rexnative_capture_dir), hudless.image != nullptr);
   }
   // The frame's texture copies read upload memory the untile workers fill.
   const uint64_t u0 = NowNs();
@@ -1560,6 +1566,7 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     }
   }
   textures_->Retire(completed);
+  if (frame_generation_) frame_generation_->FinishCaptures(completed);
   if (occlusion_) occlusion_->Retire(completed);
   draw_->EndFrame(completed);
   resolver_->AfterSwap();
@@ -1753,7 +1760,8 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
       w.frame_ns / 1e6 / n, w.hook_ns / 1000.0 / n, w.hook_wait_ns / 1000.0 / n, shown_ms,
       pacer_ ? pacer_->frame_latency() : 0,
       frame_generation_on_ || w.generated
-          ? std::format(", frame generation: {} of {} frames", w.generated, w.frames)
+          ? std::format(", frame generation: {} of {} frames ({} reset)", w.generated, w.frames,
+                        frame_generation_ ? frame_generation_->TakeResets() : 0)
           : std::string());
   if (profile::On() && w.draws) {
     // ns per draw for each stage (the hook-side ones are per draw too, for comparison).

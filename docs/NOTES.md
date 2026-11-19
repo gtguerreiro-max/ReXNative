@@ -486,6 +486,22 @@ in one session (`live.ps1 control "renderer stock"`) averaged as bright, and Ren
 last pass's inputs (LUT slices, exposure, noise) equal in both. Compare animated screens that
 way, not by one capture each.
 
+## Frame generation's HUD-less copy
+
+Frame generation looked right by its counts (every frame with a generated one before it, 30 FPS
+shown as 60) while showing each frame twice: captures of the generated frames
+(DEBUGGING.md) were the real ones to the pixel. FidelityFX takes the HUD from where the frame
+and its HUD-less copy differ, and copies the frame there. The copy was made at the first blended
+draw into the front buffer's surface after an opaque one (PGR4's HUD). Sega Rally Revo composites
+twice, the second time after a blended draw, so the copy held the first composite and differed
+from the frame in 98.5% of its pixels: all HUD to FidelityFX. The copy is now made again after a
+later composite (1% differs: the HUD), and every 15th frame it is compared with the frame on the
+CPU; when more than half differs, the blended passes before it are learned by their pixel
+shaders and the copy waits for them. With it, the generated frames lie between the real ones (a
+quarter of the two-frame motion) and the HUD stays sharp. Syndicate's first mission flashes its
+colours each frame, which FidelityFX's scene change detection takes for cuts (a copy, not an
+interpolation): right for such frames.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

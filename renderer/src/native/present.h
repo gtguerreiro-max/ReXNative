@@ -110,6 +110,8 @@ class Presenter {
   void AfterEndFrame();
 
   bool front_buffer_found() const;
+  // Whether this Swap took a capture of frame `frame` (OnSwap copied its image).
+  bool capturing(uint64_t frame) const;
   // The last Swap's front buffer, its guest physical address (0: none).
   uint32_t front_buffer_base() const;
   // The last frame shown's (empty before one).

@@ -28,7 +28,9 @@ change it.
   too while the game runs (`rexnative.frame_generation`): a generated frame before each of the
   game's, the game at half the screen's rate (30 FPS for 60 on the Steam Deck). It needs the
   upscaler and the frame pacer (`rexnative.frame_latency` above 0); the log's frame statistics
-  say how many frames it generated ("frame generation: 120 of 120 frames").
+  say how many frames it generated ("frame generation: 120 of 120 frames (2 reset)").
+  `rexnative.frame_generation_hudless` (on) keeps the HUD out of the generated frames;
+  `rexnative.frame_generation_indicators` draws FidelityFX's reset and scene change marks.
 - **DLSS 5 page:** picks a look, one set of DLSS 5's settings per kind of game (Cinematic,
   Cinematic with two passes, Natural, Stylized, Cel-shaded / 2D, Strong, or Custom), with its
   intensity on top. `project` gives each game the look that suits it (`rexnative/dlss5.py`:

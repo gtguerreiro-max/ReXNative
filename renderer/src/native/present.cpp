@@ -771,6 +771,9 @@ void Presenter::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,
 
 bool Presenter::front_buffer_found() const { return impl_->front_buffer_found; }
 uint32_t Presenter::front_buffer_base() const { return impl_->front_buffer_base; }
+bool Presenter::capturing(uint64_t frame) const {
+  return impl_->capture.pending && impl_->capture.frame == frame;
+}
 const ImageRect& Presenter::image_rect() const { return impl_->image_rect; }
 
 const LumaProbe& Presenter::luma_probe() const { return impl_->probe.result(); }

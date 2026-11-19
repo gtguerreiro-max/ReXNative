@@ -18,7 +18,15 @@ window and drives it to the problem; then each experiment takes seconds on the r
   or Back needs about half a second: the settings HUD holds a short one back (its View + Menu).
 - `live.ps1 control "peek 03FD1000 131072"`: how many bytes of guest physical memory there are
   not zero, and the first 32, in the log (whether the CPU wrote something or only the GPU did);
-  `scriptsdoc.ps1 save <capture> -Event N -Texture T -X 4` saves a texture's mip 4.
+  `scripts\rdoc.ps1 save <capture> -Event N -Texture T -X 4` saves a texture's mip 4.
+- Frame generation: with it on, each capture (`touch <live>\cap\capture.request`, eight
+  frames with `--rexnative_capture_burst=8`) also writes the frame as presented, the frame
+  generated before it and the HUD-less copy (`f<N>-fg-real.png`, `-fg-generated.png`,
+  `-fg-hudless.png`). A generated frame equal to the real one is a copy, not an interpolation;
+  one between the real frames before and after it moves about a quarter of their two-frame
+  motion (phase correlation of a strip). `rexnative.frame_generation_indicators` draws
+  FidelityFX's marks on the generated frames (red band: reset, blue: scene change), and the
+  log's frame statistics count the frames generated and the ones prepared in reset mode.
 
 ## RenderDoc
 
