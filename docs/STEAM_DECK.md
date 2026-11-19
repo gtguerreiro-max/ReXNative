@@ -23,6 +23,12 @@ once for all), `install.sh` and `steam_shortcuts.py`.
   any other): they use the internal Proton prefix all the same, and the FidelityFX DLLs go to
   the card's `ReXNative/common`. The shortcut's name is the title's own (its SPA, from the
   build's image dump) where the archive's is a scene release name.
+- A game removed from the Deck with a file `<root>/.removed/<game>` (the Gestor app writes it
+  when it deletes a game) is left out: a batch that sends a list of games again does not put
+  back, without its shortcut, what the user removed. `--reinstall` sends it and drops the file.
+- The copy stops before it starts when the Deck's file system has no room for it. One that
+  breaks off (Wi-Fi, the Deck asleep) says how far it got and why; `deck` run again sends only
+  what is missing.
 - The Deck needs SSH with a key (`REXNATIVE_DECK` and `REXNATIVE_DECK_KEY` can stand for `--host`
   and `--key`).
 

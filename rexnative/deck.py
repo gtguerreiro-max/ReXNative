@@ -39,6 +39,10 @@ import time
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KIT = os.path.join(HERE, 'deck')
 REMOTE_ROOT = 'Games/ReXNative'  # under the deck user's home
+# <root>/.removed/<slug>: a game its user removed from the Deck (the file holds when). install()
+# does not send it back unless asked (--reinstall): a batch that sends a list of games again
+# would otherwise put back, without its Steam shortcut, what the user had just removed.
+REMOVED = '.removed'
 q = shlex.quote
 
 # The Deck's settings, as Iron Brigade's deck/ironbrigade-deck.toml has them (ReXGlue v0.11
@@ -126,7 +130,10 @@ class Deck:
         self.key = key or os.environ.get('REXNATIVE_DECK_KEY')
 
     def ssh_cmd(self, command):
-        cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
+        # A copy over Wi-Fi outlives a roam between the access point's bands (seconds without
+        # packets); a Deck gone for two minutes ends ssh instead of leaving it waiting.
+        cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+               '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=8']
         if self.port:
             cmd += ['-p', self.port]
         if self.key:
@@ -186,17 +193,40 @@ class Deck:
             return 0
         total = sum(t[2] for t in todo)
         log('  %d files, %.0f MB' % (len(todo), total / 1e6))
+        # What the copy needs on the Deck's file system: less what the files it replaces hold
+        # (tar unlinks each one before writing it), plus 256 MB the Deck keeps for itself.
+        need = total - sum(have[rel][0] for _, rel, _ in todo if rel in have)
+        free = self.call('df -B1 --output=avail %s | tail -1' % q(dest), timeout=60).stdout.strip()
+        if free.isdigit() and need > int(free) - (256 << 20):
+            raise SystemExit('the Deck: %.2f GB to copy into %s and %.2f GB free there: remove '
+                             'games from the Deck, or --root sd for the microSD card' % (
+                                 need / 1e9, dest, int(free) / 1e9))
         p = subprocess.Popen(self.ssh_cmd('tar -xf - -C %s' % q(dest)), stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        with tarfile.open(fileobj=p.stdin, mode='w|', format=tarfile.GNU_FORMAT) as tar:
-            for src, rel, _ in todo:
-                info = tar.gettarinfo(src, arcname=rel)
-                info.uid = info.gid = 1000
-                info.uname = info.gname = 'deck'
-                if rel.endswith('.sh'):
-                    info.mode = 0o755
-                with open(src, 'rb') as f:
-                    tar.addfile(info, f)
+        sent = 0
+        try:
+            with tarfile.open(fileobj=p.stdin, mode='w|', format=tarfile.GNU_FORMAT) as tar:
+                for src, rel, size in todo:
+                    info = tar.gettarinfo(src, arcname=rel)
+                    info.uid = info.gid = 1000
+                    info.uname = info.gname = 'deck'
+                    if rel.endswith('.sh'):
+                        info.mode = 0o755
+                    with open(src, 'rb') as f:
+                        tar.addfile(info, f)
+                    sent += size
+        except OSError as e:
+            # ssh ended under the copy (the network dropped, the Deck slept or filled up); a file
+            # of the PC that would not read leaves ssh waiting for the rest instead.
+            try:
+                p.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                raise e
+            err = p.stderr.read().decode(errors='replace').strip()
+            raise SystemExit('the Deck: the copy into %s stopped after %.0f of %.0f MB (%s); '
+                             'deck again resumes it: what arrived stays' % (
+                                 dest, sent / 1e6, total / 1e6, err[-400:] or e))
         p.stdin.close()
         err = p.stderr.read().decode(errors='replace')
         if p.wait() != 0:
@@ -323,10 +353,21 @@ def sd_root(deck, log=print):
     return root
 
 
-def install(deck, work, log=print, root=REMOTE_ROOT):
+def install(deck, work, log=print, root=REMOTE_ROOT, reinstall=False):
+    """The game copied to the Deck and set up; None when its user removed it from the Deck
+    (<root>/.removed/<slug>) and reinstall is not set."""
     work = os.path.abspath(work)
     slug = os.path.basename(work)
     title = title_of(work)
+    mark = '%s/%s/%s' % (root, REMOVED, slug)
+    if reinstall:
+        deck.run('rm -f %s' % q(mark), check=False)
+    else:
+        r = deck.call('cat %s' % q(mark), timeout=60)
+        if r.returncode == 0:
+            log('%s: removed from the Deck by its user (%s): not sent (--reinstall sends it '
+                'again)' % (title, r.stdout.strip() or mark))
+            return None
     name, items = package(work)
     dest = '%s/%s' % (root, slug)
     log('%s -> %s' % (title, dest if dest.startswith('/') else '~/' + dest))

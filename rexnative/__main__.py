@@ -225,7 +225,11 @@ def cmd_deck(a):
     root = deck.REMOTE_ROOT
     if a.root:
         root = deck.sd_root(d) if a.root.lower() == 'sd' else a.root.rstrip('/')
-    games = [deck.install(d, w, root=root) for w in a.work]
+    games = [g for g in (deck.install(d, w, root=root, reinstall=a.reinstall) for w in a.work)
+             if g]
+    if not games:
+        print('nothing sent')
+        return
     if a.steam:
         added = deck.add_to_steam(d, games)
         if added is None:
@@ -418,6 +422,9 @@ def main(argv=None):
                         "home; default Games/ReXNative); sd: ReXNative/ on the microSD card")
     s.add_argument('--steam', action='store_true',
                    help="add the games to Steam's library (closes Steam; Game Mode restarts it)")
+    s.add_argument('--reinstall', action='store_true',
+                   help="send games their user removed from the Deck too (<root>/.removed/<slug>; "
+                        "without it they are left out)")
     s.add_argument('--try', dest='try_seconds', type=int, default=0, metavar='SECONDS',
                    help='start each game from Steam, read its log and take a capture after '
                         'SECONDS, then close it')
