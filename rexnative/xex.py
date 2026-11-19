@@ -72,6 +72,34 @@ def image_span(path):
     return base, alloc
 
 
+def spa_title(image):
+    """The title's name in its SPA (the XDBF resource every title links): the English string
+    table's string 0x8000, from a dump of the loaded image (run/image.bin, which `project` writes
+    with --rexnative_dump_image), so from the decrypted XEX. None when there is none."""
+    try:
+        b = open(image, 'rb').read()
+    except OSError:
+        return None
+    i = b.find(b'XDBF')
+    while i >= 0:
+        _, table, count, free, _ = struct.unpack('>IIIII', b[i + 4:i + 24])
+        if count < 4096 and table < 65536:
+            entries, data = i + 24, i + 24 + table * 18 + free * 8
+            for k in range(min(count, table)):
+                ns, eid, off, _ = struct.unpack('>HQII', b[entries + 18 * k:entries + 18 * k + 18])
+                s = data + off
+                if ns != 3 or eid != 1 or b[s:s + 4] != b'XSTR':  # strings, English
+                    continue
+                o = s + 14
+                for _ in range(struct.unpack('>H', b[s + 12:s + 14])[0]):
+                    sid, n = struct.unpack('>HH', b[o:o + 4])
+                    if sid == 0x8000:
+                        return b[o + 4:o + 4 + n].decode('utf-8', 'replace')
+                    o += 4 + n
+        i = b.find(b'XDBF', i + 4)
+    return None
+
+
 def d3d_library(info):
     """('D3D9' or 'D3D9LTCG', version) from the static libraries, or (None, None)."""
     for name in ('D3D9LTCG', 'D3D9'):

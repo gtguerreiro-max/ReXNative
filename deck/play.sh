@@ -48,8 +48,12 @@ exe=$(ls -1t "$here"/*.exe 2>/dev/null | head -1)
 name=$(basename "$exe" .exe)
 # One Proton prefix for every game (~/Games/ReXNative/prefix, beside the games' folders): 400 MB
 # once, not in each game's folder. A game keeps its files, saves (userdata/) and settings in its
-# own folder; REXNATIVE_PREFIX (deck.env) names another prefix.
+# own folder; REXNATIVE_PREFIX (deck.env) names another prefix. A game in another folder (the
+# microSD card's ReXNative/, `deck --root sd`) uses the internal one unless one is beside it.
 prefix=${REXNATIVE_PREFIX:-$(dirname "$here")/prefix}
+if [[ -z ${REXNATIVE_PREFIX:-} && ! -d $prefix && -d $HOME/Games/ReXNative/prefix ]]; then
+  prefix=$HOME/Games/ReXNative/prefix
+fi
 export STEAM_COMPAT_DATA_PATH=$prefix STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
 export PROTON_USE_XALIA=0
 mkdir -p "$STEAM_COMPAT_DATA_PATH" "$here/logs"

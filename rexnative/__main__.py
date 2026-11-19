@@ -222,7 +222,10 @@ def cmd_project(a):
 def cmd_deck(a):
     from . import deck
     d = deck.Deck(a.host, a.key)
-    games = [deck.install(d, w) for w in a.work]
+    root = deck.REMOTE_ROOT
+    if a.root:
+        root = deck.sd_root(d) if a.root.lower() == 'sd' else a.root.rstrip('/')
+    games = [deck.install(d, w, root=root) for w in a.work]
     if a.steam:
         added = deck.add_to_steam(d, games)
         if added is None:
@@ -410,6 +413,9 @@ def main(argv=None):
     s.add_argument('work', nargs='+', help="a game's folder in prepare's --work (built)")
     s.add_argument('--host', help='deck@ADDRESS[:PORT] (or REXNATIVE_DECK)')
     s.add_argument('--key', help='SSH key (or REXNATIVE_DECK_KEY)')
+    s.add_argument('--root', metavar='FOLDER|sd',
+                   help="the Deck's folder for the games (absolute, or under the deck user's "
+                        "home; default Games/ReXNative); sd: ReXNative/ on the microSD card")
     s.add_argument('--steam', action='store_true',
                    help="add the games to Steam's library (closes Steam; Game Mode restarts it)")
     s.add_argument('--try', dest='try_seconds', type=int, default=0, metavar='SECONDS',

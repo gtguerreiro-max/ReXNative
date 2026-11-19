@@ -1,7 +1,7 @@
 """A game `prepare --project` built, on the Steam Deck: copied over SSH, added to Steam, tried.
 
   python -m rexnative deck <work>/<game>... [--host deck@ADDRESS[:PORT]] [--key FILE]
-         [--steam] [--try SECONDS]
+         [--root FOLDER|sd] [--steam] [--try SECONDS]
 
 Each game goes to ~/Games/ReXNative/<game>/ on the Deck: its Windows build from run/ (the
 executable and DLLs, without NVIDIA's, which the Deck cannot use), its files in game/, its
@@ -10,6 +10,11 @@ game shares, ~/Games/ReXNative/prefix, FSR 4 through GE-Proton), deck/install.sh
 <name>-deck.toml, the game's settings for the Deck's screen (full screen at 1280x800), which
 install.sh makes its settings unless the Deck has some already. Only files whose size or time
 differ are sent again, so a rebuilt game sends its executable alone.
+
+--root puts the games in another folder of the Deck (an absolute path, or one under the deck
+user's home): `--root sd` is ReXNative/ on the microSD card (the first one mounted). The Proton
+prefix stays the internal one (~/Games/ReXNative/prefix, which play.sh falls back to); AMD's
+FidelityFX DLLs go to the card's ReXNative/common, beside the games, where the renderer looks.
 
 --steam adds every game given to Steam's library (Steam is closed for it, `steam -shutdown`:
 it writes its shortcuts file back when it exits; in Game Mode its unit is masked meanwhile, and
@@ -24,6 +29,7 @@ and REXNATIVE_DECK_KEY. Nothing of the game leaves the computer but for the Deck
 """
 import json
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -208,13 +214,31 @@ def walk(root, prefix):
     return out
 
 
+def _tidy_title(name):
+    """A title's name as the SPA has it, for a Steam shortcut: no trademark signs, and words in
+    capitals alone given lower case ("ASURA'S WRATH" -> "Asura's Wrath"; "SSX" stays)."""
+    name = re.sub('[™®©�]', '', name).strip()  # TM, R, C, broken
+    if name.isupper() and ' ' in name:
+        name = ' '.join(w[:1] + w[1:].lower() for w in name.split())
+    return name
+
+
 def title_of(work):
-    """The game's name from its archive's: 'Jet Set Radio (World) (XBLA).7z' -> 'Jet Set Radio'."""
+    """The game's name from its archive's: 'Jet Set Radio (World) (XBLA).7z' -> 'Jet Set Radio'.
+    A scene release's ('Asuras.Wrath.USA.X360-ZTM.rar') gives the title's own name instead, from
+    its SPA (xex.spa_title over run/image.bin) when there is one."""
     try:
         src = json.load(open(os.path.join(work, 'prepare.json'), encoding='utf-8'))['source']
     except (OSError, KeyError, ValueError):
         src = os.path.basename(os.path.abspath(work))
     base = re.sub(r'\.(7z|zip|rar|iso)$', '', os.path.basename(src), flags=re.I)
+    if ' ' not in base and re.search(r'\.(X360|XBOX360)\b|-[A-Za-z0-9]+$', base):
+        from . import xex
+        own = xex.spa_title(os.path.join(work, 'run', 'image.bin'))
+        if own and _tidy_title(own):
+            return _tidy_title(own)
+        base = re.sub(r'(\.(USA|PAL|EUR|NTSC|JPN|MULTI\d*|X360|XBOX360|DLC|RF))+(-[^.]+)?$', '',
+                      base, flags=re.I).replace('.', ' ').replace('_', ' ')
     base = re.sub(r'\s*\([^)]*\)', '', base).strip()
     return base.replace(' - ', ': ', 1) if ' - ' in base else base
 
@@ -276,13 +300,36 @@ def package(work):
     return name, items
 
 
-def install(deck, work, log=print):
+def remote_dir(dest):
+    """A folder of the Deck as a shell word: dest absolute, or under the deck user's home."""
+    return q(dest) if dest.startswith('/') else '~/' + q(dest)
+
+
+def sd_root(deck, log=print):
+    """ReXNative/ on the Deck's microSD card (its first partition, mounted where SteamOS puts it:
+    /run/media/deck/<label> or /run/media/mmcblk0p1), created if missing; exits when no card is
+    mounted. Logs its file system and free space."""
+    out = deck.run('for d in /dev/mmcblk0p1 /dev/mmcblk0; do '
+                   'm=$(findmnt -rn -o TARGET,FSTYPE,AVAIL -S "$d" 2>/dev/null | head -1); '
+                   '[ -n "$m" ] && { echo "$m"; break; }; done', check=False).strip()
+    if not out:
+        raise SystemExit('the Deck: no microSD card mounted (insert it; SteamOS formats it from '
+                         'Settings > Storage)')
+    target, fstype, avail = (out.split() + ['?', '?'])[:3]
+    target = target.replace('\x20', ' ')
+    log('microSD card at %s (%s, %s free)' % (target, fstype, avail))
+    root = target.rstrip('/') + '/ReXNative'
+    deck.run('mkdir -p %s' % q(root))
+    return root
+
+
+def install(deck, work, log=print, root=REMOTE_ROOT):
     work = os.path.abspath(work)
     slug = os.path.basename(work)
     title = title_of(work)
     name, items = package(work)
-    dest = '%s/%s' % (REMOTE_ROOT, slug)
-    log('%s -> ~/%s' % (title, dest))
+    dest = '%s/%s' % (root, slug)
+    log('%s -> %s' % (title, dest if dest.startswith('/') else '~/' + dest))
     deck.send(dest, items, log=log)
     # AMD's FidelityFX DLLs, once for every game in ~/Games/ReXNative/common, where the renderer
     # looks when they are not beside the executable (renderer/src/native/common_dir.h): 87 MB a
@@ -297,13 +344,15 @@ def install(deck, work, log=print):
                 common.append((src, n))
                 break
     if common:
-        deck.send('%s/common' % REMOTE_ROOT, common, log=log)
+        deck.send('%s/common' % root, common, log=log)
     # The Proton prefix every game shares (play.sh): the first game's own prefix becomes it (with
     # GE-Proton's FSR 4 library already fetched), the others' go (400 MB each; a prefix holds no
-    # game's files, saves or settings: those are in the game's folder).
-    deck.run('cd %s && if [ -d %s/prefix ]; then if [ -d prefix ]; then rm -rf %s/prefix; '
-             'else mv %s/prefix prefix; fi; fi' % (q(REMOTE_ROOT), q(slug), q(slug), q(slug)),
-             check=False)
+    # game's files, saves or settings: those are in the game's folder). Games in another --root
+    # use the internal one (play.sh falls back to it): a card's file system may hold no prefix.
+    if root == REMOTE_ROOT:
+        deck.run('cd %s && if [ -d %s/prefix ]; then if [ -d prefix ]; then rm -rf %s/prefix; '
+                 'else mv %s/prefix prefix; fi; fi' % (q(root), q(slug), q(slug), q(slug)),
+                 check=False)
     out = deck.run('cd %s && bash install.sh %s' % (q(dest), q(title)))
     for line in out.strip().splitlines()[-2:]:
         log('  ' + line)
@@ -341,7 +390,8 @@ def add_to_steam(deck, games, log=print):
     # (--runtime: gone at a reboot too), and the trap unmasks it and starts Steam again whatever
     # happens. Steam is left 60 s after it started first: SteamOS's short session tracker
     # re-bootstraps a Steam that ends three times within a minute of its start.
-    adds = '\n'.join('(cd ~/%s && bash install.sh %s) || failed=1' % (q(g['dest']), q(g['title']))
+    adds = '\n'.join('(cd %s && bash install.sh %s) || failed=1' % (remote_dir(g['dest']),
+                                                                       q(g['title']))
                      for g in games)
     script = '''
 export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
@@ -414,7 +464,7 @@ def try_game(deck, g, seconds, log=print):
         return None
     home = deck.run('echo $HOME').strip()
     dest = q(g['dest'])
-    cap = '%s/%s/capture' % (home, g['dest'])
+    cap = posixpath.join(home, g['dest'], 'capture')  # dest may be absolute (--root)
     wine_cap = 'Z:' + cap.replace('/', '\\')
     deck.run('rm -rf %s && mkdir -p %s' % (q(cap), q(cap)))
     # The capture folder for this try: try.flags, which play.sh passes on.

@@ -19,6 +19,10 @@ once for all), `install.sh` and `steam_shortcuts.py`.
   started again).
 - `--try SECONDS` starts each one from Steam, reads its log and takes a capture after that long,
   into `<work>/<game>/deck/`, and writes `deck-report.md`.
+- `--root sd` puts the games in `ReXNative/` on the microSD card instead (`--root <folder>` in
+  any other): they use the internal Proton prefix all the same, and the FidelityFX DLLs go to
+  the card's `ReXNative/common`. The shortcut's name is the title's own (its SPA, from the
+  build's image dump) where the archive's is a scene release name.
 - The Deck needs SSH with a key (`REXNATIVE_DECK` and `REXNATIVE_DECK_KEY` can stand for `--host`
   and `--key`).
 
