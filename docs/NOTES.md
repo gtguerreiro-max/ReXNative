@@ -477,10 +477,12 @@ native resolver refused a 3D destination ("3D destination unsupported"), so the 
 texture's slices interleave in its tiled memory, so a resolve into slice z and the texture cache
 both name that slice by base + z x (row pitch x rows of a slice) (texture_layout.h
 Slice3DKeyStrideBytes): a key for the resolved image, which stays on the GPU (no writeback, no
-dump); the cache copies each slice's image into its 3D texture at that z. The menu and the first
-scene show since, but far darker than on ReXGlue's renderer: the pass that averages the scene's
-small mips for the exposure reads zeros, and the downsampled chain it reads already starts from
-a pass whose output is black (not found yet).
+dump); the cache copies each slice's image into its 3D texture at that z. The menus and the
+first mission show since as on ReXGlue's renderer. They looked darker at first, but the title
+screen's background is animated: sixteen window captures alternating between the two renderers
+in one session (`live.ps1 control "renderer stock"`) averaged as bright, and RenderDoc showed the
+last pass's inputs (LUT slices, exposure, noise) equal in both. Compare animated screens that
+way, not by one capture each.
 
 ## Memexport
 
