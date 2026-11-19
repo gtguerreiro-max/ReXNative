@@ -382,9 +382,9 @@ class RenderTargets {
   void DropCovered(RenderTarget* rt, uint32_t flags, const D3D12_RECT* rects, size_t n);
   // Records rt's pending clears into `list`, oldest first.
   void Flush(CommandStream* list, RenderTarget* rt);
-  // ClearParams::edram_alias: `v` over `rects` (src's pixels; none: all of it) into the other
-  // depth targets of src's format whose pixels lie on the same EDRAM tiles (the same base and
-  // tile pitch, any MSAA).
+  // ClearParams::edram_alias: `v` over `rects` (src's pixels from its EDRAM base) into the
+  // other depth targets of src's format whose pixels lie on the same EDRAM tiles (any MSAA; on
+  // another tile pitch or base, only rectangles of whole tile rows).
   void ClearDepthAliases(CommandStream* list, const RenderTarget& src, const ClearValue& v,
                          const std::vector<D3D12_RECT>& rects);
 

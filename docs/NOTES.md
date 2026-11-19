@@ -506,6 +506,12 @@ cutscene is the same from run to run since, with no readback left to wait for.
 - **Across MSAA:** a 4x (or 2x) depth surface over a 1x one at the same base takes its depth
   (each sample is a pixel of the 1x surface), as Iron Brigade's half-resolution particles need to
   be hidden by the scenery (`RenderTargets::AliasDepth`).
+- **Clears across pitches:** LIMBO draws its scene as 4x MSAA in four predicated tiles of
+  320 x 720 and resolves each with a depth clear, then draws its foreground (the grass) in a 1x
+  pass at pitch 1280 over the same EDRAM tiles, testing a depth only its own prepass writes. The
+  clear reached the 4x target alone, the 1x one kept the title screen's depth and the grass
+  failed the test. A resolve's depth clear now reaches every depth target on the tiles it
+  clears, on any pitch when it covers whole tile rows (`RenderTargets::ClearDepthAliases`).
 - **Across formats:** Brothers' post processing reads the 7e3 scene's EDRAM as 10:10:10:2 and
   8:8:8:8 bits (`RenderTargets::AliasColor` converts them between targets).
 - **Inside a resolved image:** Brothers' colour grading table is a stacked texture of 16 slices

@@ -1556,6 +1556,8 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
     if (p.edram_x || p.edram_y)
       cp.edram_rects.push_back(
           {LONG(x0 - p.edram_x), LONG(y0 - p.edram_y), LONG(x1 - p.edram_x), LONG(y1 - p.edram_y)});
+    // The resolve clears the EDRAM tiles: other depth surfaces on them are cleared as well.
+    cp.edram_alias = true;
     targets_->Clear(list, p.regs, 0xF, true, uint32_t(std::max(p.y1, 0)), cp);
   }
   return ok;

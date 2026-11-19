@@ -649,7 +649,12 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
         rt->clear_depth = v.depth;
       }
       if (!fills_.empty()) DropFills(*rt, edram_rows(*rt));
-      if (p.edram_alias) ClearDepthAliases(list, *rt, v, p.rects);
+      if (p.edram_alias) {
+        // The EDRAM the clear reaches, in rt's pixels (a tile's resolve clears at the base).
+        std::vector<D3D12_RECT> at = edram;
+        if (at.empty()) at.push_back({0, 0, LONG(rt->pitch), LONG(edram_rows(*rt))});
+        ClearDepthAliases(list, *rt, v, at);
+      }
     }
   }
 }
@@ -658,24 +663,39 @@ void RenderTargets::ClearDepthAliases(CommandStream* list, const RenderTarget& s
                                       const ClearValue& v, const std::vector<D3D12_RECT>& rects) {
   const EdramGrid g = GridOf(src);
   for (const auto& [key, a] : targets_) {
-    if (!a->depth || a.get() == &src || a->edram_base != src.edram_base ||
-        a->view_format != src.view_format)
-      continue;
+    if (!a->depth || a.get() == &src || a->view_format != src.view_format) continue;
     const EdramGrid ga = GridOf(*a);
-    if (ga.pitch != g.pitch) continue;
-    // Dword columns and sample rows are the grid's: src's pixels in a's.
+    // src's pixels in a's: on the same tile pitch from the same base, dword columns and sample
+    // rows are the grid's; on another pitch or base, a rectangle of whole tile rows clears that
+    // run of tiles (LIMBO's 4x scene, tiled at pitch 320, resolves each tile with a depth clear
+    // over the tiles its 1x pass at pitch 1280 tests the grass against).
     std::vector<D3D12_RECT> mapped;
-    for (const D3D12_RECT& r : rects)
-      mapped.push_back({LONG(r.left * g.dx / ga.dx), LONG(r.top * g.dy / ga.dy),
-                        LONG(r.right * g.dx / ga.dx), LONG(r.bottom * g.dy / ga.dy)});
+    for (const D3D12_RECT& r : rects) {
+      const GridSpan s = {int64_t(std::max<LONG>(r.left, 0)) * g.dx,
+                          std::min<int64_t>(int64_t(std::max<LONG>(r.right, 0)) * g.dx,
+                                            int64_t(g.pitch) * 80),
+                          int64_t(std::max<LONG>(r.top, 0)) * g.dy,
+                          int64_t(std::max<LONG>(r.bottom, 0)) * g.dy};
+      if (s.x1 <= s.x0 || s.y1 <= s.y0) continue;
+      GridSpan spans[3];
+      const int32_t n = MapSpan(g.base, g.pitch, s, ga, spans);
+      for (int32_t i = 0; i < n; ++i) {
+        const GridSpan& m = spans[i];
+        const int64_t x0 = (m.x0 + ga.dx - 1) / ga.dx, x1 = m.x1 / ga.dx;
+        const int64_t y0 = (std::max<int64_t>(m.y0, 0) + ga.dy - 1) / ga.dy, y1 = m.y1 / ga.dy;
+        if (x1 > x0 && y1 > y0) mapped.push_back({LONG(x0), LONG(y0), LONG(x1), LONG(y1)});
+      }
+    }
+    if (mapped.empty() || mapped.size() > kMaxClearRects) continue;
     Defer(list, a.get(), v, mapped);
     if (v.flags & D3D12_CLEAR_FLAG_DEPTH) {
       a->depth_seq = ++depth_seq_;
       a->clear_depth = v.depth;
     }
     if (log_)
-      std::fprintf(log_, "rt depth clear of base %u pitch %u x%u also into pitch %u x%u\n",
-                   src.edram_base, src.pitch, src.edram_samples, a->pitch, a->edram_samples);
+      std::fprintf(log_, "rt depth clear of base %u pitch %u x%u also into base %u pitch %u x%u\n",
+                   src.edram_base, src.pitch, src.edram_samples, a->edram_base, a->pitch,
+                   a->edram_samples);
   }
 }
 

@@ -34,6 +34,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Forza Horizon (TU 4, its DLC) | plays on the native renderer: the intro videos, the main menu, the opening drive with its car, the traffic and the HUD (about 2000 draws, 30 FPS); its speech and media code are two XEX DLL modules, recompiled as ReXGlue's `[[modules]]` since 2026-11-19 (their title update patches needed SDK patch 0037) | not tried (space) |
 | SSX (TU 3, its DLC) | plays on the native renderer: the intro video, title, menus, the World Tour's first descent, 30 FPS (it drew black while its layer gave the Resolve hook a reference row's category, 2026-11-19) | not tried (space) |
 | Darwinia+ | its intros, the menu and the first level on the native renderer (since 2026-11-19: its frame's Clear, recorded in a replayed command buffer, and its BeginVertices' built-in stride); in the level the water's reflection, the terrain's grid and the cursor still differ from ReXGlue's renderer | not tried |
+| LIMBO | title and the first forest on the native renderer (its grass since 2026-11-19: a resolve's depth clear on another pitch) | not measured |
 | Top Spin 4 | not supported yet: `default.xex` is a loader, and both its XEX DLL modules (`Loader_DLL`, `Swing_DLL`) link their own D3D library, which the renderer's hooks (in the executable) cannot reach | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
