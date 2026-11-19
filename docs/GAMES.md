@@ -27,7 +27,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Overlord II | plays its first level (a tiled G-buffer) | 30 FPS (first level) |
 | Sega Rally Revo | runs, drawn from its replayed command buffers: the title (its chrome logo since 2026-11-18) and the attract races | 30 FPS |
 | Diablo III | its intro cinematics, the main menu, hero selection and creation (with the upscaler: `rexnative.upscaler_depth_test`) | 60 FPS (main menu) |
-| Syndicate | its intro video plays | 30 FPS (intro) |
+| Syndicate | its intro video, menus and first scene drawn (its colour grading LUT, resolved into a 3D texture, since 2026-11-19) but far darker than on ReXGlue's renderer (its exposure and bloom chain reads zeros) | 30 FPS (intro); starts on ReXGlue's renderer (`deck.toml`) |
 | Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game asks for disc 1 | 30 FPS (title) |
 | Asura's Wrath (TU 1) | runs to its title screen | not tried (space) |
 | Blur (TU 2) | runs, its intro video plays | not tried (space) |

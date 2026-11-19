@@ -112,7 +112,11 @@ def main():
             s.resourceId = tex
             s.destType = rd.FileType.PNG
             s.alpha = rd.AlphaMapping.Discard
-            path = os.path.join(out, "tex-%d-e%d.png" % (int(tex), event))
+            # -X: a mip level (0 by default).
+            mip = int(job.get("x") or 0)
+            s.mip = mip
+            path = os.path.join(out, "tex-%d-e%d%s.png" % (int(tex), event,
+                                                           "-mip%d" % mip if mip else ""))
             controller.SaveTexture(s, path)
             with open(os.path.join(out, "save.txt"), "w") as f:
                 f.write("%s %s\n" % (path, describe(tex)))

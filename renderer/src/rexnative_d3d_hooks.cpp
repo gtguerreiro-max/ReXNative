@@ -1064,6 +1064,26 @@ void PollControl(Tap& t, uint8_t* base) {
         if (!(ss >> count)) count = 16;
         rexnative::watch::Set(uint32_t(std::strtoul(arg.c_str(), nullptr, 16)), mode, count);
       }
+    } else if (cmd == "peek") {
+      // peek <guest physical address hex> [bytes, default 256]: how many of them are not zero,
+      // and the first 32, as guest memory holds them now (what the CPU wrote there).
+      const uint32_t addr = uint32_t(std::strtoul(arg.c_str(), nullptr, 16)) & 0x1FFFFFFFu;
+      uint32_t bytes = 256;
+      ss >> bytes;
+      bytes = std::clamp<uint32_t>(bytes, 1, 0x1000000);
+      auto* mem = rexnative::host::Memory();
+      const uint8_t* p = mem && addr + uint64_t(bytes) <= 0x20000000u
+                             ? mem->TranslatePhysical<const uint8_t*>(addr)
+                             : nullptr;
+      if (!p) {
+        REXLOG_WARN("ReXNative peek: {:08X}+{:X} is not guest physical memory", addr, bytes);
+        continue;
+      }
+      uint32_t nonzero = 0;
+      for (uint32_t i = 0; i < bytes; ++i) nonzero += p[i] != 0;
+      std::string head;
+      for (uint32_t i = 0; i < std::min<uint32_t>(bytes, 32); ++i) head += std::format("{:02X}", p[i]);
+      REXLOG_INFO("ReXNative peek: {:08X}+{:X}: {} bytes not zero; {}", addr, bytes, nonzero, head);
     } else if (cmd == "set") {
       std::string value;
       std::getline(ss >> std::ws, value);

@@ -138,6 +138,14 @@ DXGI_FORMAT Family(DXGI_FORMAT f) {
 template <typename F>
 void ForEachResolveAddress(const TextureKey& key, const xenos::GuestTextureLayout& layout,
                            F&& f) {
+  // A 3D texture: each depth slice of the base level, by its key (Slice3DKeyStrideBytes); the
+  // index is the slice.
+  if (key.is_3d()) {
+    if (!key.base_page) return;
+    const uint32_t stride = Slice3DKeyStrideBytes(layout.base);
+    for (uint32_t z = 0; z < key.depth(); ++z) f(size_t(z), (key.base_page << 12) + stride * z);
+    return;
+  }
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
       uint32_t address;
@@ -447,7 +455,9 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
   t.host = &host;
   t.layout = GetGuestLayout(key);
   GetGuestExtents(key, t.layout, &t.base_bytes, &t.mips_bytes);
-  t.resolved_seq.assign(size_t(key.mip_levels()) * key.array_size(), 0);
+  t.resolved_seq.assign(key.is_3d() ? size_t(key.depth())
+                                     : size_t(key.mip_levels()) * key.array_size(),
+                         0);
 
   const rex::graphics::FormatInfo* info = rex::graphics::FormatInfo::Get(key.format);
   bool unaligned = (key.width % info->block_width) || (key.height % info->block_height);
@@ -874,7 +884,8 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
     }
     D3D12_RESOURCE_DESC sd = source->GetDesc();
     D3D12_BOX box = {0, row, 0, 0, 0, 1};
-    const uint32_t level = uint32_t(index % key.mip_levels());
+    // A 3D texture's index is a depth slice of its base level (subresource 0, at that z).
+    const uint32_t level = key.is_3d() ? 0 : uint32_t(index % key.mip_levels());
     box.right = std::min<uint32_t>(uint32_t(sd.Width), std::max(key.width >> level, 1u));
     box.bottom = std::min<uint32_t>(sd.Height, row + std::max(key.height >> level, 1u));
     if (box.bottom <= box.top) return;
@@ -882,12 +893,12 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
     D3D12_TEXTURE_COPY_LOCATION dst = {};
     dst.pResource = t.resource.Get();
     dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.SubresourceIndex = UINT(index);
+    dst.SubresourceIndex = key.is_3d() ? 0 : UINT(index);
     D3D12_TEXTURE_COPY_LOCATION src = {};
     src.pResource = source;
     src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src.SubresourceIndex = 0;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+    list->CopyTextureRegion(&dst, 0, 0, key.is_3d() ? UINT(index) : 0, &src, &box);
     t.resolved_seq[index] = image->seq;
     ++stats_.resolved_copies;
     any = true;

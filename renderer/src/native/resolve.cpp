@@ -570,8 +570,10 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
                    fetch[0], fetch[1]);
     return false;
   }
-  if (key.dimension == xenos::DataDimension::k3D) {
-    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: 3D destination unsupported");
+  // A 3D destination: one depth slice (the slice argument), its base level only.
+  p.dest_3d = key.dimension == xenos::DataDimension::k3D;
+  if (p.dest_3d && level) {
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: 3D destination level {} unsupported", level);
     return false;
   }
   const uint32_t fetch_format = fetch[1] & 0x3F;
@@ -617,10 +619,20 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
     p.dest_base = GpuAddress(fetch[5] & 0xFFFFF000u) + layout.mip_offsets_bytes[level];
     lv = &layout.mips[level];
   }
-  p.dest_base += lv->array_layer_stride_bytes * slice;
   p.dest_tiled = key.tiled;
   p.dest_pitch_blocks = lv->row_pitch_bytes >> DestBppLog2(p.dest_format);
-  p.dest_extent_bytes = lv->array_layer_data_extent_bytes;
+  if (p.dest_3d) {
+    if (slice >= key.depth()) {
+      REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve: slice {} of a {}-deep 3D destination",
+                          slice, key.depth());
+      return false;
+    }
+    p.dest_extent_bytes = Slice3DKeyStrideBytes(*lv);
+    p.dest_base += p.dest_extent_bytes * slice;
+  } else {
+    p.dest_base += lv->array_layer_stride_bytes * slice;
+    p.dest_extent_bytes = lv->array_layer_data_extent_bytes;
+  }
 
   // Rectangle: pSourceRect or the destination level's size; right/bottom rounded up to 8.
   if (rect_ptr) {
@@ -1755,13 +1767,13 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   // destination the GPU has not used (no texture, no front buffer looked it up).
   const int32_t writeback = REXCVAR_GET(rexnative_resolve_writeback);
   const uint64_t texels = uint64_t(w) * h;
-  if (writeback > 0 && scale == 1 &&
+  if (writeback > 0 && scale == 1 && !p.dest_3d &&
       (texels <= uint64_t(writeback) ||
        (!dest.sampled &&
         texels <= uint64_t(std::max(0, REXCVAR_GET(rexnative_resolve_writeback_unused))))))
     WritebackRecord(list, p, img->texture.Get(), dx, dy, w, h);
 
-  if (dump_ && scale == 1) DumpRecord(list, p, img->view, uint32_t(dx) + w, uint32_t(dy) + h);
+  if (dump_ && scale == 1 && !p.dest_3d) DumpRecord(list, p, img->view, uint32_t(dx) + w, uint32_t(dy) + h);
   return true;
 }
 

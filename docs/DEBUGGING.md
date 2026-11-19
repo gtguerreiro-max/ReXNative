@@ -16,6 +16,9 @@ window and drives it to the problem; then each experiment takes seconds on the r
   needed, for a layer with XInputGetState); `pad:none:600:ry=32767` holds a stick or a trigger
   meanwhile (`lx` `ly` `rx` `ry` from -32768 to 32767, `lt` `rt` from 0 to 255). A lone Start
   or Back needs about half a second: the settings HUD holds a short one back (its View + Menu).
+- `live.ps1 control "peek 03FD1000 131072"`: how many bytes of guest physical memory there are
+  not zero, and the first 32, in the log (whether the CPU wrote something or only the GPU did);
+  `scriptsdoc.ps1 save <capture> -Event N -Texture T -X 4` saves a texture's mip 4.
 
 ## RenderDoc
 

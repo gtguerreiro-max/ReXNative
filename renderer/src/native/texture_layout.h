@@ -85,6 +85,16 @@ inline uint32_t HostBytesPerBlock(const HostFormat& host, uint32_t guest_bytes_p
   return host.conversion == TextureConversion::kDXT3AToR8 ? 1 : guest_bytes_per_block;
 }
 
+// A 3D texture's depth slices interleave in its tiled memory, so a resolve into slice z and the
+// texture cache both name that slice by base + z * this: a key for the resolved image (one
+// slice's bytes, laid out flat), not where its texels lie. Syndicate builds its colour grading
+// LUT (32x32x32 k_2_10_10_10) slice by slice with resolves.
+inline uint32_t Slice3DKeyStrideBytes(const rex::graphics::xenos::GuestTextureLayout::Level& level) {
+  const uint32_t rows = level.z_layer_stride_block_rows ? level.z_layer_stride_block_rows : 1;
+  const uint32_t stride = level.row_pitch_bytes * rows;
+  return stride ? stride : 1;
+}
+
 // nullptr for formats PGR4 does not use yet (or that need a decompressing load).
 const HostFormat* GetHostFormat(rex::graphics::xenos::TextureFormat base_format);
 

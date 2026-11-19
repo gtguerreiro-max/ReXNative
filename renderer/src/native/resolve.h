@@ -91,6 +91,9 @@ struct ResolveParams {
   int32_t exp_bias = 0;      // color *= 2^exp_bias (convert only)
   // Guest layout of the destination (dumps only).
   bool dest_tiled = false;
+  // A depth slice of a 3D texture: dest_base is its key (Slice3DKeyStrideBytes), not where its
+  // texels lie, so the image stays on the GPU (no writeback, no dump of the guest layout).
+  bool dest_3d = false;
   uint32_t dest_pitch_blocks = 0;  // row pitch in texels (tiled: 32-aligned)
   uint32_t dest_extent_bytes = 0;  // guest memory the level/slice occupies
   // Clears after the copy (Flags 0x100 color, 0x200 depth+stencil) over the source rect, all

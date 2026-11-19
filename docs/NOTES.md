@@ -468,6 +468,20 @@ query, not the device, and the query was taken for another device. They now go b
 the thread last drew with. Halo stops during its intro with it on all the same (it seems to wait
 for a result within the frame, which the host gives only after it).
 
+## Resolves into a 3D texture
+
+Syndicate's menus came out black: its last pass looks every pixel up in a 32x32x32
+k_2_10_10_10 colour grading LUT that it builds with resolves, one depth slice each, and the
+native resolver refused a 3D destination ("3D destination unsupported"), so the LUT was zeros
+(guest memory holds none of it on ReXGlue's renderer either: it lives in the GPU's copy). A 3D
+texture's slices interleave in its tiled memory, so a resolve into slice z and the texture cache
+both name that slice by base + z x (row pitch x rows of a slice) (texture_layout.h
+Slice3DKeyStrideBytes): a key for the resolved image, which stays on the GPU (no writeback, no
+dump); the cache copies each slice's image into its 3D texture at that z. The menu and the first
+scene show since, but far darker than on ReXGlue's renderer: the pass that averages the scene's
+small mips for the exposure reads zeros, and the downsampled chain it reads already starts from
+a pass whose output is black (not found yet).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV
