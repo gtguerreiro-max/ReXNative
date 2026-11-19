@@ -298,6 +298,49 @@ def common_dir(work):
     return os.path.join(os.path.dirname(os.path.abspath(work)), 'common')
 
 
+def _put(src, folder):
+    """Copies src into folder. A file there the game holds open (a session of it still running:
+    Windows lets nobody overwrite or delete a running executable or a loaded DLL, but lets it be
+    renamed) is moved aside as <name>.old-<n> first; _sweep removes those once they are free."""
+    dst = os.path.join(folder, os.path.basename(src))
+    try:
+        shutil.copy2(src, dst)
+        return
+    except PermissionError:
+        if not os.path.exists(dst):
+            raise
+    for n in range(100):
+        aside = '%s.old-%d' % (dst, n)
+        if not os.path.exists(aside):
+            os.rename(dst, aside)
+            break
+    else:
+        raise PermissionError('%s is in use and %s.old-* are full' % (dst, dst))
+    shutil.copy2(src, dst)
+
+
+def _drop(path):
+    """Removes path, or moves it aside like _put when the game holds it open."""
+    try:
+        os.remove(path)
+    except PermissionError:
+        for n in range(100):
+            aside = '%s.old-%d' % (path, n)
+            if not os.path.exists(aside):
+                os.rename(path, aside)
+                return
+        raise
+
+
+def _sweep(folder):
+    """The files _put and _drop moved aside, gone once nothing holds them any more."""
+    for f in glob.glob(os.path.join(folder, '*.old-*')):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
 def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log=print):
     """Configures, builds and lays out run/; returns the executable's path."""
     work = os.path.abspath(work)
@@ -381,10 +424,11 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     # run/: what the app needs beside it.
     run = os.path.join(work, 'run')
     os.makedirs(run, exist_ok=True)
+    _sweep(run)
     exe = os.path.join(bdir, '%s.exe' % name)
     for f in [exe, os.path.join(bdir, '%s.pdb' % name)]:
         if os.path.exists(f):
-            shutil.copy2(f, run)
+            _put(f, run)
     # Every DLL the build staged beside the executable: ReXGlue's modules and drivers, SDL3,
     # NVIDIA's DLSS and AMD's FidelityFX; the ReXGlue DLLs of an older SDK go (v0.10's
     # rexruntime.dll and rexgpu-xenos.dll, its FidelityFX runtime).
@@ -396,9 +440,9 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
         n = os.path.basename(f).lower()
         if (n not in staged and (n.startswith('rex') or n == 'amd_fidelityfx_dx12.dll')) or \
                 (shared and n in COMMON_DLLS):
-            os.remove(f)
+            _drop(f)
     for f in glob.glob(os.path.join(bdir, '*.dll')):
-        shutil.copy2(f, run)
+        _put(f, run)
     toml = os.path.join(work, '%s.toml' % name)
     if os.path.exists(toml) and not os.path.exists(os.path.join(run, '%s.toml' % name)):
         shutil.copy2(toml, run)
