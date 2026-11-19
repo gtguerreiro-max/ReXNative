@@ -317,6 +317,30 @@ def call_args(R, T, ref_fn, tgt_fn, ref_args=None):
     return out, evidence
 
 
+def constant_stride(insns, count_reg, stride_reg):
+    """The stride an LTCG BeginVertices always gets, built into its code: it never reads the
+    stride argument's register and multiplies the vertex count (or a copy of it) by an immediate
+    (Darwinia+'s `mulli r10,r5,44`, with r6 left holding whatever the caller had there; Overlord's
+    `mr r24,r5` and `mulli r9,r24,20`). 0: none found."""
+    if reads_at_entry(insns, stride_reg):  # read before any call: an argument
+        return 0
+    count = {count_reg}
+    for i, (_, text) in enumerate(insns):
+        mn, ops = _ops(text)
+        if mn == 'bl' and i > 2:
+            break
+        if mn == 'mr' and len(ops) == 2 and ops[1] in count:
+            count.add(ops[0])
+            continue
+        if mn == 'mulli' and len(ops) == 3 and ops[1] in count:
+            try:
+                k = int(ops[2], 0)
+            except ValueError:
+                return 0
+            return k if 0 < k <= 1024 and k % 4 == 0 else 0
+    return 0
+
+
 def call_site_writes(tree, fn, back=24):
     """For each call of `fn`: {register: the last instruction writing it in the `back`
     instructions before the call}."""

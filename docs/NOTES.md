@@ -194,6 +194,14 @@ and copies the game's files out, without the console's `$SystemUpdate`.
   frame (`abi.clear_color_arg`), takes the level and the slice only from the registers below
   it, and makes an argument the function writes before reading it at its entry a constant 0
   (`abi.reads_at_entry`): Deus Ex `{3,4,5,6,7,0,0,8}`, Fable II `{3,4,5,6,7,8,0,10}`.
+- **A stride built into BeginVertices.** Darwinia+'s LTCG BeginVertices has no stride
+  argument: it multiplies the vertex count by 44 (`mulli r10,r5,44`) and never reads r6, which
+  holds whatever its caller left there (often 4). The renderer took count x r6 bytes as the
+  vertices the call reserved: a few bytes of each quad, the rest stale shared memory, and the
+  intro's quads were drawn as long wedges across the screen. `adapt` now finds such a stride
+  (`abi.constant_stride`: the stride register unread before the first call, the count or a copy
+  of it multiplied by an immediate) and the layer gives it as `REXNATIVE_BEGIN_VERTICES_STRIDE`.
+  Overlord's BeginVertices has one too (`mr r24,r5`, `mulli r9,r24,20`); its layer predates this.
 - **DXT3A.** Fable II's terrain patches (tessellated, blended `SRC_ALPHA, ZERO`) take their alpha
   from a k_DXT3A texture fetched in the vertex shader, compared against one 4-bit step. The
   format was unsupported, the fetch read 0 and the ground drew black under the sky. It is now

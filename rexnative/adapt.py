@@ -239,6 +239,13 @@ def adapt(target, refs, overrides=None, log=print):
             regs = list(range(3, 11))
         call[canon] = {'args': regs, 'ref': run['name'], 'listing': round(sim, 2),
                        'evidence': evidence, 'uncertain': uncertain}
+        if canon == 'BeginVertices' and regs[2] and regs[3]:
+            # (dev, prim, vertex count, stride): an LTCG build may have the stride built in.
+            stride = abi.constant_stride(T[tgt_fn], 'r%d' % regs[2], 'r%d' % regs[3])
+            if stride:
+                call[canon]['stride'] = stride
+                call[canon]['evidence'] = evidence + ['stride #%d (count * %d, r%d unread)' % (
+                    stride, stride, regs[3])]
 
     # -- d3d_surface.inc: the reference's entries found with a usable confidence ----------------
     surface, seen, dropped = [], set(), []

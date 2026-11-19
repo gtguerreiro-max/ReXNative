@@ -46,6 +46,8 @@ def from_result(res):
         'resolve_args': ra.get('args', list(range(3, 11))),
         'resolve_stencil_reg': ra.get('stencil_reg', 0),
         'call_args': {k: v['args'] for k, v in (res.get('call_args') or {}).items()},
+        'begin_vertices_stride': ((res.get('call_args') or {}).get('BeginVertices') or {}).get(
+            'stride', 0),
         'scene': res['scene'], 'defaults': res['defaults'], 'devices': res['devices'],
         'xinput_state_reg': res['functions'].get('XInputGetState', {}).get('state_reg', 4),
     }
@@ -166,6 +168,11 @@ def game_layer_h(layer, comments=True):
         if comments:
             w('// Resolve\'s ClearStencil in this register at entry (0 or absent: on the stack).')
         w('#define REXNATIVE_RESOLVE_STENCIL_REG %d' % stencil)
+    stride = layer.get('begin_vertices_stride') or 0
+    if stride:
+        if comments:
+            w('// BeginVertices has no stride argument: this one is built into its code.')
+        w('#define REXNATIVE_BEGIN_VERTICES_STRIDE %d' % stride)
     w('')
     dv = layer['devices']
     if comments:
