@@ -63,6 +63,8 @@ Two of ReXGlue's own settings (SDK patches 0040 and 0041), in the same file:
   game's own, typed in its keyboard prompt.
 - `[ui] dialog_scale`: the size of the system dialogs (the keyboard prompt, message boxes); 0,
   the default, makes them twice as large on a 720p or 800p screen, three times at 1080p.
+  They answer to the pad (D-pad or left stick, A, B for the last button) and the keyboard
+  (arrows, Enter, Escape) as well as the mouse and the touch screen (SDK patch 0042).
 
 ## Inline draws
 

@@ -50,6 +50,7 @@ does; in short:
 | 0039 | `XamSwapDisc` sets its completion event when the title asks for the disc that is running (the execution info's `disc_number`), as Xenia canary does: the stub never set it, and Deus Ex: Human Revolution Director's Cut waited on its "insert disc 1" screen as a new game started. Another disc is logged and left to the title's prompt |
 | 0040 | `kernel.user_name` names the signed-in profile (its gamertag, up to 15 characters); it was always "User", which Diablo III shows under P1 |
 | 0041 | The system dialogs (keyboard, message boxes) scale with the window, `ui.dialog_scale` (0: once per 360 lines, 2x on the Steam Deck's 800), and a prompt stays centred: Diablo III's hero name prompt was a small box on the Deck |
+| 0042 | The system dialogs answer to the pad and the keyboard (D-pad or left stick to move, A or Enter to press, B or Escape for the last button), read past the title's input block (`IInputSystem::GetStateForUI`, last in the interface); a message box's text wraps at about 45 characters, and its answer is logged. Asura's Wrath's "saved data does not exist" box could only be touched on the Steam Deck |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
 prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).
