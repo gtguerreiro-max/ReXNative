@@ -402,6 +402,52 @@ bool Upscaler::CreateContext(bool debug) {
   return true;
 }
 
+bool Upscaler::PrepareEncodedOutput(const RenderTarget& like) {
+  if (encoded_output_.resource && encoded_output_.resource_format == like.resource_format &&
+      encoded_output_.view_format == like.view_format &&
+      encoded_output_.width == output_.width && encoded_output_.height == output_.height)
+    return true;
+  encoded_output_.resource.Reset();
+  if (!encoded_rtv_) {
+    D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    hd.NumDescriptors = 1;
+    if (Failed(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&encoded_rtv_)),
+               "upscaler encoded output RTV heap"))
+      return false;
+  }
+  D3D12_HEAP_PROPERTIES hp = {};
+  hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+  D3D12_RESOURCE_DESC d = {};
+  d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  d.Width = OutputWidth();
+  d.Height = OutputHeight();
+  d.DepthOrArraySize = 1;
+  d.MipLevels = 1;
+  d.Format = like.resource_format;
+  d.SampleDesc.Count = 1;
+  d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+                                              D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                              IID_PPV_ARGS(&encoded_output_.resource)),
+             "upscaler encoded output"))
+    return false;
+  encoded_output_.resource_format = like.resource_format;
+  encoded_output_.view_format = like.view_format;
+  encoded_output_.srv_format = like.srv_format;
+  encoded_output_.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  encoded_output_.width = output_.width;
+  encoded_output_.height = output_.height;
+  encoded_output_.scale = encoded_output_.size_scale = output_.scale;
+  encoded_output_.samples = 1;
+  encoded_output_.view = encoded_rtv_->GetCPUDescriptorHandleForHeapStart();
+  D3D12_RENDER_TARGET_VIEW_DESC rv = {};
+  rv.Format = like.view_format;
+  rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+  device_->CreateRenderTargetView(encoded_output_.resource.Get(), &rv, encoded_output_.view);
+  return true;
+}
+
 bool Upscaler::CreateTargets() {
   D3D12_HEAP_PROPERTIES hp = {};
   hp.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -534,6 +580,7 @@ bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const
     targets.Clear(list, regs, 1, false, height, cp);
   } else if (RenderTarget* color = targets.GetColor(regs, 0, height);
              color && color->samples == 1 && CreateCopyPass()) {
+    RenderTarget& source = *Result();
     ComPtr<ID3D12PipelineState>& pso = copy_pso_[color->view_format];
     if (!pso) {
       D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
@@ -553,21 +600,21 @@ bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const
     if (pso) {
       targets.PrepareRead(list, color, {0, 0, LONG(SceneWidth()), LONG(height)});
       RenderTargets::Transition(list, color, D3D12_RESOURCE_STATE_RENDER_TARGET);
-      if (output_.state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+      if (source.state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
         const D3D12_RESOURCE_BARRIER b = TransitionBarrier(
-            output_.resource.Get(), output_.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source.resource.Get(), source.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         list->ResourceBarrier(1, &b);
-        output_.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        source.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
       }
       const uint32_t slot = uint32_t(frame_ % D3D12Device::kFramesInFlight) * kViewsPerFrame + 2;
       D3D12_CPU_DESCRIPTOR_HANDLE cpu = input_heap_->GetCPUDescriptorHandleForHeapStart();
       cpu.ptr += size_t(slot) * input_stride_;
       D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-      sd.Format = kOutputFormat;
+      sd.Format = source.srv_format;
       sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Texture2D.MipLevels = 1;
-      device_->CreateShaderResourceView(output_.resource.Get(), &sd, cpu);
+      device_->CreateShaderResourceView(source.resource.Get(), &sd, cpu);
       D3D12_GPU_DESCRIPTOR_HANDLE gpu = input_heap_->GetGPUDescriptorHandleForHeapStart();
       gpu.ptr += uint64_t(slot) * input_stride_;
       ID3D12DescriptorHeap* heaps[] = {input_heap_.Get()};
@@ -648,9 +695,10 @@ Upscaler::SceneInputs Upscaler::ReadSceneInputs(CommandStream* list) {
 
 RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
                                 const SurfaceRegs& regs) {
-  if (upscaled_frame_ == frame_) return upscaled_ ? &output_ : nullptr;
+  if (upscaled_frame_ == frame_) return upscaled_ ? Result() : nullptr;
   upscaled_frame_ = frame_;
   upscaled_ = false;
+  encoded_ = false;
 
   RenderTarget* color = targets.GetColor(regs, 0, SceneHeight());
   RenderTarget* depth = targets.GetDepth(regs, SceneHeight());
@@ -660,6 +708,24 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
                    regs.surface_info, regs.color_info[0]);
     return nullptr;
   }
+  // A resolve that reads the scene through another format's EDRAM bits (RenderTargets::
+  // ConvertedFrom): the upscaler takes the scene the game drew. Fed the bits of Asura's Wrath's
+  // 2_10_10_10_FLOAT scene read as 2_10_10_10 (a log-like encoding, not colors), FSR 4 on the
+  // Steam Deck made its first seconds of gameplay a noise of rainbow speckles.
+  const D3D12_RECT whole = {0, 0, LONG(SceneWidth()), LONG(SceneHeight())};
+  targets.PrepareRead(list, color, whole);
+  RenderTarget* const read = color;  // the target the resolve reads, in the format it reads
+  if (RenderTarget* drawn = targets.ConvertedFrom(color);
+      drawn && drawn->samples == 1 && drawn->scale == scale() &&
+      IsHdrColorFormat(drawn->guest_format) && !IsHdrColorFormat(color->guest_format) &&
+      PrepareEncodedOutput(*color)) {
+    color = drawn;
+    encoded_ = true;
+    REXNATIVE_LOG_FIRST(1, INFO,
+                        "ReXNative upscaler: the scene is resolved as format {} over the format "
+                        "{} the game drew: upscaled in that one, then converted",
+                        read->guest_format, drawn->guest_format);
+  }
   // The game's scene: HDR (a float target) or 8-bit, and its depth reversed (cleared to 0) or not.
   const SceneKind kind{IsHdrColorFormat(color->guest_format), depth->clear_depth < 0.5f};
   if (backend_ == Backend::kFsr && (!context_ || kind != kind_)) {
@@ -667,12 +733,12 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
     // frame keeps the scene as it is.
     wanted_kind_ = kind;
     context_outdated_ = true;
+    encoded_ = false;
     return nullptr;
   }
   Time(list, GpuTimer::kUpscaleInput);
   const D3D12_RECT all = {0, 0, LONG(SceneWidth()), LONG(SceneHeight())};
-  targets.PrepareRead(list, color, all);
-  targets.PrepareRead(list, depth, all);
+  targets.PrepareRead(list, depth, all);  // the color's was read above
 
   D3D12_RESOURCE_BARRIER bs[5];
   uint32_t nb = 0;
@@ -790,7 +856,17 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   reset_ = false;
   upscaled_ = true;
   output_.guest_format = color->guest_format;
-  return &output_;
+  // The upscaled scene as the bits the game's resolve reads.
+  if (encoded_) {
+    encoded_output_.guest_format = read->guest_format;
+    if (!targets.ConvertColor(list, &output_, color->guest_format, &encoded_output_,
+                              read->guest_format)) {
+      REXNATIVE_WARN_ONCE("ReXNative upscaler: the upscaled scene could not be converted to "
+                          "format {}", read->guest_format);
+      encoded_ = false;
+    }
+  }
+  return Result();
 }
 
 }  // namespace rexnative

@@ -534,6 +534,20 @@ slope on either side of its own depth; those draws (testing depth without writin
 slope's worth of depth bias toward passing (draw.cpp), so that a surface is not lost on part
 of its slopes.
 
+The same game also showed, on the Steam Deck only, a few seconds of rainbow-speckled noise at
+the start of its first gameplay (a photo of the Deck), then a clean picture. Its scene is drawn
+in 2_10_10_10_FLOAT (7e3) and resolved as 2_10_10_10: the post-processing reads the 7e3 bits
+as unorm and decodes them itself (the trick of Unreal Engine 3 on the console, see EDRAM
+aliasing). The resolve's target holds those bits (RenderTargets::AliasColor), and that is what
+the upscaler took for colors: a log-like encoding, with FSR set up for an 8-bit scene. FSR 3.1
+on the PC got away with it; FSR 4 on the Deck (its INT8 model) did not while the game's
+exposure was still high. The upscaler now takes the scene the game drew (RenderTargets::
+ConvertedFrom: the float target the resolve's one was converted from), in HDR, and converts
+its output to the bits the resolve reads (RenderTargets::ConvertColor, AliasColor's pass).
+The logs of The Bureau, Brothers, Midnight Club: Los Angeles, Syndicate, SSX and Forza Horizon
+show the same aliasing of a float surface; where the upscaled resolve is one of them, it takes
+this path too.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

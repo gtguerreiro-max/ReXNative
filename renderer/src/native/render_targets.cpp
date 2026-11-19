@@ -1170,8 +1170,33 @@ bool RenderTargets::AliasColor(CommandStream* list, RenderTarget* rt) {
   const int from = AliasKind(src->guest_format), to = AliasKind(rt->guest_format);
   // A format pair not handled (64-bit formats, float targets): separate targets, as before.
   if (from < 0 || to < 0 || from == to) return false;
-  if (!InitAliasColor()) return false;
   if (src->pending_count) Flush(list, src);
+  if (!ColorPass(list, src, rt, from, to)) return false;
+  NoteColorWrite(rt);
+  rt->converted_from = src;
+  rt->converted_seq = rt->color_seq;
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative RT: color at base {} pitch {} read as guest format {} after "
+                      "format {}: EDRAM bits converted",
+                      rt->edram_base, rt->pitch, rt->guest_format, src->guest_format);
+  if (log_)
+    std::fprintf(log_, "rt color alias: base %u pitch %u format %u -> %u\n", rt->edram_base,
+                 rt->pitch, src->guest_format, rt->guest_format);
+  return true;
+}
+
+bool RenderTargets::ConvertColor(CommandStream* list, RenderTarget* src, uint32_t src_format,
+                                 RenderTarget* dst, uint32_t dst_format) {
+  const int from = AliasKind(src_format), to = AliasKind(dst_format);
+  if (from < 0 || to < 0 || from == to || src->samples != 1 || dst->samples != 1) return false;
+  if (!ColorPass(list, src, dst, from, to)) return false;
+  state_lost_ = true;
+  return true;
+}
+
+bool RenderTargets::ColorPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, int from,
+                              int to) {
+  if (!InitAliasColor()) return false;
   const bool source_ms = src->samples > 1;
   const uint32_t pso_key = uint32_t(rt->view_format) << 16 | rt->samples << 8 | from << 4 |
                            to << 1 | uint32_t(source_ms);
@@ -1235,14 +1260,6 @@ bool RenderTargets::AliasColor(CommandStream* list, RenderTarget* rt) {
   list->RSSetScissorRects(1, &sc);
   list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list->DrawInstanced(3, 1, 0, 0);
-  NoteColorWrite(rt);
-  REXNATIVE_LOG_FIRST(4, INFO,
-                      "ReXNative RT: color at base {} pitch {} read as guest format {} after "
-                      "format {}: EDRAM bits converted",
-                      rt->edram_base, rt->pitch, rt->guest_format, src->guest_format);
-  if (log_)
-    std::fprintf(log_, "rt color alias: base %u pitch %u format %u -> %u\n", rt->edram_base,
-                 rt->pitch, src->guest_format, rt->guest_format);
   return true;
 }
 
@@ -1271,6 +1288,8 @@ void RenderTargets::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t co
       if (auto o = color_owner_.find(OwnerKey(*rt)); o != color_owner_.end() && o->second == rt)
         color_owner_.erase(o);
       if (last_owner_ == rt) last_owner_ = nullptr;
+      for (auto& [k, other] : targets_)
+        if (other->converted_from == rt) other->converted_from = nullptr;
       it = targets_.erase(it);
       for (GetMemo& m : get_memo_) m = {};
     } else {

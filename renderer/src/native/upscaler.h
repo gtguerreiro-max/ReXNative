@@ -289,6 +289,16 @@ class Upscaler {
   // The upscaled color (an R16G16B16A16_FLOAT UAV: the scene's host format), in the fields the
   // resolve reads; and the motion vectors.
   RenderTarget output_;
+  // A scene the game reads through another format's EDRAM bits (RenderTargets::ConvertedFrom:
+  // Asura's Wrath draws it in 2_10_10_10_FLOAT and resolves it as 2_10_10_10): the upscaler takes
+  // the real colors, and the resolve the upscaled output converted to those bits, here (the
+  // format the game resolved, at the output's size). `encoded_`: this frame's upscale did so.
+  RenderTarget encoded_output_;
+  ComPtr<ID3D12DescriptorHeap> encoded_rtv_;
+  bool encoded_ = false;
+  // The resolve's source: output_, or encoded_output_ after an encoded scene.
+  RenderTarget* Result() { return encoded_ ? &encoded_output_ : &output_; }
+  bool PrepareEncodedOutput(const RenderTarget& like);
   ComPtr<ID3D12Resource> motion_;
   ComPtr<ID3D12DescriptorHeap> motion_rtv_;
   D3D12_RESOURCE_STATES motion_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;

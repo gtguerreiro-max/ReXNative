@@ -159,6 +159,10 @@ struct RenderTarget {
   uint64_t depth_seq = 0;
   // Color targets: when their color last changed (bound, copied in; AliasColor).
   uint64_t color_seq = 0;
+  // Color targets: the target AliasColor last converted into this one, and this one's color_seq
+  // then (RenderTargets::ConvertedFrom).
+  RenderTarget* converted_from = nullptr;
+  uint64_t converted_seq = 0;
   // Clears not recorded yet, oldest first (RenderTargets::Clear).
   std::array<PendingClear, kMaxPendingClears> pending{};
   uint32_t pending_count = 0;
@@ -237,6 +241,20 @@ class RenderTargets {
   // missing (resolve sources). nullptr for an invalid format.
   RenderTarget* GetColor(const SurfaceRegs& regs, uint32_t index, uint32_t height);
   RenderTarget* GetDepth(const SurfaceRegs& regs, uint32_t height);
+  // The target whose pixels `rt` holds converted to its own format (AliasColor: a 2_10_10_10
+  // surface read over the 2_10_10_10_FLOAT one the game drew, its 7e3 bits as unorm), when `rt`
+  // was not drawn since; otherwise null.
+  RenderTarget* ConvertedFrom(const RenderTarget* rt) const {
+    const RenderTarget* src = rt->converted_from;
+    return src && rt->converted_seq == rt->color_seq && src->color_seq < rt->color_seq
+               ? rt->converted_from
+               : nullptr;
+  }
+  // `src`'s pixels (guest format `src_format`) as guest format `dst_format`'s EDRAM bits into
+  // `dst`, AliasColor's conversion, over the guest pixels both hold (1x targets). For a target
+  // outside the EDRAM (the upscaler's output). Returns whether it recorded calls.
+  bool ConvertColor(CommandStream* list, RenderTarget* src, uint32_t src_format, RenderTarget* dst,
+                    uint32_t dst_format);
   // Copies `src`'s depth into `dst` (1x, both at their own scales over the same guest pixels;
   // stencil is left) after `dst`'s pending clears, which are older: the upscaler's scene depth
   // into the surface's full-size target (Upscaler::EnterPostScene). Returns whether it recorded
@@ -357,6 +375,8 @@ class RenderTargets {
   // recorded calls.
   bool AliasColor(CommandStream* list, RenderTarget* rt);
   bool InitAliasColor();
+  // AliasColor's and ConvertColor's pass: `src` (alias kind `from`) into `rt` (kind `to`).
+  bool ColorPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, int from, int to);
   // The color target last written at each EDRAM base, pitch and MSAA (AliasColor).
   std::unordered_map<uint64_t, RenderTarget*> color_owner_;
   static uint64_t OwnerKey(const RenderTarget& rt) {
