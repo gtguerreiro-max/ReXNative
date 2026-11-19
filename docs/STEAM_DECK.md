@@ -35,8 +35,10 @@ the console's MSAA. Settings changed on the Deck (the HUD: View + Menu) are kept
 installs.
 
 Frame generation (AMD FSR, the HUD's Upscaler page) turns on and off while the game runs: the
-game at 30 FPS, the screen at 60. In Syndicate's first mission (1,500 to 1,960 draws a frame) the
-Deck kept 33.3 ms a frame with it on, every frame with a generated one before it (2026-11-19).
+game at 30 FPS, the screen at 60. In Sega Rally Revo's attract races (1,500 to 3,600 draws a
+frame) the Deck kept 33.3 ms a frame with it on, every frame with a generated one before it that
+lies between the real ones, the HUD sharp; some mud specks behind the cars break up
+(2026-11-19).
 It adds input delay: a frame waits for the next one, which the generated frame goes between.
 
 - `<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as
