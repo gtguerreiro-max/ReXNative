@@ -56,6 +56,14 @@ configuration file (`run/<game>.toml`) or on the command line.
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 
+Two of ReXGlue's own settings (SDK patches 0040 and 0041), in the same file:
+
+- `[kernel] user_name = "..."`: the profile's gamertag, up to 15 characters (default "User"):
+  the name a game shows for the player, as Diablo III under P1. A hero's or a save's name is the
+  game's own, typed in its keyboard prompt.
+- `[ui] dialog_scale`: the size of the system dialogs (the keyboard prompt, message boxes); 0,
+  the default, makes them twice as large on a 720p or 800p screen, three times at 1080p.
+
 ## Inline draws
 
 A game whose build inlined draws past the hooked D3D functions (Orcs Must Die!'s title, menus,

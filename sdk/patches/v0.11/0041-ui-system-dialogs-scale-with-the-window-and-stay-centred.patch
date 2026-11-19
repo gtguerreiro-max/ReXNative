@@ -1,0 +1,108 @@
+From 44cfbd057c4c7bd4de27b8e7bfb22c524cff681b Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 18:58:42 +0000
+Subject: [PATCH 41/41] ui: system dialogs scale with the window and stay
+ centred
+
+The keyboard and message box prompts draw ProggyTiny at 10 px with the display's
+content scale only: a small box on a 1280x800 Steam Deck screen. ui.dialog_scale
+multiplies that scale (0, the default: once per 360 logical lines, 2x at 720p
+and 800p, 3x at 1080p), and a prompt is centred every frame, as an auto-sized
+modal was centred by its empty first frame and grew down from near the top.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/ui/ui_system.h |  4 ++++
+ src/ui/prompt.cpp          |  4 ++++
+ src/ui/ui_system.cpp       | 24 ++++++++++++++++++++++--
+ 3 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/include/rex/ui/ui_system.h b/include/rex/ui/ui_system.h
+index 61a64054..c212df2f 100644
+--- a/include/rex/ui/ui_system.h
++++ b/include/rex/ui/ui_system.h
+@@ -141,6 +141,10 @@ class REX_UI_API UISettings final : public SettingOwner {
+               kRestart);
+   REX_SETTING(f64, cursor_timeout, 0.0, "Seconds before an idle cursor hides, 0 never hides",
+               Range{0.0, 3600.0});
++  REX_SETTING(i32, dialog_scale, 0,
++              "Size of the system dialogs (keyboard, message boxes), 0: once per 360 lines of "
++              "the window (twice on a 720p or 800p screen such as the Steam Deck's)",
++              Range{0, 8});
+ };
+ 
+ /**
+diff --git a/src/ui/prompt.cpp b/src/ui/prompt.cpp
+index 079513ad..a1e58db4 100644
+--- a/src/ui/prompt.cpp
++++ b/src/ui/prompt.cpp
+@@ -92,6 +92,10 @@ bool PromptDialog::Draw(ImGuiIO& io) {
+     opened_ = true;
+     first_draw = true;
+   }
++  // Centred every frame: an auto-sized modal is centred by its first frame's size (empty), so at
++  // a larger dialog scale (ui.dialog_scale) it grew down from near the top of the screen.
++  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
++                          ImVec2(0.5f, 0.5f));
+   if (!ImGui::BeginPopupModal(label_.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+     Complete({});
+     closing_ = true;
+diff --git a/src/ui/ui_system.cpp b/src/ui/ui_system.cpp
+index d2012a78..942b020d 100644
+--- a/src/ui/ui_system.cpp
++++ b/src/ui/ui_system.cpp
+@@ -1,6 +1,7 @@
+ #include "ui/ui_system.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <atomic>
+ #include <exception>
+ #include <format>
+@@ -59,6 +60,21 @@ UISystem::State::~State() = default;
+ 
+ rex::ui::UISettings::UISettings() : SettingOwner("ui") {}
+ 
++namespace {
++
++// The system dialogs' scale over the display's content scale: ui.dialog_scale, or once per 360
++// logical lines of the window. Their font (ProggyTiny, 10 px) was a small box in a 1280x800
++// screen: Diablo III's hero name prompt on the Steam Deck.
++f32 DialogScale(i32 setting, u32 height, f32 content_scale) {
++  if (setting > 0) {
++    return static_cast<f32>(setting);
++  }
++  const f32 logical = static_cast<f32>(height) / (content_scale > 0.0f ? content_scale : 1.0f);
++  return std::clamp(std::floor(logical / 360.0f), 1.0f, 4.0f);
++}
++
++}  // namespace
++
+ UISystem::UISystem() : state_(std::make_unique<State>(*this)) {}
+ 
+ UISystem::~UISystem() {
+@@ -244,7 +260,9 @@ void UISystem::State::CreateImGui() {
+   hooks.set_clipboard = [this](std::string_view text) { driver->SetClipboardText(text); };
+   imgui = std::make_unique<ui::ImGuiHost>(std::move(hooks));
+   imgui->SetDialogCounter(&dialog_count);
+-  imgui->SetDisplay(window_width, window_height, content_scale);
++  imgui->SetDisplay(window_width, window_height,
++                    content_scale * DialogScale(owner.GetSettings().dialog_scale.Get(),
++                                                window_height, content_scale));
+   ui::ApplyDefaultStyle(imgui->GetImGuiStyle(), style.palette, style.metrics);
+   applied_style = style;
+ }
+@@ -494,7 +512,9 @@ void UISystem::DrawOverlays(IOverlayRenderer& renderer) {
+       ui::ApplyDefaultStyle(s.imgui->GetImGuiStyle(), s.style.palette, s.style.metrics);
+       s.applied_style = s.style;
+     }
+-    s.imgui->SetDisplay(s.window_width, s.window_height, s.content_scale);
++    s.imgui->SetDisplay(s.window_width, s.window_height,
++                        s.content_scale * DialogScale(s.owner.GetSettings().dialog_scale.Get(),
++                                                      s.window_height, s.content_scale));
+     data = s.imgui->BuildFrame();
+   });
+   if (data) {
+-- 
+2.55.0.windows.5
+

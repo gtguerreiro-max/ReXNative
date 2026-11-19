@@ -48,6 +48,8 @@ does; in short:
 | 0037 | A XEX header patch runs its whole delta list (the descriptor's size, as Xenia), not only the first entry: a DLL module's title update patch starts with copies, and Forza Horizon's two modules failed the key check ("image key does not match", status 9) |
 | 0038 | A fake occlusion result (`query_occlusion_fake_sample_count`) is a running sample counter written to every EVENT_WRITE_ZPD report, BEGIN or END, as Xenia canary's fake mode: writing 0 where D3D left no 0xFFFFFEED read every query of a QueryBatch but the last as 0 samples, and Halo: Combat Evolved Anniversary culled its menu's ship and ring |
 | 0039 | `XamSwapDisc` sets its completion event when the title asks for the disc that is running (the execution info's `disc_number`), as Xenia canary does: the stub never set it, and Deus Ex: Human Revolution Director's Cut waited on its "insert disc 1" screen as a new game started. Another disc is logged and left to the title's prompt |
+| 0040 | `kernel.user_name` names the signed-in profile (its gamertag, up to 15 characters); it was always "User", which Diablo III shows under P1 |
+| 0041 | The system dialogs (keyboard, message boxes) scale with the window, `ui.dialog_scale` (0: once per 360 lines, 2x on the Steam Deck's 800), and a prompt stays centred: Diablo III's hero name prompt was a small box on the Deck |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
 prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).

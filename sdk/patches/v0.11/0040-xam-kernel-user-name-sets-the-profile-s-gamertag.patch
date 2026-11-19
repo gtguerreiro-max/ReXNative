@@ -1,0 +1,94 @@
+From 47cbadd23c63153f9359087c3eb87c7b12d1d13f Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 18:58:42 +0000
+Subject: [PATCH 40/41] xam: kernel.user_name sets the profile's gamertag
+
+Titles show the signed-in profile's name for the player (Diablo III's P1);
+it was always "User". The new kernel setting (up to 15 characters, as on
+the console) names the profile when the XAM state is made.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/kernel/kernel_settings.h |  2 ++
+ src/xam/user_profile.cpp             | 14 ++++++++++++++
+ src/xam/xam_module.cpp               |  5 +++++
+ src/xam/xam_module.h                 |  1 +
+ 4 files changed, 22 insertions(+)
+
+diff --git a/include/rex/kernel/kernel_settings.h b/include/rex/kernel/kernel_settings.h
+index bed2922b..30bd3e79 100644
+--- a/include/rex/kernel/kernel_settings.h
++++ b/include/rex/kernel/kernel_settings.h
+@@ -24,6 +24,8 @@ class REX_KERNEL_API KernelSettings final : public SettingOwner {
+   REX_SETTING(u32, user_language, 1, "XLanguage ID, 0 follows the host language", kUntilLaunch);
+   REX_SETTING(u32, user_country, 103, "Console country code", kUntilLaunch);
+   REX_SETTING(u32, license_mask, 0, "Content license mask", kUntilLaunch);
++  REX_SETTING(std::string, user_name, "User",
++              "Gamertag of the signed-in profile, up to 15 characters", kUntilLaunch);
+   REX_SETTING(std::string, command_line, "", "Arguments the title sees after default.xex",
+               kUntilLaunch);
+ 
+diff --git a/src/xam/user_profile.cpp b/src/xam/user_profile.cpp
+index 96c44548..ac3e2f18 100644
+--- a/src/xam/user_profile.cpp
++++ b/src/xam/user_profile.cpp
+@@ -16,14 +16,28 @@
+ #include <rex/logging/log_category.h>
+ #include <rex/platform/file.h>
+ #include <rex/xam/content_manager.h>
++#include <rex/string/text.h>
+ #include <rex/xam/user_profile.h>
+ 
++#include "xam/xam_module.h"
++
+ namespace rex::xam {
+ 
+ UserProfile::UserProfile() {
+   // A title rejects any XUID with bits 54 or 55 set (mask 0x00C0000000000000).
+   xuid_ = 0xB13EBABEBABEBABE;
+   name_ = "User";
++  // kernel.user_name: the gamertag titles show for the player (Diablo III's "P1"), 15
++  // characters at most, as on the console.
++  if (const ::rex::Setting<std::string>* user_name = GetXAMSettings().user_name) {
++    std::u16string name = rex::string::ToUTF16(user_name->Get());
++    if (name.size() > 15) {
++      name.resize(15);
++    }
++    if (!name.empty()) {
++      name_ = rex::string::ToUTF8(name);
++    }
++  }
+ 
+   // XPROFILE_GAMER_YAXIS_INVERSION
+   AddSetting(std::make_unique<Int32Setting>(0x10040002, 0));
+diff --git a/src/xam/xam_module.cpp b/src/xam/xam_module.cpp
+index 6d0f5fa0..81212008 100644
+--- a/src/xam/xam_module.cpp
++++ b/src/xam/xam_module.cpp
+@@ -87,6 +87,11 @@ Result<void> XAMModule::Init() {
+     return Err(license_mask.error());
+   }
+   found.license_mask = *license_mask;
++  auto user_name = FindSetting<std::string>(*settings_, "kernel.user_name");
++  if (!user_name) {
++    return Err(user_name.error());
++  }
++  found.user_name = *user_name;
+   g_settings = found;
+   return {};
+ }
+diff --git a/src/xam/xam_module.h b/src/xam/xam_module.h
+index 9605f0cb..2fbee4da 100644
+--- a/src/xam/xam_module.h
++++ b/src/xam/xam_module.h
+@@ -34,6 +34,7 @@ struct XAMSettings {
+   Setting<bool>* headless = nullptr;    /**< System dialogs answer at once without showing. */
+   Setting<u32>* user_country = nullptr; /**< Console country code. */
+   Setting<u32>* license_mask = nullptr; /**< Content license mask. */
++  Setting<std::string>* user_name = nullptr; /**< The profile's gamertag. */
+ };
+ 
+ /** Returns the settings the XAM exports read. */
+-- 
+2.55.0.windows.5
+
