@@ -2,14 +2,14 @@
 
 ## Next
 
-- Deus Ex: Human Revolution past its main menu: a new game asks for disc 1, though it runs from
-  disc 1's image.
+- Deus Ex: Human Revolution's disc 2: XamSwapDisc can't insert another disc yet (SDK patch
+  0039 answers only for the running one).
 - Fable II on the Steam Deck past its title screen, and Diablo III's replayed command buffers
   with the shader tracking of 2026-11-18 (neither tried yet).
 - Midnight Club's races on the Steam Deck at frame latency 2: they fell to 22-29 FPS at 1.
 - Find the HDR pass before the game's tone mapping, for DLSS 5.
 - The open problems in [GAMES.md](GAMES.md#open-problems): Perfect Dark's broken levels,
-  Spelunky's missing text, Halo's dark and striped surfaces.
+  Spelunky's missing text.
 - A reactive mask for the upscalers (FSR's own, made from the scene before and after its
   transparent draws), where motion vectors cannot be right: particles, and the draws whose mesh
   the previous frame did not have.

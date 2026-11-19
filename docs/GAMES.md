@@ -48,8 +48,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 
 ## Open problems
 
-Perfect Dark's broken levels, Spelunky's missing text, and Deus
-Ex's "insert disc 1" when a new game starts (from disc 1's own image), and a render the game
+Perfect Dark's broken levels, Spelunky's missing text, and a render the game
 reads back on the CPU (Minecraft's save thumbnails: the native renderer never writes a resolve
 into guest memory). The plans for them are in [ROADMAP.md](ROADMAP.md).
 The garbled WMV videos (Jet Set Radio, Syndicate, Dark Souls II) were the video decoder's
