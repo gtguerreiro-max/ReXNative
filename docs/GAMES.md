@@ -28,7 +28,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Sega Rally Revo | runs, drawn from its replayed command buffers: the title (its chrome logo since 2026-11-18) and the attract races | 30 FPS |
 | Diablo III | its intro cinematics, the main menu, hero selection and creation (with the upscaler: `rexnative.upscaler_depth_test`) | 60 FPS (main menu) |
 | Syndicate | its intro video, menus and first mission drawn as on ReXGlue's renderer (its colour grading LUT, resolved into a 3D texture, since 2026-11-19) | 30 FPS (intro) |
-| Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game starts on disc 1 and plays its first scene (SDK patch 0039) | 30 FPS (title) |
+| Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new campaign starts on disc 1 and plays past its intro (SDK patch 0039) | 30 FPS (title) |
 | Asura's Wrath (TU 1) | runs to its title screen | not tried (space) |
 | Blur (TU 2) | runs, its intro video plays | not tried (space) |
 | Forza Horizon (TU 4, its DLC) | plays on the native renderer: the intro videos, the main menu, the opening drive with its car, the traffic and the HUD (about 2000 draws, 30 FPS); its speech and media code are two XEX DLL modules, recompiled as ReXGlue's `[[modules]]` since 2026-11-19 (their title update patches needed SDK patch 0037) | not tried (space) |
