@@ -1,0 +1,143 @@
+From d82d9407c01a065d8b3576435a27f4649d127ebe Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:38:52 +0000
+Subject: [PATCH] gpu: a fake occlusion result is a running sample counter
+
+The fake EVENT_WRITE_ZPD (query_occlusion_fake_sample_count) wrote 0 to a report without D3D's
+0xFFFFFEED sentinel and the fake count to one with it, taking the first for a BEGIN and the
+second for an END. But the Xenos's ZPD is four free-running sample counters that every event
+dumps, and D3D subtracts two reports: in a QueryBatch only the last END holds the sentinel, so
+every other query of the batch read 0 samples. Halo: Combat Evolved Anniversary culls the
+objects its remastered renderer surveys that way: a second after its menu came up, the ship and
+the ring behind it lost their material pass and showed the clear colour.
+
+Every report now gets a counter advanced by the fake count at each event (split across the A
+and B lanes D3D sums, ZPass and Total; the polled lanes last), as Xenia canary's fake mode
+since 3d233a5 ("Rewrite ZPD as a running sample counter"). Any two reports differ by at least
+the fake count: visible, whatever the order of BEGINs and ENDs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/command_processor.cpp        | 30 +++++++++++++++-------
+ src/gpu/xenos/command_processor.h          | 10 ++++++++
+ src/gpu/xenos/d3d12/command_processor.cpp  |  8 +-----
+ src/gpu/xenos/vulkan/command_processor.cpp |  8 +-----
+ 4 files changed, 33 insertions(+), 23 deletions(-)
+
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index 2eec5e85..69b3e93a 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -1237,6 +1237,23 @@ void CommandProcessor::WriteSampleCounts(xenos::DepthSampleCounts& counts, u32 s
+   counts.ZPass_A.Store(samples, std::memory_order_release);
+ }
+ 
++void CommandProcessor::WriteFakeSampleCounts(xenos::DepthSampleCounts& counts,
++                                             u32 fake_sample_count) {
++  fake_sample_counter_ += fake_sample_count;
++  // Each counter split across its A and B lanes, which D3D sums; the lanes a title polls (ZPass,
++  // and StencilFail_B for a QueryBatch's lock) last.
++  const u32 a = fake_sample_counter_ - (fake_sample_counter_ >> 1);
++  const u32 b = fake_sample_counter_ >> 1;
++  counts.Total_A = a;
++  counts.Total_B = b;
++  counts.ZFail_A = 0;
++  counts.ZFail_B = 0;
++  counts.StencilFail_A = 0;
++  counts.ZPass_B.Store(b, std::memory_order_release);
++  counts.ZPass_A.Store(a, std::memory_order_release);
++  counts.StencilFail_B.Store(0, std::memory_order_release);
++}
++
+ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                           [[maybe_unused]] u32 packet, u32 count) {
+   REX_ASSERT(count == 1);
+@@ -1257,15 +1274,10 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+     if (!sample_counts) {
+       return true;
+     }
+-    // D3D writes 0xFFFFFEED to these locations only on D3DISSUE_END to mark a finished query.
+-    bool is_end_via_z_pass =
+-        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
+-    // Older D3D versions check ZFail.
+-    bool is_end_via_z_fail =
+-        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
+-    WriteSampleCounts(*sample_counts, is_end_via_z_pass || is_end_via_z_fail
+-                                          ? static_cast<u32>(fake_sample_count)
+-                                          : 0);
++    // A running counter at every event, BEGIN or END alike (WriteFakeSampleCounts): writing 0 at
++    // a BEGIN and the count only where D3D left its 0xFFFFFEED (an END) read as 0 samples every
++    // END of a QueryBatch but the last, and Halo: Anniversary culled those objects.
++    WriteFakeSampleCounts(*sample_counts, static_cast<u32>(fake_sample_count));
+   }
+ 
+   return true;
+diff --git a/src/gpu/xenos/command_processor.h b/src/gpu/xenos/command_processor.h
+index 823a660b..5663b515 100644
+--- a/src/gpu/xenos/command_processor.h
++++ b/src/gpu/xenos/command_processor.h
+@@ -207,6 +207,8 @@ class REX_GPU_XENOS_API CommandProcessor : public rex::NonCopyable {
+   void InvalidateVertexBufferResidencyRange(u32 first_vfetch, u32 last_vfetch);
+ 
+   u32 occlusion_query_cursor_ = 0;
++  // WriteFakeSampleCounts's running sample counter (ZPass and Total; it wraps as the GPU's does).
++  u32 fake_sample_counter_ = 0;
+   u64 vertex_buffers_in_sync_[2] = {};
+ 
+   struct IndexBuffer {
+@@ -225,6 +227,14 @@ class REX_GPU_XENOS_API CommandProcessor : public rex::NonCopyable {
+    * @param samples The passed sample count for Total_A and ZPass_A. Every other field is 0.
+    */
+   static void WriteSampleCounts(xenos::DepthSampleCounts& counts, u32 samples);
++  /**
++   * The fake result of an EVENT_WRITE_ZPD (query_occlusion_fake_sample_count): the Xenos's ZPD is
++   * four free-running sample counters that every event dumps, and D3D subtracts two reports (a
++   * query's BEGIN from its END, or the reports of a QueryBatch, where only the last END holds the
++   * 0xFFFFFEED sentinel). So every report gets a running counter, advanced by the fake count at
++   * each event, and any two reports differ by at least that count: visible, whatever the order.
++   */
++  void WriteFakeSampleCounts(xenos::DepthSampleCounts& counts, u32 fake_sample_count);
+   bool IsWorkerThread();
+   /**
+    * Runs a function on the worker without waiting for it, so a caller never blocks on a worker that
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index bc2b55fe..b5b082e9 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -167,13 +167,7 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+     if (fake_sample_count < 0) {
+       return true;
+     }
+-    bool is_end_via_z_pass =
+-        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
+-    bool is_end_via_z_fail =
+-        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
+-    WriteSampleCounts(*sample_counts, is_end_via_z_pass || is_end_via_z_fail
+-                                          ? static_cast<u32>(fake_sample_count)
+-                                          : 0);
++    WriteFakeSampleCounts(*sample_counts, static_cast<u32>(fake_sample_count));
+     return true;
+   };
+ 
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index d534fc36..4034c378 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -630,13 +630,7 @@ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuff
+     if (fake_sample_count < 0) {
+       return true;
+     }
+-    bool is_end_via_z_pass =
+-        sample_counts->ZPass_A == kQueryFinished || sample_counts->ZPass_B == kQueryFinished;
+-    bool is_end_via_z_fail =
+-        sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
+-    WriteSampleCounts(*sample_counts, is_end_via_z_pass || is_end_via_z_fail
+-                                          ? static_cast<u32>(fake_sample_count)
+-                                          : 0);
++    WriteFakeSampleCounts(*sample_counts, static_cast<u32>(fake_sample_count));
+     return true;
+   };
+ 
+-- 
+2.55.0.windows.5
+

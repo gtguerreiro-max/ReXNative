@@ -1305,6 +1305,9 @@ thread_local bool t_pending_vertices = false;
 thread_local rexnative::HookArgs t_pending_args;
 thread_local uint32_t t_original_depth = 0;  // hooked originals running (profiler on)
 thread_local rexnative::TilingCall t_tiling_call = rexnative::TilingCall::kNone;
+// The device of this thread's last hooked call that takes one (kFollowSwapDeviceOnly): the
+// queries' (OnHook).
+thread_local uint32_t t_device = 0;
 
 // Hooked functions that neither the renderer nor the state tracker needs to see: no draw,
 // clear, resolve or Swap, no state flush (d3d_state.h IsStateFlushingFn), not the tiling
@@ -1539,10 +1542,18 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
   if constexpr (rexnative::game::kFollowSwapDeviceOnly &&
                 (nat::IsStateFlushingFn(kAddr) || kClass != kNatNone)) {
     const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
-    if (main_device && ctx.r3.u32 != main_device) [[unlikely]] {
+    // QueryIssue and QueryGetData take the query object, not the device: the device this thread
+    // called the D3D with last stands for it. (Taken for a device, every query was "another
+    // device's", so --rexnative_occlusion counted none in a game that follows Swap's device.)
+    uint32_t device = ctx.r3.u32;
+    if constexpr (kClass == kNatQuery)
+      device = t_device;
+    else
+      t_device = device;
+    if (main_device && device && device != main_device) [[unlikely]] {
       if (r)
         REXNATIVE_LOG_FIRST(4, INFO, "{} on device {:08X}, not the presenting {:08X}: "
-                       "guest only", kFns[kId].name, ctx.r3.u32, main_device);
+                       "guest only", kFns[kId].name, device, main_device);
       r = nullptr;
       other_device = true;
     }

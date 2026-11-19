@@ -46,6 +46,7 @@ does; in short:
 | 0035 | 0033's copies keep the guest output they read until they are done: a front buffer of another size released the image a copy still read |
 | 0036 | Asynchronous reads and writes return STATUS_PENDING as the console does (Xenia canary's rule: always in a content package, otherwise only unbuffered ones that succeeded); the request is still done at once. Minecraft's Load tab waited forever for a pending read of its save list |
 | 0037 | A XEX header patch runs its whole delta list (the descriptor's size, as Xenia), not only the first entry: a DLL module's title update patch starts with copies, and Forza Horizon's two modules failed the key check ("image key does not match", status 9) |
+| 0038 | A fake occlusion result (`query_occlusion_fake_sample_count`) is a running sample counter written to every EVENT_WRITE_ZPD report, BEGIN or END, as Xenia canary's fake mode: writing 0 where D3D left no 0xFFFFFEED read every query of a QueryBatch but the last as 0 samples, and Halo: Combat Evolved Anniversary culled its menu's ship and ring |
 
 Left out, as the v0.11 port notes record: pgr4-native's statistics patches (0018, 0032), and the
 prebuilt resolve shaders of the v0.10 series' `0002` (v0.11 has no sources to rebuild them from).

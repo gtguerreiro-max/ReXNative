@@ -426,6 +426,29 @@ writeback once, which looked like success). Writing late into memory the game ma
 meanwhile is a risk as well, so it stays off. What would work is a sync point: the guest's wait
 for its fence held until the renderer has done that resolve and written it back.
 
+## Occlusion queries in batches
+
+With `rexnative.occlusion` off (every game's default) the SDK's command processor answers the
+game's occlusion queries: it still sees their EVENT_WRITE_ZPD packets under
+`gpu.xenos.skip_draws`, and writes `gpu.xenos.query_occlusion_fake_sample_count` samples. It
+wrote 0 to a report without D3D's 0xFFFFFEED sentinel (a BEGIN) and the count to one with it
+(an END). But the Xenos's ZPD is four free-running sample counters that every event dumps, and
+D3D subtracts two reports; in a QueryBatch (BEGIN, BEGIN, BEGIN, END, END, END) only the last END
+holds the sentinel, so every other query of the batch read 0 samples. Halo: Anniversary's
+remastered renderer surveys its objects that way before their material pass: a second after its
+menu came up the ship and the ring behind it kept only their G-buffer pass (normals and depth)
+and showed the colour the scene's target was cleared to, flat grey with their lights on top.
+SDK patch 0038 gives every report a running counter advanced by the fake count at each event,
+as Xenia canary's fake mode since its commit 3d233a5 (its compatibility report,
+[game-compatibility#552](https://github.com/xenia-canary/game-compatibility/issues/552), had
+the clue: "remastered mode object culling is separately handled through batched surveys").
+
+`rexnative.occlusion` on, which counts the queries on the host, never reached the renderer in a
+game that follows Swap's device (`kFollowSwapDeviceOnly`): QueryIssue and QueryGetData take the
+query, not the device, and the query was taken for another device. They now go by the device
+the thread last drew with. Halo stops during its intro with it on all the same (it seems to wait
+for a result within the frame, which the host gives only after it).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

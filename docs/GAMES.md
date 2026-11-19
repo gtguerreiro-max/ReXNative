@@ -18,7 +18,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Bionic Commando Rearmed (TU 2) | the intro at 60 FPS, the mission map | 60 FPS |
 | Midnight Club: Los Angeles - Complete Edition | plays: the city, its cars (from recorded command buffers), 30 FPS | 30 FPS |
 | Dark Souls II (TU 10) | plays: menus, a new game into Things Betwixt, 60 FPS (the console's 30 with `rexnative.menu_fps = 30`); its prologue video came out garbled before the video decoder's fix of 2026-11-18 (not checked here since) | 30 FPS (Things Betwixt) |
-| Halo: Combat Evolved Anniversary (TU 2) | campaign menu and the opening cutscene; some surfaces dark or striped | 60 FPS (the intro) |
+| Halo: Combat Evolved Anniversary (TU 2) | campaign menu, its ship and ring whole since SDK patch 0038 (before, a second in, they lost their material: flat grey); the opening cutscene, with garbled textures on many surfaces | 60 FPS (the intro) |
 | Spelunky (TU 1) | menus, with no text (also on ReXGlue's renderer, and in Xenia: [game-compatibility#97](https://github.com/xenia-project/game-compatibility/issues/97)) | 60 FPS, no text |
 | Perfect Dark (TU 3) | reaches its levels, but draws them broken (ReXGlue's renderer now reaches the menus, to compare) | 60 FPS (menus) |
 | 3D Ultra Minigolf Adventures | runs past its start-up | 60 FPS |
@@ -46,7 +46,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 
 ## Open problems
 
-Perfect Dark's broken levels, Spelunky's missing text, Halo's dark and striped surfaces, and Deus
+Perfect Dark's broken levels, Spelunky's missing text, Halo's garbled textures, and Deus
 Ex's "insert disc 1" when a new game starts (from disc 1's own image), and a render the game
 reads back on the CPU (Minecraft's save thumbnails: the native renderer never writes a resolve
 into guest memory). The plans for them are in [ROADMAP.md](ROADMAP.md).
