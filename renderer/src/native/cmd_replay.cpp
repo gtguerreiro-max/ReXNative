@@ -15,6 +15,7 @@
 #include "log.h"
 #include "profile.h"
 #include "renderer.h"
+#include "resolve.h"
 
 #include <rex/cvar.h>
 #include <rex/kernel/heap.h>
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <atomic>
 #include <cerrno>
 #include <cstdarg>
@@ -49,6 +51,12 @@ REXCVAR_DEFINE_BOOL(rexnative_inline_draws_follow, false, "ReXNative",
                     "With rexnative.inline_draws: follow the INDIRECT_BUFFERs found in the "
                     "stream between hooked calls (recorded buffers run where no replay saw "
                     "them)");
+REXCVAR_DEFINE_BOOL(rexnative_inline_resolves, true, "ReXNative",
+                    "With rexnative.inline_draws (or its automatic trial): the resolves the "
+                    "stream between hooked calls holds, which no hooked Resolve made (an "
+                    "engine that writes its own, or a D3D path the layer does not hook), are "
+                    "copied too, decoded from the registers; rexnative.inline_draws_auto keeps "
+                    "the walk on for them");
 REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_predication, true, "ReXNative",
                     "Replayed command buffers: skip predicated packets when bin select & bin mask "
                     "is 0, as the GPU does (false: run them all)");
@@ -107,6 +115,12 @@ constexpr const char* kReasonNames[] = {
     "short",    "bad_alu_source", "bad_shader_type", "bad_shader_range", "bin_draw",
     "unknown_op", "nested_range"};
 static_assert(std::size(kReasonNames) == size_t(Reason::kCount));
+
+// The registers a resolve reads that the state tracker drops (no flush group: RB_COPY_*, the
+// clear values, PA_SU_VTX_CNTL): what the walks last wrote there. A resolve in the stream is
+// decoded from these over the tracker's file. On the Swap thread, as the walks.
+std::array<uint32_t, kGuestRegisterCount> g_dropped{};
+std::bitset<kGuestRegisterCount> g_dropped_set;
 
 // Why a draw packet was not issued.
 enum Drop : uint32_t {
@@ -338,7 +352,9 @@ Reason CollectChunks(const uint8_t* base, const CommandBufferHeader& h, std::vec
 // 2 fails only where the guest changed the memory in between.
 struct Walker {
   Walker(const uint8_t* base_, const uint8_t* pm_, const RunContext& c_, State& s_)
-      : base(base_), pm(pm_), c(c_), s(s_), f(s_.frame), gs(GuestState()) {}
+      : base(base_), pm(pm_), c(c_), s(s_), f(s_.frame), gs(GuestState()) {
+    modecontrol = gs.regs()[0x2208];
+  }
 
   const uint8_t* base;
   const uint8_t* pm;  // physical membase: the buffers, shaders and constants are physical
@@ -366,6 +382,11 @@ struct Walker {
   uint32_t draws_seen = 0, draws_emitted = 0, nested_followed = 0, nested_refused = 0;
   uint32_t bin_packets = 0;
   uint32_t constant_changes = 0;  // pass 1 of a probe (RunContext::probe): see Write
+  // RB_MODECONTROL as the stream sets it (pass 1 does not reach the tracker), and the resolves
+  // pass 1 of a probe saw (copy draws: rexnative.inline_draws_auto keeps the walk for them) and
+  // pass 2 of a gap issued (rexnative.inline_resolves).
+  uint32_t modecontrol = 0;
+  uint32_t copies = 0, resolves_issued = 0;
   std::vector<uint16_t> constant_regs;  // which ones (- 0x4000), for CountProbeConstants
   uint64_t draw_ticks = 0;
   bool pred_shader_ran[2] = {};  // vs, ps: a predicated load ran since the last draw
@@ -403,6 +424,10 @@ struct Walker {
     switch (gs.ReplayPut(reg, v)) {
       case GuestStateTracker::ReplayWrite::kIgnored:
         NoteIgnored(reg);  // not mirrored either: the tracker dropped it
+        if (reg < kGuestRegisterCount) {
+          g_dropped[reg] = v;
+          g_dropped_set.set(reg);
+        }
         return;
       case GuestStateTracker::ReplayWrite::kKept:
         ++f[kKeptWrites];
@@ -460,6 +485,7 @@ struct Walker {
 
   template <bool kApply>
   void Write(uint32_t reg, uint32_t v) {
+    if (reg == 0x2208) modecontrol = v;
     if (reg >= 0x2080 && reg <= 0x2082) {
       if (tile_write)
         v = TileValue(reg, v);
@@ -810,6 +836,7 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
     ++f[kDrawsSeen];
     if (!indx) ++f[kDrawsSeen2];
     if (drop >= 0) ++f[kDropFirst + uint32_t(drop)];
+    if (c.probe && drop < 0 && (modecontrol & 7) == 6) ++copies;
     if (dump) {
       Append(*dump, "D %s pred=%d prim=%u src=%s idx32=%u count=%u", OpName(op), pred ? 1 : 0,
              init & 0x3F, src == 0 ? "dma" : src == 2 ? "auto" : src == 1 ? "imm" : "invalid",
@@ -834,6 +861,15 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
       else if (src == 0 && !(dma_base & 0x1FFFFFFF))
         drop = kDropNoIndex;
       if (drop >= 0) ++f[kDropFirst + uint32_t(drop)];
+      // A resolve in the main stream between hooked calls: no hooked Resolve made it (an
+      // engine's own, or a D3D path the layer does not hook), so it is copied here, from the
+      // registers.
+      if (drop == kDropCopy && c.gap && emit && REXCVAR_GET(rexnative_inline_resolves)) {
+        c.renderer->OnRegisterResolve(ResolveRegisters::From([&](uint32_t reg) {
+          return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
+        }));
+        ++resolves_issued;
+      }
     }
     const bool issue = drop < 0 && emit;
     if (issue) {
@@ -999,6 +1035,7 @@ void AfterRunOtherThread(const uint8_t* base, uint32_t device, uint32_t cb) {
 // shader constants that the gaps changed from the tracker's values.
 struct GapCounters {
   uint64_t gaps = 0, with_draws = 0, draws = 0, refused = 0, dwords = 0, constants = 0;
+  uint64_t probed_resolves = 0, resolves = 0;  // the probes' copy draws; the resolves issued
 };
 GapCounters g_gaps;
 // The constant registers a probe saw changed (- 0x4000), each counted once per probe
@@ -1049,9 +1086,10 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   Walker w1(base, pm, c, s);
   setup(w1);
   uint32_t walk = dwords;
-  uint32_t constants = 0;
+  uint32_t constants = 0, copies = 0;
   if (w1.Execute<false>(phys, walk, 0)) {
     constants = CountProbeConstants(w1.constant_regs);
+    copies = w1.copies;
   } else {
     // What precedes the packet the check refused is whole: walked alone. A stream that runs
     // into a hole the D3D reserved (a segment's start, data written later) ends there.
@@ -1071,8 +1109,10 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
     setup(again);
     if (!again.Execute<false>(phys, walk, 0)) return;
     constants = CountProbeConstants(again.constant_regs);
+    copies = again.copies;
   }
   g_gaps.constants += constants;
+  g_gaps.probed_resolves += copies;
   if (c.probe) return;  // counted only: nothing reaches the tracker or the renderer
   // Every register group kept: what the stream wrote stays on the GPU, as it does after these
   // packets. Not the shader loads (keep +16 bits 19 and 20): the stream's shader is the inlined
@@ -1087,6 +1127,13 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   w2.Execute<true>(phys, walk, 0);
   gs.EndCommandBuffer(base, c.device, h);
   if (w2.draws_seen) gs.DropPendingImmediateVs();
+  if (w2.resolves_issued) {
+    g_gaps.resolves += w2.resolves_issued;
+    REXNATIVE_LOG_FIRST(1, INFO,
+                        "ReXNative inline resolves: {} resolves no hook saw, from the stream at "
+                        "{:08X}, copied from the registers",
+                        w2.resolves_issued, first);
+  }
   if (w2.draws_emitted) {
     ++g_gaps.with_draws;
     g_gaps.draws += w2.draws_emitted;
@@ -1098,6 +1145,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
 
 uint64_t GapDraws() { return g_gaps.draws; }
 uint64_t GapConstants() { return g_gaps.constants; }
+uint64_t GapResolves() { return g_gaps.probed_resolves; }
 void ProbeReset() { g_probe_seen.fill(false); }
 
 void OnSwapGaps(int32_t stats_every) {
@@ -1107,10 +1155,10 @@ void OnSwapGaps(int32_t stats_every) {
   const GapCounters& g = g_gaps;
   const double n = double(frames);
   REXLOG_INFO("ReXNative inline draws: per frame: streams {:.1f} ({:.1f} with draws, {:.1f} "
-              "refused), draws {:.1f}, dwords {:.0f}",
+              "refused), draws {:.1f}, resolves {:.1f}, dwords {:.0f}",
               double(g.gaps - last.gaps) / n, double(g.with_draws - last.with_draws) / n,
               double(g.refused - last.refused) / n, double(g.draws - last.draws) / n,
-              double(g.dwords - last.dwords) / n);
+              double(g.resolves - last.resolves) / n,              double(g.dwords - last.dwords) / n);
   last = g;
   frames = 0;
 }

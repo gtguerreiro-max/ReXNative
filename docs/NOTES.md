@@ -343,6 +343,37 @@ they set to another value than the tracker holds, and stays on at 16 or more (De
 and draws as it did without it; Brothers' title and menu find nothing (Fable II has the walk on
 already, for its inline draws).
 
+## Resolves from the registers
+
+SSX drew black on the native renderer with its intro running at 30 FPS: the presenter found no
+resolved image for its front buffer, and the frame's draw log had no resolve at all. The trace
+had 29 a frame, each written inside `823518A8`, the public `Resolve` wrapper the layer hooks.
+Its row in `d3d_surface.inc` said otherwise: `fn_826CE9C0, kOther`, Iron Brigade's row for its
+own wrapper, matched to the same address by region before the hooked functions were added, and
+the hooks take a function's class from its row. `adapt` now gives a hooked function that is not
+a draw (Swap, Resolve, Clear, the queries, the tiling bracket, the push buffer's) its own row;
+a draw function takes it only from a row less certain than its own match (Minecraft's
+`DrawIndexedVertices`, a medium match, is a masked match of Iron Brigade's `fn_826D6468`, and
+Minecraft draws well with that row). Across the 26 layers, only SSX's Resolve was hit; with it
+fixed in place SSX plays: menus, the 3D globe, the first descent.
+
+On the way, the renderer learnt to copy a resolve it finds in the push buffer between hooked
+calls (`rexnative.inline_resolves`, with the walk of `rexnative.inline_draws`): an engine that
+writes its own, or a D3D path the layer does not hook. `DecodeRegisterResolve` reads it as
+ReXGlue's `GetResolveInfo` does: the rectangle from the three vertices of vertex fetch 0, moved
+by the window offset, inside the scissor, 8-pixel aligned; the copy from `RB_COPY_CONTROL` and
+`RB_COPY_DEST_*`; the clear values from `RB_COLOR_CLEAR(_LO)` and `RB_DEPTH_CLEAR` in the source
+surface's format. Each source pixel goes to the texel with its own coordinates from
+`RB_COPY_DEST_BASE`, which the guest moves down whole rows of tiles for a destination point
+below the rectangle (SSX's three shadow cascades in one 1024x3072 texture): the resolver writes
+such a copy into the image whose memory holds that address. The walk's probe keeps the walk on
+when it finds a resolve a frame in the gaps (a first probe at frame 30 instead of 150 caught
+SSX's start-up writing 234 constants and kept the walk on for good: left at 150).
+`rexnative.resolve_check_registers` (with the tap) decodes every hooked resolve both ways: on
+SSX, 82% agree exactly; the rest differ only in the right edge, cut by a 4x MSAA surface of half
+the pitch or a scissor that the tap's register view holds at that point and ReXGlue's own decode
+rarely sees (its "outside the surface pitch" error came twice in three minutes).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

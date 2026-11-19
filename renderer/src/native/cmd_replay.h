@@ -76,6 +76,9 @@ uint64_t GapDraws();
 // far: constants the game's own code gives the GPU, which no hooked call shows the tracker
 // (rexnative.inline_draws_auto's probe).
 uint64_t GapConstants();
+// The resolves (copy draws) the probed gaps held, so far: resolves the game's own code writes,
+// which no hooked Resolve makes (rexnative.inline_draws_auto's probe, rexnative.inline_resolves).
+uint64_t GapResolves();
 // A probe starts: its shader constant registers counted once each again (GapConstants).
 void ProbeReset();
 // At each Swap with inline draws on: their counts every `stats_every` frames.

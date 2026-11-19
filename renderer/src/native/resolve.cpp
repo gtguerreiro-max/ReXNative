@@ -14,6 +14,9 @@
 #include "texture_layout.h"
 #include "upscaler.h"
 
+#include "gpu/xenos/draw_state.h"
+#include "gpu/xenos/host/fixed_point.h"
+
 #include <rex/cvar.h>
 #include "native/sdk.h"
 #include <rex/logging.h>
@@ -23,6 +26,7 @@
 #include <algorithm>
 #include <bit>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -653,6 +657,247 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
   return true;
 }
 
+namespace {
+
+// A dword the GPU reads with `endian` (xenos::Endian), from memory as the host loads it.
+uint32_t GpuSwap(uint32_t v, uint32_t endian) {
+  switch (endian & 3) {
+    case 1:  // 8in16
+      return ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+    case 2:  // 8in32
+      return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);
+    case 3:  // 16in32
+      return (v << 16) | (v >> 16);
+    default:
+      return v;
+  }
+}
+
+float HalfToFloat(uint32_t h) {
+  const uint32_t sign = (h & 0x8000u) << 16, exp = (h >> 10) & 0x1F, man = h & 0x3FF;
+  if (!exp) return (sign ? -1.0f : 1.0f) * float(man) * (1.0f / 16777216.0f);  // 2^-24
+  if (exp == 31) return std::bit_cast<float>(sign | 0x7F800000u | (man << 13));
+  return std::bit_cast<float>(sign | ((exp + 112) << 23) | (man << 13));
+}
+
+// 10-bit 7e3 (k_2_10_10_10_FLOAT's colour) and 24-bit 20e4 (D24FS8's depth), as ReXGlue's
+// Float7e3To32 / Float20e4To32: no sign, the exponent biased by 3 / 15, denormals at exponent 0.
+float SmallFloat(uint32_t v, uint32_t mantissa_bits, int32_t bias) {
+  const uint32_t man = v & ((1u << mantissa_bits) - 1), exp = v >> mantissa_bits;
+  const float m = float(man) / float(1u << mantissa_bits);
+  return exp ? std::ldexp(1.0f + m, int32_t(exp) - bias) : std::ldexp(m, 1 - bias);
+}
+
+// The clear colour the guest packed for the EDRAM (RB_COLOR_CLEAR = the low 32 bits,
+// RB_COLOR_CLEAR_LO the high 32 of a 64-bit format, as ReXGlue's resolve clear takes them) back
+// to the values a D3D Clear gives (RenderTargets::Clear scales k_16_16(_16_16)'s itself).
+// `format`: xenos::ColorRenderTargetFormat.
+bool UnpackClearColor(uint32_t format, uint32_t lo, uint32_t hi, float out[4]) {
+  auto unorm = [&](uint32_t v, uint32_t shift, uint32_t bits) {
+    return float((v >> shift) & ((1u << bits) - 1)) / float((1u << bits) - 1);
+  };
+  auto fixed16 = [&](uint32_t v) {  // -32..32 over the signed 16-bit range
+    return std::max(float(int16_t(v & 0xFFFF)), -32767.0f) * (32.0f / 32767.0f);
+  };
+  switch (format) {
+    case 0:  // k_8_8_8_8
+    case 1:  // k_8_8_8_8_GAMMA
+      for (uint32_t i = 0; i < 4; ++i) out[i] = unorm(lo, 8 * i, 8);
+      return true;
+    case 2:   // k_2_10_10_10
+    case 10:  // k_2_10_10_10_AS_10_10_10_10
+      for (uint32_t i = 0; i < 3; ++i) out[i] = unorm(lo, 10 * i, 10);
+      out[3] = unorm(lo, 30, 2);
+      return true;
+    case 3:   // k_2_10_10_10_FLOAT
+    case 12:  // k_2_10_10_10_FLOAT_AS_16_16_16_16
+      for (uint32_t i = 0; i < 3; ++i) out[i] = SmallFloat((lo >> (10 * i)) & 0x3FF, 7, 3);
+      out[3] = unorm(lo, 30, 2);
+      return true;
+    case 4:  // k_16_16
+      out[0] = fixed16(lo);
+      out[1] = fixed16(lo >> 16);
+      out[2] = 0.0f;
+      out[3] = 1.0f;
+      return true;
+    case 5:  // k_16_16_16_16
+      out[0] = fixed16(lo);
+      out[1] = fixed16(lo >> 16);
+      out[2] = fixed16(hi);
+      out[3] = fixed16(hi >> 16);
+      return true;
+    case 6:  // k_16_16_FLOAT
+      out[0] = HalfToFloat(lo & 0xFFFF);
+      out[1] = HalfToFloat(lo >> 16);
+      out[2] = 0.0f;
+      out[3] = 1.0f;
+      return true;
+    case 7:  // k_16_16_16_16_FLOAT
+      out[0] = HalfToFloat(lo & 0xFFFF);
+      out[1] = HalfToFloat(lo >> 16);
+      out[2] = HalfToFloat(hi & 0xFFFF);
+      out[3] = HalfToFloat(hi >> 16);
+      return true;
+    case 14:  // k_32_FLOAT
+      out[0] = std::bit_cast<float>(lo);
+      out[1] = out[2] = 0.0f;
+      out[3] = 1.0f;
+      return true;
+    case 15:  // k_32_32_FLOAT
+      out[0] = std::bit_cast<float>(lo);
+      out[1] = std::bit_cast<float>(hi);
+      out[2] = 0.0f;
+      out[3] = 1.0f;
+      return true;
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
+bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& r,
+                           ResolveParams* out) {
+  ResolveParams p;
+  p.from_registers = true;
+  p.regs = r.surface;
+  p.source = r.copy_control & 7;
+  p.copy_command = (r.copy_control >> 20) & 3;
+  if (p.source > 4 || p.copy_command > 1) {
+    REXNATIVE_LOG_FIRST(4, WARN,
+                        "ReXNative resolve (registers): source {} copy command {} unsupported",
+                        p.source, p.copy_command);
+    return false;
+  }
+  const bool depth = p.source == 4;
+  const uint32_t msaa = (p.regs.surface_info >> 16) & 3;
+  p.sample_select = uint32_t(rex::gpu::draw_state::SanitizeCopySampleSelect(
+      xenos::CopySampleSelect((r.copy_control >> 4) & 7), xenos::MSAASamples(msaa), depth));
+
+  // The rectangle: the three vertices of fetch constant 0 (a 6-float vertex buffer), in the
+  // 16.8 fixed point of the rasterizer, top-left inclusive.
+  const uint32_t f0 = r.vertex_fetch[0], f1 = r.vertex_fetch[1];
+  const uint32_t vertices = f0 & 0x1FFFFFFCu;
+  if ((f0 & 3) != 3 || ((f1 >> 2) & 0xFFFFFF) != 6 || vertices + 24 > 0x20000000u) {
+    REXNATIVE_LOG_FIRST(4, WARN,
+                        "ReXNative resolve (registers): vertex fetch {:08X} {:08X} is not the "
+                        "rectangle's",
+                        f0, f1);
+    return false;
+  }
+  const float half_pixel = (r.vtx_cntl & 1) ? 0.0f : 0.5f;  // pix_center kD3DZero
+  int32_t v[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    uint32_t raw;
+    std::memcpy(&raw, physical + vertices + 4 * i, 4);
+    v[i] = rex::gpu::FloatToD3D11Fixed16p8(std::bit_cast<float>(GpuSwap(raw, f1)) + half_pixel);
+  }
+  int32_t x0 = (std::min({v[0], v[2], v[4]}) + 127) >> 8;
+  int32_t y0 = (std::min({v[1], v[3], v[5]}) + 127) >> 8;
+  int32_t x1 = (std::max({v[0], v[2], v[4]}) + 127) >> 8;
+  int32_t y1 = (std::max({v[1], v[3], v[5]}) + 127) >> 8;
+  // PA_SC_WINDOW_OFFSET: two signed 15-bit fields.
+  const int32_t wx = int32_t(r.window_offset << 17) >> 17;
+  const int32_t wy = int32_t((r.window_offset >> 16) << 17) >> 17;
+  if (r.su_sc_mode_cntl & (1u << 16)) {  // vtx_window_offset_enable
+    x0 += wx;
+    y0 += wy;
+    x1 += wx;
+    y1 += wy;
+  }
+  // The scissor, as ReXGlue's GetScissor: the window scissor (moved by the window offset unless
+  // window_offset_disable) inside the screen scissor.
+  int32_t sx0 = int32_t(r.window_scissor_tl & 0x7FFF), sy0 = int32_t((r.window_scissor_tl >> 16) & 0x7FFF);
+  int32_t sx1 = int32_t(r.window_scissor_br & 0x7FFF), sy1 = int32_t((r.window_scissor_br >> 16) & 0x7FFF);
+  if (!(r.window_scissor_tl >> 31)) {
+    sx0 += wx;
+    sy0 += wy;
+    sx1 += wx;
+    sy1 += wy;
+  }
+  sx0 = std::max({sx0, int32_t(r.screen_scissor_tl << 17) >> 17, 0});
+  sy0 = std::max({sy0, int32_t((r.screen_scissor_tl >> 16) << 17) >> 17, 0});
+  sx1 = std::max(std::min(sx1, int32_t(r.screen_scissor_br << 17) >> 17), sx0);
+  sy1 = std::max(std::min(sy1, int32_t((r.screen_scissor_br >> 16) << 17) >> 17), sy0);
+  x0 = std::clamp(x0, sx0, sx1) & ~7;
+  y0 = std::clamp(y0, sy0, sy1) & ~7;
+  x1 = (std::clamp(x1, sx0, sx1) + 7) & ~7;
+  y1 = (std::clamp(y1, sy0, sy1) + 7) & ~7;
+  const int32_t pitch = int32_t(p.regs.surface_info & 0x3FFF) & ~7;
+  x0 = std::min(x0, pitch);
+  x1 = std::min(x1, pitch);
+  if (x0 >= x1 || y0 >= y1) {
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve (registers): empty rectangle {},{}-{},{}", x0,
+                        y0, x1, y1);
+    return false;
+  }
+  p.x0 = x0;
+  p.y0 = y0;
+  p.x1 = x1;
+  p.y1 = y1;
+
+  // The destination: a 2D tiled level from RB_COPY_DEST_BASE, each source pixel at its own
+  // coordinates there.
+  const uint32_t info = r.copy_dest_info;
+  if (info & 8) {
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve (registers): array destination (info {:08X}) "
+                                 "unsupported", info);
+    return false;
+  }
+  p.dest_endian = info & 7;
+  p.dest_format = D3DCopyDestFormat((info >> 7) & 0x3F);
+  p.dest_number = (info >> 13) & 7;
+  p.exp_bias = int32_t(info << 10) >> 26;  // bits 16-21, signed
+  p.dest_swap = (info >> 24) & 1;
+  const int bpp_log2 = DestBppLog2(p.dest_format);
+  if (bpp_log2 < 0) {
+    REXNATIVE_LOG_FIRST(4, WARN,
+                        "ReXNative resolve (registers): destination format {} unsupported, "
+                        "source {}, surface {:08X} {:08X} {:08X}",
+                        p.dest_format, p.source, p.regs.surface_info, p.regs.color_info[0],
+                        p.regs.depth_info);
+    return false;
+  }
+  const uint32_t dest_pitch = r.copy_dest_pitch & 0x3FFF;
+  const uint32_t dest_rows = (r.copy_dest_pitch >> 16) & 0x3FFF;
+  p.dest_base = GpuAddress(r.copy_dest_base);
+  p.dest_x = x0;
+  p.dest_y = y0;
+  // The guest writes the level's height minus the destination point's row, and moves the base
+  // that many rows down when the point is below the rectangle's origin: from the base, the level
+  // has that height plus the rectangle's first row. The pitch is 32-aligned: a copy that reaches
+  // its last column of tiles gives the level's width (a 560-wide texture has a pitch of 576).
+  p.dest_width = dest_pitch > uint32_t(x1) && dest_pitch - uint32_t(x1) < 32 ? uint32_t(x1)
+                                                                            : dest_pitch;
+  p.dest_height = dest_rows + uint32_t(y0);
+  if (!p.dest_width || !p.dest_height) {
+    REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve (registers): destination pitch {:08X}",
+                        r.copy_dest_pitch);
+    return false;
+  }
+  p.dest_tiled = true;
+  p.dest_pitch_blocks = (dest_pitch + 31) & ~31u;
+  p.dest_extent_bytes = (p.dest_pitch_blocks * ((p.dest_height + 31) & ~31u)) << bpp_log2;
+
+  // The clears after the copy (bits 8 and 9), with the values the guest packed.
+  p.clear_flags = r.copy_control & 0x300;
+  if (p.clear_flags & 0x100) {
+    const uint32_t format = (p.regs.color_info[depth ? 0 : p.source] >> 16) & 0xF;
+    if (!UnpackClearColor(format, r.color_clear, r.color_clear_lo, p.clear_color)) {
+      REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve (registers): clear colour of format {} not "
+                                   "decoded (left 0)", format);
+    }
+  }
+  if (p.clear_flags & 0x200) {
+    const uint32_t d24 = r.depth_clear >> 8;
+    p.clear_depth = (p.regs.depth_info >> 16) & 1 ? SmallFloat(d24, 20, 15)
+                                                  : float(d24) * (1.0f / 16777215.0f);
+    p.clear_stencil = uint8_t(r.depth_clear & 0xFF);
+  }
+  *out = p;
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Resolver
 
@@ -962,7 +1207,43 @@ void Resolver::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t complet
   if (dump_) DumpBeginFrame(completed_fence);
 }
 
+const Resolver::Image* Resolver::Holding(const ResolveParams& p, uint32_t* row) const {
+  const DestStorage* storage = GetDestStorage(p.dest_format);
+  const bool depth = p.source == 4;
+  for (const auto& [base, dest] : destinations_) {
+    const Image* img = dest.current;
+    if (!img || p.dest_base <= base || img->storage != storage ||
+        bool(img->depth_r32f) != depth || !img->view.tiled ||
+        img->view.pitch_blocks != p.dest_pitch_blocks || !img->view.extent_bytes ||
+        p.dest_base - base >= img->view.extent_bytes)
+      continue;
+    // A row of 32x32 tiles is contiguous: pitch (32-aligned) x 32 texels.
+    const uint32_t block = (p.dest_pitch_blocks * 32u) << DestBppLog2(p.dest_format);
+    const uint32_t delta = p.dest_base - base;
+    if (delta % block) continue;
+    *row = delta / block * 32u;
+    if (*row + uint32_t(p.y0) >= img->height) continue;
+    return img;
+  }
+  return nullptr;
+}
+
 bool Resolver::Resolve(CommandStream* list, const ResolveParams& p) {
+  if (p.from_registers) {
+    // A destination point below the rectangle's origin: the guest moved the base into the
+    // level, which an earlier resolve made an image of (the first cascade of a stack resolved
+    // from the level's base). The copy lands in that image, rows further down.
+    uint32_t row = 0;
+    if (const Image* img = Holding(p, &row)) {
+      ResolveParams q = p;
+      q.dest_base = img->view.guest_base;
+      q.dest_y += int32_t(row);
+      q.dest_width = img->width;
+      q.dest_height = img->height;
+      q.dest_extent_bytes = img->view.extent_bytes;
+      return Resolve(list, q, nullptr);
+    }
+  }
   return Resolve(list, p, nullptr);
 }
 

@@ -56,6 +56,7 @@
 #include "native/log.h"
 #include "native/profile.h"
 #include "native/renderer.h"
+#include "native/resolve.h"
 #include "hud/hud.h"
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
@@ -68,11 +69,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -105,6 +109,14 @@ REXCVAR_DEFINE_STRING(rexnative_d3d_skip, "", "ReXNative",
 REXCVAR_DEFINE_STRING(rexnative_d3d_frame_csv, "", "ReXNative",
                       "Per-frame counter CSV (frame, calls, draw calls, tap draws, ...)");
 REXCVAR_DECLARE(bool, rexnative_profile);
+REXCVAR_DECLARE(bool, rexnative_inline_resolves);
+REXCVAR_DEFINE_BOOL(rexnative_resolve_check_registers, false, "ReXNative",
+                    "With the tap on: decode each hooked Resolve's copy again from the "
+                    "registers its packets set (DecodeRegisterResolve, which "
+                    "rexnative.inline_resolves uses) and log where the two decodes disagree. "
+                    "The tap's register view can be older than the GPU's (SSX: a 4x surface "
+                    "of half the pitch, which ReXGlue's own decode rarely sees): a right edge "
+                    "cut to the pitch or the scissor points there");
 REXCVAR_DEFINE_INT32(rexnative_d3d_stats_frames, 150, "ReXNative",
                      "Frames per summary line in the log (0 = off)");
 REXCVAR_DEFINE_BOOL(rexnative_d3d_tap_check, false, "ReXNative",
@@ -626,12 +638,22 @@ void CompareState(Tap& t, FnId id) {
     t.check_first = std::move(s);
 }
 
+// rexnative.resolve_check_registers: the registers at the copy draw of the hooked Resolve that
+// runs, for CheckRegisterResolve after it.
+thread_local bool t_reg_resolve_seen = false;
+thread_local rexnative::ResolveRegisters t_reg_resolve;
+void CheckRegisterResolve(const uint8_t* base, const rexnative::HookArgs& a);
+
 void OnDraw(Tap& t, uint32_t op, bool predicated) {
   // DRAW_INDX: viz, initiator, [index base, index size]; DRAW_INDX_2: initiator, indices.
   uint32_t initiator =
       op == 0x22 ? (t.pkt.size() > 1 ? t.pkt[1] : 0) : (t.pkt.empty() ? 0 : t.pkt[0]);
   bool resolve = (t.regs[0x2208] & 7) == uint32_t(xenos::EDRAMMode::kCopy);
   if (resolve) {
+    if (REXCVAR_GET(rexnative_resolve_check_registers)) {
+      t_reg_resolve = rexnative::ResolveRegisters::From([&](uint32_t r) { return t.regs[r]; });
+      t_reg_resolve_seen = true;
+    }
     ++t.frame.tap_resolves;
     g_tap_counts[2].fetch_add(1, std::memory_order_relaxed);
   }
@@ -1593,6 +1615,8 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
     const bool outer = t_native_depth++ == 0;
     nat::HookArgs a;
     if (outer) a = EntryArgs(kAddr, ctx);
+    if constexpr (kClass == kNatResolve)
+      if (outer) t_reg_resolve_seen = false;
     OnCall<kId>(ctx, base, run);
     --t_native_depth;
     if (!outer) return;
@@ -1607,6 +1631,7 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
     } else if constexpr (kClass == kNatClear) {
       r->OnClear(base, a);
     } else if constexpr (kClass == kNatResolve) {
+      if (std::exchange(t_reg_resolve_seen, false)) CheckRegisterResolve(base, a);
       r->OnResolve(base, a);
     } else {
       static_assert(kClass == kNatSwap);
@@ -1615,6 +1640,89 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
       if (nat::profile::On()) LogGuestD3dTimes();
     }
   }
+}
+
+// rexnative.resolve_check_registers: the hooked Resolve `a` decoded from its arguments and from
+// the registers at its copy draw (t_reg_resolve): the same copy, rectangle, destination texel
+// (the guest moves the base by whole rows of tiles for a destination point below the
+// rectangle), format and clears, or a log line. A count every 300 checks.
+[[gnu::noinline]] void CheckRegisterResolve(const uint8_t* base, const rexnative::HookArgs& a) {
+  static uint64_t checks = 0, agree = 0, failed = 0;
+  rexnative::ResolveParams h, g;
+  if (!rexnative::DecodeResolve(base, a, &h)) return;
+  ++checks;
+  const uint8_t* physical = rexnative::host::Memory()->GetPhysicalMembase();
+  bool same = rexnative::DecodeRegisterResolve(physical, t_reg_resolve, &g);
+  if (!same) ++failed;
+  std::string why;
+  auto differ = [&](const char* what, int64_t x, int64_t y) {
+    if (x == y) return;
+    same = false;
+    why += std::format(" {} {}/{}", what, x, y);
+  };
+  if (same) {
+    differ("source", h.source, g.source);
+    differ("copy", h.copy_command, g.copy_command);
+    differ("samples", h.sample_select, g.sample_select);
+    differ("x0", h.x0 & ~7, g.x0);
+    differ("y0", h.y0 & ~7, g.y0);
+    differ("x1", h.x1, g.x1);
+    differ("y1", h.y1, g.y1);
+    differ("format", h.dest_format, g.dest_format);
+    differ("number", h.dest_number, g.dest_number);
+    differ("swap", h.dest_swap, g.dest_swap);
+    differ("bias", h.exp_bias, g.exp_bias);
+    differ("clears", h.clear_flags, g.clear_flags);
+    // Where the rectangle's first pixel lands: (dest_x, dest_y) at h's level base, its own
+    // coordinates at g's base.
+    const int32_t rows = h.dest_y - h.y0;
+    const int64_t moved = rows % 32 ? -1
+                                    : int64_t(rows / 32) * g.dest_pitch_blocks * 32 *
+                                          (g.dest_extent_bytes / (uint64_t(g.dest_pitch_blocks) *
+                                                                  ((g.dest_height + 31) & ~31u)));
+    differ("dest_x", h.dest_x - h.x0, 0);
+    differ("dest_base", int64_t(h.dest_base) + moved, int64_t(g.dest_base));
+    if (h.clear_flags & 0x100)
+      for (int i = 0; i < 4; ++i)
+        differ("clear_color", std::lround(h.clear_color[i] * 255.0f),
+               std::lround(g.clear_color[i] * 255.0f));
+    if (h.clear_flags & 0x200) {
+      differ("clear_depth", std::lround(h.clear_depth * 16777215.0f),
+             std::lround(g.clear_depth * 16777215.0f));
+      differ("clear_stencil", h.clear_stencil, g.clear_stencil);
+    }
+  }
+  if (!same) {
+    const uint32_t f0 = t_reg_resolve.vertex_fetch[0], f1 = t_reg_resolve.vertex_fetch[1];
+    why += std::format(" (fetch {:08X} {:08X}:", f0, f1);
+    for (uint32_t i = 0; i < 6 && (f0 & 0x1FFFFFFC) + 24 <= 0x20000000u; ++i) {
+      uint32_t raw;
+      std::memcpy(&raw, physical + (f0 & 0x1FFFFFFC) + 4 * i, 4);
+      why += std::format(" {}", std::bit_cast<float>(__builtin_bswap32(raw)));
+    }
+    why += std::format(") surface {:08X} window {:08X} {:08X}-{:08X} screen {:08X}-{:08X} mode {:08X}",
+                       t_reg_resolve.surface.surface_info, t_reg_resolve.window_offset,
+                       t_reg_resolve.window_scissor_tl, t_reg_resolve.window_scissor_br,
+                       t_reg_resolve.screen_scissor_tl, t_reg_resolve.screen_scissor_br,
+                       t_reg_resolve.su_sc_mode_cntl);
+  }
+  if (same) {
+    ++agree;
+  } else {
+    REXNATIVE_LOG_FIRST(16, WARN,
+                        "ReXNative resolve check: registers disagree:{} (rect {},{}-{},{} point "
+                        "{},{} dest {:08X} {}x{} format {}; copy {:08X} dest {:08X} pitch "
+                        "{:08X} info {:08X}){}",
+                        why, h.x0, h.y0, h.x1, h.y1, h.dest_x, h.dest_y, h.dest_base,
+                        h.dest_width, h.dest_height, h.dest_format,
+                        t_reg_resolve.copy_control, t_reg_resolve.copy_dest_base,
+                        t_reg_resolve.copy_dest_pitch, t_reg_resolve.copy_dest_info,
+                        failed && why.empty() ? " (no register decode)" : "");
+  }
+  if (checks % 300 == 0)
+    REXLOG_INFO("ReXNative resolve check: {} resolves, {} decoded alike from the registers, "
+                "{} not decoded",
+                checks, agree, failed);
 }
 
 // rexnative.inline_draws (cmd_replay.h ReplayGap): the push buffer the game wrote between the
@@ -1719,12 +1827,16 @@ uint32_t g_auto_draws = 0;
 // tracker never saw: every vertex shader's position was 0 and the picture black. Constants the
 // tracker holds already do not count. Sega Rally Revo's race keeps the walk on too (its gaps
 // change thousands of constants a frame) and draws as it did without it.
+// A game whose own code writes resolves keeps the walk on as well when a probe finds at least one
+// resolve a frame in its gaps (rexnative.inline_resolves): no hooked Resolve makes them, and the
+// textures (or the front buffer: a black screen) they fill would stay empty. (A first probe at
+// frame 30 caught SSX's start-up writing 234 constants and kept the walk for good: at 150, 6.)
 constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
 
 [[gnu::noinline]] void InlineDrawsAuto(const uint8_t* base, uint32_t device) {
   static uint32_t last_push = 0, quiet = 0, trial = 0, wait = 0, backoff = 600;
   static uint32_t probe = 0, probe_clock = 0;
-  static uint64_t trial_draws = 0, probe_constants = 0;
+  static uint64_t trial_draws = 0, probe_constants = 0, probe_resolves = 0;
   static bool kept = false;
   const uint32_t draws = std::exchange(g_auto_draws, 0);
   if (kept || !device || !REXCVAR_GET(rexnative_inline_draws_auto) ||
@@ -1734,6 +1846,14 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
     if (--probe) return;
     g_gap_probe.store(false, std::memory_order_relaxed);
     const uint64_t found = rexnative::cmdbuf::GapConstants() - probe_constants;
+    const uint64_t resolves = rexnative::cmdbuf::GapResolves() - probe_resolves;
+    if (resolves >= kProbeFrames - 1 && REXCVAR_GET(rexnative_inline_resolves)) {
+      kept = true;
+      REXLOG_INFO("ReXNative: the game's own code resolves between hooked calls ({} resolves "
+                  "in {} frames): inline draws on (rexnative.inline_draws_auto)",
+                  resolves, kProbeFrames - 1);
+      return;
+    }
     if (found >= kProbeMinConstants) {
       kept = true;  // the walk goes on from this Swap's gap
       REXLOG_INFO("ReXNative: the game's own code loads shader constants between hooked calls "
@@ -1776,6 +1896,7 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
     probe = kProbeFrames;
     rexnative::cmdbuf::ProbeReset();
     probe_constants = rexnative::cmdbuf::GapConstants();
+    probe_resolves = rexnative::cmdbuf::GapResolves();
     g_gap_epoch.fetch_add(1, std::memory_order_relaxed);
     g_gap_probe.store(true, std::memory_order_relaxed);
     g_inline_draws.store(true, std::memory_order_relaxed);

@@ -63,6 +63,7 @@ struct ClearCall;
 struct DrawPrep;
 struct DrawState;
 struct ResolveParams;
+struct ResolveRegisters;
 struct SwapCall;
 
 // Per-frame counters of the native path (also the frame CSV's columns).
@@ -128,6 +129,9 @@ class NativeRenderer {
   void OnDraw(const uint8_t* base, const HookArgs& args);
   void OnClear(const uint8_t* base, const HookArgs& args);
   void OnResolve(const uint8_t* base, const HookArgs& args);
+  // A resolve the push buffer holds that no hooked call made (cmd_replay.h ReplayGap,
+  // rexnative.inline_resolves), with the registers at its draw packet (DecodeRegisterResolve).
+  void OnRegisterResolve(const ResolveRegisters& regs);
   void OnSwap(uint8_t* base, const HookArgs& args);
   // Occlusion queries (occlusion.h), primary mode: after QueryIssue returned, and at the entry
   // of GetData.

@@ -102,7 +102,62 @@ struct ResolveParams {
   float clear_color[4] = {};
   float clear_depth = 1.0f;
   uint8_t clear_stencil = 0;
+  // Decoded from the registers (DecodeRegisterResolve): dest_base is where the copy's address
+  // computation starts, which the guest moves past the level's base for a destination point
+  // below the rectangle's origin (a stack of shadow cascades in one texture). Resolver::Resolve
+  // writes such a copy into the image whose memory holds that address.
+  bool from_registers = false;
 };
+
+// The registers a resolve reads, as the GPU has them at the resolve's draw packet.
+struct ResolveRegisters {
+  SurfaceRegs surface;                       // 0x2000..0x2005
+  uint32_t screen_scissor_tl = 0, screen_scissor_br = 0;               // 0x200E, 0x200F
+  uint32_t window_offset = 0, window_scissor_tl = 0, window_scissor_br = 0;  // 0x2080..0x2082
+  uint32_t su_sc_mode_cntl = 0;              // PA_SU_SC_MODE_CNTL (0x2205)
+  uint32_t vtx_cntl = 0;                     // PA_SU_VTX_CNTL (0x2302)
+  uint32_t copy_control = 0, copy_dest_base = 0, copy_dest_pitch = 0, copy_dest_info = 0;  // 0x2318..
+  uint32_t depth_clear = 0, color_clear = 0, color_clear_lo = 0;     // 0x231D..0x231F
+  uint32_t vertex_fetch[2] = {};             // vertex fetch constant 0 (0x4800, 0x4801)
+  // Each of them through `get(reg)`.
+  template <typename Get>
+  static ResolveRegisters From(Get&& get) {
+    ResolveRegisters r;
+    r.surface.surface_info = get(0x2000);
+    r.surface.color_info[0] = get(0x2001);
+    r.surface.depth_info = get(0x2002);
+    for (uint32_t i = 1; i < 4; ++i) r.surface.color_info[i] = get(0x2002 + i);
+    r.screen_scissor_tl = get(0x200E);
+    r.screen_scissor_br = get(0x200F);
+    r.window_offset = get(0x2080);
+    r.window_scissor_tl = get(0x2081);
+    r.window_scissor_br = get(0x2082);
+    r.su_sc_mode_cntl = get(0x2205);
+    r.vtx_cntl = get(0x2302);
+    r.copy_control = get(0x2318);
+    r.copy_dest_base = get(0x2319);
+    r.copy_dest_pitch = get(0x231A);
+    r.copy_dest_info = get(0x231B);
+    r.depth_clear = get(0x231D);
+    r.color_clear = get(0x231E);
+    r.color_clear_lo = get(0x231F);
+    r.vertex_fetch[0] = get(0x4800);
+    r.vertex_fetch[1] = get(0x4801);
+    return r;
+  }
+};
+
+// Decodes a resolve from the registers (`physical` = the guest's physical membase, for the
+// rectangle's vertices), as ReXGlue's GetResolveInfo does: a resolve no hooked call made, which
+// the push buffer between hooked calls holds (rexnative.inline_resolves: an engine that writes
+// its own, or a D3D path the layer does not hook). The rectangle is the three vertices of vertex fetch constant 0, moved by
+// the window offset, inside the scissor, 8-pixel aligned; each source pixel goes to the
+// destination texel with its coordinates from RB_COPY_DEST_BASE; the clears take their values
+// from RB_COLOR_CLEAR(_LO) / RB_DEPTH_CLEAR in the source surface's format. Returns false (logged
+// once per reason) for what is not supported: copy commands other than raw/convert, array
+// destinations, formats the resolve cannot write, an empty rectangle.
+bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& regs,
+                           ResolveParams* out);
 
 // Decodes a Resolve hook call (`args` = r3..r10, f1, sp at entry; guest memory at `base`), after
 // the guest Resolve returned, and logs where its copy registers in the D3D's shadow disagree.
@@ -187,6 +242,10 @@ class Resolver {
   bool CreatePipelines();
   // Resolve into `own` (ResolveCopy, no clears), or with own null into p.dest_base.
   bool Resolve(CommandStream* list, const ResolveParams& p, Destination* own);
+  // For a resolve decoded from the registers: the image of another destination whose guest
+  // memory holds p.dest_base at the start of a row of its tiles, with p's format and pitch, and
+  // that row (*row); nullptr if none.
+  const Image* Holding(const ResolveParams& p, uint32_t* row) const;
   // The image of `dest` for p's format and size, created if missing.
   Image* GetImage(const ResolveParams& p, Destination& dest, uint32_t scale);
   // Copies the clipped rectangle `src` of rt to (dx, dy) in an image of `dest` (p.dest_base's or
