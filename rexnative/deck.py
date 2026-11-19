@@ -203,7 +203,21 @@ class Deck:
                                  need / 1e9, dest, int(free) / 1e9))
         p = subprocess.Popen(self.ssh_cmd('tar -xf - -C %s' % q(dest)), stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        sent = 0
+        # Progress every 3 s ("copied N of M MB": the Gestor app draws its bar from these).
+        done = {'bytes': 0, 'said': time.time()}
+
+        class Counted:
+            def __init__(self, f):
+                self.f = f
+
+            def read(self, n=-1):
+                b = self.f.read(n)
+                done['bytes'] += len(b)
+                if time.time() - done['said'] >= 3:
+                    done['said'] = time.time()
+                    log('  copied %d of %d MB' % (done['bytes'] // 1000000, total // 1000000))
+                return b
+
         try:
             with tarfile.open(fileobj=p.stdin, mode='w|', format=tarfile.GNU_FORMAT) as tar:
                 for src, rel, size in todo:
@@ -213,8 +227,7 @@ class Deck:
                     if rel.endswith('.sh'):
                         info.mode = 0o755
                     with open(src, 'rb') as f:
-                        tar.addfile(info, f)
-                    sent += size
+                        tar.addfile(info, Counted(f))
         except OSError as e:
             # ssh ended under the copy (the network dropped, the Deck slept or filled up); a file
             # of the PC that would not read leaves ssh waiting for the rest instead.
@@ -226,11 +239,12 @@ class Deck:
             err = p.stderr.read().decode(errors='replace').strip()
             raise SystemExit('the Deck: the copy into %s stopped after %.0f of %.0f MB (%s); '
                              'deck again resumes it: what arrived stays' % (
-                                 dest, sent / 1e6, total / 1e6, err[-400:] or e))
+                                 dest, done['bytes'] / 1e6, total / 1e6, err[-400:] or e))
         p.stdin.close()
         err = p.stderr.read().decode(errors='replace')
         if p.wait() != 0:
             raise SystemExit('the Deck: copying into %s failed: %s' % (dest, err[-600:]))
+        log('  copied %d of %d MB' % (total // 1000000, total // 1000000))
         return total
 
 
