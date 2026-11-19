@@ -10,7 +10,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Jet Set Radio (TU 1) | plays: menus, the story intro, the first level | 30 FPS |
 | Dungeons & Dragons: Chronicles of Mystara | plays: menus, chapter select, the first chapter, 60 FPS | 60 FPS |
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |
-| Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world | 60 FPS |
+| Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world, and a saved one (its Load list waited for an asynchronous read until SDK patch 0036); with the upscaler, the HUD stays out of the upscaled scene (2026-11-19). The saves' thumbnails are black | 60 FPS (a saved world, FSR 4) |
 | Castlevania: Symphony of the Night (TU 2) | plays: the menu with its text, the name entry, the prologue | 60 FPS |
 | Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS (its build inlined many draws past the hooks: `rexnative.inline_draws`, which turns itself on) | 30 FPS |
 | Double Dragon Neon | plays its first mission | 60 FPS |
@@ -26,15 +26,20 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Overlord | plays its first level | 30 FPS (first level) |
 | Overlord II | plays its first level (a tiled G-buffer) | 30 FPS (first level) |
 | Sega Rally Revo | runs, drawn from its replayed command buffers: the title (its chrome logo since 2026-11-18) and the attract races | 30 FPS |
-| Diablo III | its intro cinematics | 60 FPS (intro) |
-| Syndicate | its intro video plays | not tried |
+| Diablo III | its intro cinematics, the main menu, hero selection and creation (with the upscaler: `rexnative.upscaler_depth_test`) | 60 FPS (main menu) |
+| Syndicate | its intro video plays | 30 FPS (intro) |
 | Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game asks for disc 1 | 30 FPS (title) |
+| Asura's Wrath (TU 1) | runs to its title screen | not tried (space) |
+| Blur (TU 2) | runs, its intro video plays | not tried (space) |
+| Forza Horizon (TU 4, its DLC) | stops at start-up: its speech and media code is in two XEX DLL modules that are not recompiled yet (ReXGlue's `[[modules]]`), and the title update's patches for them do not match | |
+| SSX (TU 3, its DLC) | its intro video, on ReXGlue's renderer (`rexnative.classic`): the native renderer draws it black | not tried (space) |
+| Top Spin 4 | not supported yet: `default.xex` is a loader, the game is in XEX DLL modules (as Forza Horizon's speech and media) | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
 ## How these were tested
 
 - **TU:** the title update installed (always the newest: `prepare --title-update`).
-- Every result is from ReXGlue v0.11 builds of 2026-11-16 to 18.
+- Every result is from ReXGlue v0.11 builds of 2026-11-16 to 19.
 - The Steam Deck results are from `python -m rexnative deck <work>/<game>... --steam --try 70`:
   the frame rate of the screen a game reaches by itself in 70 seconds, under GE-Proton (see
   [STEAM_DECK.md](STEAM_DECK.md)).
@@ -42,8 +47,9 @@ and how it was found, is in [NOTES.md](NOTES.md).
 ## Open problems
 
 Perfect Dark's broken levels, Spelunky's missing text, Halo's dark and striped surfaces, and Deus
-Ex's "insert disc 1" when a new game starts (from disc 1's own image). The plans for them are in
-[ROADMAP.md](ROADMAP.md).
+Ex's "insert disc 1" when a new game starts (from disc 1's own image), and a render the game
+reads back on the CPU (Minecraft's save thumbnails: the native renderer never writes a resolve
+into guest memory). The plans for them are in [ROADMAP.md](ROADMAP.md).
 The garbled WMV videos (Jet Set Radio, Syndicate, Dark Souls II) were the video decoder's
 registers, fixed on 2026-11-18 ([NOTES.md](NOTES.md#registers-a-function-takes-from-its-caller)).
 
