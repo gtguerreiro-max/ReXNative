@@ -1232,6 +1232,25 @@ const Resolver::Image* Resolver::Holding(const ResolveParams& p, uint32_t* row) 
 
 bool Resolver::Resolve(CommandStream* list, const ResolveParams& p) {
   if (p.from_registers) {
+    // The image already at the base, when the copy fits it: the guest writes the level's height
+    // minus the destination row in some XDKs (6132-20353) and the whole height in others (Forza
+    // Horizon's 21119), so a later tile (y0 256) would make an image taller than the level. The
+    // first tile, at y0 0, made it with the level's size in both.
+    const auto it = destinations_.find(p.dest_base);
+    const Image* here = it != destinations_.end() ? it->second.current : nullptr;
+    if (here) {
+      if (here->storage == GetDestStorage(p.dest_format) &&
+          bool(here->depth_r32f) == (p.source == 4) &&
+          here->view.pitch_blocks == p.dest_pitch_blocks && here->width >= uint32_t(p.x1) &&
+          here->height >= uint32_t(p.y1) &&
+          (here->width != p.dest_width || here->height != p.dest_height)) {
+        ResolveParams q = p;
+        q.dest_width = here->width;
+        q.dest_height = here->height;
+        q.dest_extent_bytes = here->view.extent_bytes;
+        return Resolve(list, q, nullptr);
+      }
+    }
     // A destination point below the rectangle's origin: the guest moved the base into the
     // level, which an earlier resolve made an image of (the first cascade of a stack resolved
     // from the level's base). The copy lands in that image, rows further down.

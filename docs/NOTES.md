@@ -366,7 +366,10 @@ by the window offset, inside the scissor, 8-pixel aligned; the copy from `RB_COP
 surface's format. Each source pixel goes to the texel with its own coordinates from
 `RB_COPY_DEST_BASE`, which the guest moves down whole rows of tiles for a destination point
 below the rectangle (SSX's three shadow cascades in one 1024x3072 texture): the resolver writes
-such a copy into the image whose memory holds that address. The walk's probe keeps the walk on
+such a copy into the image whose memory holds that address. The destination's height is the
+pitch register's plus the rectangle's first row (the XDKs up to 20353 write the level's height
+minus the destination row; 21119, Forza Horizon's, writes the whole height): a copy that fits the
+image already at its base takes that image's size, which the first tile, at row 0, gave it. The walk's probe keeps the walk on
 when it finds a resolve a frame in the gaps (a first probe at frame 30 instead of 150 caught
 SSX's start-up writing 234 constants and kept the walk on for good: left at 150).
 `rexnative.resolve_check_registers` (with the tap) decodes every hooked resolve both ways: on
