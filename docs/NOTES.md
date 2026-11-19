@@ -465,26 +465,22 @@ copies are now done in guest memory when the game issues them and never reach th
 (`--rexnative_gpu_memcpy`); a memexport draw also waits for its pipeline instead of being
 skipped while it compiles (what it writes would be lost for good).
 
-Halo: Anniversary writes its textures with a memexport vertex shader (8-byte elements, a few
-MB a frame while a level streams in). Most of what it wrote was "kept" as the guest's: the
-readback took a byte that differed from the snapshot (shared memory before the draw) for one the
-guest had written after the draw, but shared memory may not hold the guest's last bytes yet
-(pages the GPU owns are copied again only once a guest write faults on them), and the textures
-kept the data they were made from: colored noise on the ship, the crew and the consoles of the
-opening cutscene. Prepare now copies the destinations from guest memory when the game issues
-the draw, and a byte stays the guest's only where it differs from that copy too.
-
-The same shader converts in place: one draw reads 88064 vertices of 64 bytes from 1306D000 and
-writes 64 bytes a vertex 256 KB lower, at 1302D000. The Xenos runs vertices in order, so a write
-lands on source already read; a PC GPU runs them in any order, and a vertex 4096 further on
-overwrote another's source before it was read. Such a draw (non-indexed, exporting over a vertex
-buffer it reads) now goes out in chunks of at most (distance / bytes a vertex) vertices with a
-UAV barrier between them, from the last chunk when the exports lie above their source. The
-bridge's floor and walls came out right after it. Some surfaces are still noise, differently
-from run to run, with many bytes "kept" as the guest's: what is left looks like the game reading
-the converted textures on the CPU (and copying them on) once its fence has passed, which happens
-when the Xenos plugin reaches the fence, before the native renderer has run the draw and read
-it back. That needs the same sync point as Minecraft's save thumbnails (Renders the CPU reads).
+Halo: Anniversary's engine moves its streamed textures with a memexport copy: the same shader
+as Iron Brigade's (64 bytes a vertex, 8 x k_16_16_16_16, at element 8 x (index - c1.x)), which
+compacts its texture pool: thousands of moves while a level loads, many overlapping (a block
+moved 8 KB down). On the GPU three things went wrong, each fixed in turn while finding the
+last. The readback kept a byte that differed from the snapshot for one the guest wrote after
+the draw, but shared memory may not hold the guest's last bytes yet (pages the GPU owns are
+copied again only once a guest write faults on them): Prepare now copies the destinations from
+guest memory when the game issues the draw, and a byte stays the guest's only where it differs
+from that copy too. The Xenos runs vertices in order, so a move overlapping itself reads what
+the earlier vertices wrote; a PC GPU runs them in any order: such a draw (non-indexed, exporting
+over a vertex buffer it reads) goes out in chunks of at most (distance / bytes a vertex)
+vertices, in order, with a UAV barrier between them (MemexportChunk). And the textures still
+came out as colored noise or zeros, differently each run, until the copy itself was done in
+guest memory when the game issues it, as Iron Brigade's: `--rexnative_gpu_memcpy` now knows
+both shaders (kGpuMemcpyShaders: the hash and the constant of the first element). The opening
+cutscene is the same from run to run since, with no readback left to wait for.
 
 ## EDRAM aliasing
 

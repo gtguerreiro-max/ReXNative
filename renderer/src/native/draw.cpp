@@ -138,8 +138,9 @@ REXCVAR_DEFINE_INT32(rexnative_depth_float24, 0, "ReXNative",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(rexnative_gpu_memcpy, true, "ReXNative",
                     "Do the known GPU memory copies (a memexport shader that moves 64-byte blocks: "
-                    "Iron Brigade's engine moves resources with it every frame) in guest memory "
-                    "when the game issues them, instead of on the GPU with a readback");
+                    "Iron Brigade's engine moves resources with it every frame, Halo: Combat "
+                    "Evolved Anniversary its streamed textures) in guest memory when the game "
+                    "issues them, instead of on the GPU with a readback");
 REXCVAR_DEFINE_INT32(rexnative_memexport_log, 24, "ReXNative",
                      "How many distinct memexport destination ranges to log (debug)");
 REXCVAR_DEFINE_BOOL(rexnative_memexport_readback_async, false, "ReXNative",
@@ -1446,10 +1447,8 @@ struct DrawRenderer::Impl {
                         std::vector<VertexCopy>& out);
   void MarkGpuWritten(uint32_t start, uint32_t length);
   // A memexport draw (non-indexed) whose exports overlap a vertex buffer it reads: how many
-  // vertices one host draw may run before the next must see its writes, 0 for one draw;
-  // *reverse: the chunks from the last (the exports lie above what they are made from).
-  uint32_t MemexportChunk(const RegisterFile& regs, const DxbcShader& vs, uint32_t count,
-                          bool* reverse) const;
+  // vertices one host draw may run before the next must see its writes, 0 for one draw.
+  uint32_t MemexportChunk(const RegisterFile& regs, const DxbcShader& vs, uint32_t count) const;
   bool TexturesReadMemexport(const RegisterFile& regs, uint32_t used_textures) const;
   void SnapshotMemexport(CommandStream* list, const DrawPrep* prep);
   bool CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes, bool wide,
@@ -3328,23 +3327,21 @@ bool DrawRenderer::Impl::RequestMemexport(const DrawState& s, const DxbcShader& 
   return true;
 }
 
-// Halo: Anniversary converts streamed textures in place: its memexport vertex shader
-// (9E10D1C39A24E18B) reads 64 bytes a vertex and writes 64 bytes a vertex 256 KB below them
-// (88064 vertices from 1306D000 to 1302D000). The Xenos runs vertices in order, so a write only
-// lands on source the earlier vertices have read; a PC GPU runs them in any order, and vertex
-// i + 4096 overwrote vertex i's source before it was read: colored noise on the textures it
-// made, different each run. In chunks of at most (distance / bytes a vertex) vertices, with a
-// UAV barrier between them, every write lands on source already read: from the first chunk when
-// the exports lie below their source, from the last when above. Strides are taken from the
+// A memexport shader that moves memory in place, as Halo: Anniversary's texture pool moves do
+// (64 bytes a vertex, written 8 KB below or above where they are read, until EmulateGpuMemcpy
+// knew that shader): the Xenos runs vertices in order, so a vertex reads what the earlier ones
+// wrote and the original bytes the later ones will write. A PC GPU runs them in any order:
+// colored noise on the textures, different each run. In chunks of at most (distance / bytes a
+// vertex) vertices, in order, with a UAV barrier between them, no vertex reads what another of
+// its chunk writes, so every read sees what it did on the console, in either direction. Strides are taken from the
 // vertex bindings and from the export range over the vertex count (a larger estimate only makes
 // the chunks smaller).
 uint32_t DrawRenderer::Impl::MemexportChunk(const RegisterFile& regs, const DxbcShader& vs,
-                                            uint32_t count, bool* reverse) const {
-  constexpr uint64_t kMaxChunks = 256;
+                                            uint32_t count) const {
+  constexpr uint64_t kMaxChunks = 8192;
   if (count < 2) return 0;
   const std::vector<Shader::VertexBinding>& bindings = ShaderVertexBindings::Of(vs);
   uint64_t chunk = UINT64_MAX;
-  int direction = 0;  // -1: exports below their source, +1: above
   for (const auto& range : draw_memexport_ranges) {
     const uint64_t d0 = uint64_t(range.base_address_dwords) << 2, d1 = d0 + range.size_bytes;
     if (d0 == d1) continue;
@@ -3355,14 +3352,11 @@ uint32_t DrawRenderer::Impl::MemexportChunk(const RegisterFile& regs, const Dxbc
       const uint64_t s0 = uint64_t(f.address) << 2, s1 = s0 + (uint64_t(f.size) << 2);
       // Apart, or each vertex rewriting its own bytes: one draw.
       if (s1 <= d0 || d1 <= s0 || s0 == d0) continue;
-      const int dir = d0 < s0 ? -1 : 1;
-      if (direction && dir != direction) return 0;
-      direction = dir;
       const uint64_t step = std::max<uint64_t>({uint64_t(b.stride_words) * 4, d_step, 1});
-      chunk = std::min(chunk, (dir < 0 ? s0 - d0 : d0 - s0) / step);
+      chunk = std::min(chunk, (d0 < s0 ? s0 - d0 : d0 - s0) / step);
     }
   }
-  if (!direction || chunk >= count) return 0;
+  if (chunk >= count) return 0;
   if (!chunk || (count + chunk - 1) / chunk > kMaxChunks) {
     REXNATIVE_LOG_FIRST(4, INFO,
                         "ReXNative memexport: a draw of {} vertices exports over its own vertex "
@@ -3370,12 +3364,10 @@ uint32_t DrawRenderer::Impl::MemexportChunk(const RegisterFile& regs, const Dxbc
                         count, chunk);
     return 0;
   }
-  *reverse = direction > 0;
   REXNATIVE_LOG_FIRST(4, INFO,
                       "ReXNative memexport: a draw of {} vertices exports over its own vertex "
-                      "buffer: {} host draws of {} vertices{}",
-                      count, (count + chunk - 1) / chunk, chunk,
-                      direction > 0 ? ", from the last" : "");
+                      "buffer: {} host draws of {} vertices",
+                      count, (count + chunk - 1) / chunk, chunk);
   return uint32_t(chunk);
 }
 
@@ -3769,10 +3761,28 @@ void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
 // memory would hold them once the GPU ran it, and the draw is dropped: the destination's pages
 // are the guest's, uploaded again when a draw reads them. Anything that does not match the copy
 // exactly goes to the GPU as before.
-constexpr uint64_t kGpuMemcpy64Shader = 0x71B69663FD98B9E5ull;
+//
+// Halo: Combat Evolved Anniversary's engine moves its streamed textures with the same copy
+// (another register for the first element, c1): it compacts its texture pool, thousands of
+// moves while a level loads, many overlapping (a block moved 8 KB down). On the GPU they raced
+// (see MemexportChunk) and reached guest memory only through readbacks: textures of colored
+// noise or zeros. Done in guest memory, in the order the game issues them, they are what the
+// console's in-order GPU leaves (memmove: a block moved down copies forward).
+struct GpuMemcpyShader {
+  uint64_t ucode_hash;
+  uint32_t first_element_constant;  // c<n>.x: the vertex index of element 0
+};
+constexpr GpuMemcpyShader kGpuMemcpyShaders[] = {
+    {0x71B69663FD98B9E5ull, 9},  // Iron Brigade
+    {0x9E10D1C39A24E18Bull, 1},  // Halo: Combat Evolved Anniversary
+};
 
 bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs) {
-  if (vs.GetUcodeDataHash() != kGpuMemcpy64Shader) return false;
+  const uint64_t hash = vs.GetUcodeDataHash();
+  const GpuMemcpyShader* known = nullptr;
+  for (const GpuMemcpyShader& k : kGpuMemcpyShaders)
+    if (k.ucode_hash == hash) known = &k;
+  if (!known) return false;
   if (s.indexed || xenos::PrimitiveType(s.primitive) != xenos::PrimitiveType::kPointList ||
       !s.count)
     return false;
@@ -3802,7 +3812,7 @@ bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& 
       rex::graphics::FormatInfo::Get(xenos::TextureFormat(st.format))->bits_per_pixel != 64)
     return false;
   const uint32_t first = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
-  const double element = double(first) - double(vc(9, 0));
+  const double element = double(first) - double(vc(known->first_element_constant, 0));
   if (element < 0.0 || element != std::floor(element)) return false;
   const uint64_t src_base = uint64_t(f.address) << 2, src_size = uint64_t(f.size) << 2;
   const uint64_t dst_base = uint64_t(st.base_address) << 2;
@@ -5259,10 +5269,8 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   } else {
     draw_indexed = false;
   }
-  // A memexport draw that rewrites its own vertex buffer (MemexportChunk): in chunks.
-  bool chunk_reverse = false;
-  const uint32_t chunk =
-      memexport && !draw_indexed ? MemexportChunk(regs, *vs, draw_count, &chunk_reverse) : 0;
+  // A memexport draw that rewrites its own vertex buffer (MemexportChunk): in chunks, in order.
+  const uint32_t chunk = memexport && !draw_indexed ? MemexportChunk(regs, *vs, draw_count) : 0;
   auto issue = [&] {
     if (draw_indexed) {
       list->DrawIndexedInstanced(draw_count, 1, first_index, 0, 0);
@@ -5272,8 +5280,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
       b.UAV.pResource = shared.Get();
       for (uint32_t k = 0; k < chunks; ++k) {
-        const uint32_t c = chunk_reverse ? chunks - 1 - k : k;
-        const uint32_t first = c * chunk;
+        const uint32_t first = k * chunk;
         if (k) list->ResourceBarrier(1, &b);
         list->DrawInstanced(std::min(chunk, draw_count - first), 1, first, 0);
       }
