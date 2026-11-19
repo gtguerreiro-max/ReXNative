@@ -411,6 +411,21 @@ Top Spin 4 is another case: its `default.xex` has no D3D at all, and both of its
 their own D3D library. The renderer's hooks are in the executable; reaching functions in a module
 needs the hooks in that module's DLL.
 
+## Renders the CPU reads
+
+The native renderer never writes a resolve into guest memory (the Xenos plugin skips its own
+copies with `gpu.xenos.skip_draws`), so a game that reads a render on the CPU reads zeros:
+Minecraft's save thumbnails are black. `rexnative.resolve_writeback` (experimental, off) reads a
+resolve's texels back after its frame and writes them into guest memory as the console's resolve
+does (tiled, endian-swapped), with the texture cache's watches on those pages triggered first;
+by size, or for any destination no texture and no front buffer has used. On a save, Minecraft
+halves its scene on the GPU (256, 128, then 64 square) and reads the 64x64 resolve at once: the
+guest's fence passes when the Xenos plugin reaches it, before the renderer has even recorded the
+frame, so a copy made one to three frames later is too late (it read the previous save's
+writeback once, which looked like success). Writing late into memory the game may have reused
+meanwhile is a risk as well, so it stays off. What would work is a sync point: the guest's wait
+for its fence held until the renderer has done that resolve and written it back.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

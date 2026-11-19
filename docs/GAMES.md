@@ -10,7 +10,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Jet Set Radio (TU 1) | plays: menus, the story intro, the first level | 30 FPS |
 | Dungeons & Dragons: Chronicles of Mystara | plays: menus, chapter select, the first chapter, 60 FPS | 60 FPS |
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |
-| Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world, and a saved one (its Load list waited for an asynchronous read until SDK patch 0036); with the upscaler, the HUD stays out of the upscaled scene (2026-11-19). The saves' thumbnails are black | 60 FPS (a saved world, FSR 4) |
+| Minecraft: Xbox 360 Edition (TU 80) | plays: menus, the update's world templates, a new world, and a saved one (its Load list waited for an asynchronous read until SDK patch 0036); with the upscaler, the HUD stays out of the upscaled scene (2026-11-19). The saves' thumbnails are black (it reads a resolve on the CPU at once: [NOTES](NOTES.md#renders-the-cpu-reads)) | 60 FPS (a saved world, FSR 4) |
 | Castlevania: Symphony of the Night (TU 2) | plays: the menu with its text, the name entry, the prologue | 60 FPS |
 | Orcs Must Die! (TU 1) | plays: title, menus, the campaign's story and its first level with the HUD, 30 FPS (its build inlined many draws past the hooks: `rexnative.inline_draws`, which turns itself on) | 30 FPS |
 | Double Dragon Neon | plays its first mission | 60 FPS |

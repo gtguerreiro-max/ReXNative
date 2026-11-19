@@ -13,11 +13,13 @@
 #include "log.h"
 #include "texture_layout.h"
 #include "upscaler.h"
+#include "host.h"
 
 #include "gpu/xenos/draw_state.h"
 #include "gpu/xenos/host/fixed_point.h"
 
 #include <rex/cvar.h>
+#include <rex/kernel/heap.h>
 #include "native/sdk.h"
 #include <rex/logging.h>
 
@@ -34,6 +36,17 @@
 #include <string>
 #include <thread>
 
+REXCVAR_DEFINE_INT32(rexnative_resolve_writeback, 0, "ReXNative",
+                     "Experimental: resolves of at most this many texels, and any resolve into a "
+                     "destination no texture or front buffer has used yet (up to "
+                     "rexnative.resolve_writeback_unused), are also written into guest memory "
+                     "once the GPU has done them, as the console's resolve writes them: one to "
+                     "three frames late, so a game that reads them at once (Minecraft's 64x64 save "
+                     "thumbnail) still reads zeros, and one that reuses the memory meanwhile has "
+                     "it overwritten; 0 off");
+REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_unused, 1310720, "ReXNative",
+                     "With rexnative.resolve_writeback: the largest resolve (texels) written back "
+                     "because no texture has used its destination yet; 0 none");
 REXCVAR_DEFINE_BOOL(rexnative_resolve_specialize, true, "ReXNative",
                     "Compile a copy shader per kind of resolve (formats, samples, swap, bias) on a "
                     "worker thread; resolves use the generic shader until it is ready");
@@ -1026,6 +1039,15 @@ struct Resolver::Pipelines {
   }
 };
 
+struct Resolver::Writeback {
+  ComPtr<ID3D12Resource> readback;
+  uint64_t size = 0;
+  uint64_t fence = 0;
+  ResolveParams p;
+  int32_t x = 0, y = 0;  // the texels' place in the destination level
+  uint32_t width = 0, height = 0, row_pitch = 0;
+};
+
 Resolver::Resolver() = default;
 Resolver::~Resolver() = default;
 bool Resolver::Initialize(ID3D12Device* device, RenderTargets* targets, ID3D12CommandQueue* queue) {
@@ -1181,6 +1203,7 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
 const ResolvedImage* Resolver::Find(uint32_t guest_phys_base) const {
   auto it = destinations_.find(guest_phys_base);
   if (it == destinations_.end() || !it->second.current) return nullptr;
+  it->second.sampled = true;
   return &it->second.current->view;
 }
 
@@ -1197,6 +1220,7 @@ const ResolvedImage* Resolver::FindContaining(uint32_t address, uint32_t* row) c
     if (delta % block) continue;
     *row = delta / block * rows;
     if (*row >= v.height) continue;
+    dest.sampled = true;
     return &v;
   }
   return nullptr;
@@ -1206,7 +1230,127 @@ void Resolver::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t complet
   frame_ = frame;
   frame_fence_ = frame_fence;
   heap_next_ = 0;
+  if (!writebacks_.empty()) WritebackFlush(completed_fence);
   if (dump_) DumpBeginFrame(completed_fence);
+}
+
+void Resolver::WritebackRecord(CommandStream* list, const ResolveParams& p,
+                               ID3D12Resource* texture, int32_t dx, int32_t dy, uint32_t w,
+                               uint32_t h) {
+  const uint32_t bpp = DestBytesPerTexel(p.dest_format);
+  // A 16-bit texel swapped in 32-bit units would trade places with its neighbour: not seen.
+  if (!bpp || (bpp == 2 && p.dest_endian > 1) || dx < 0 || dy < 0) return;
+  constexpr uint32_t kAlign = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+  const uint32_t row_pitch = (w * bpp + kAlign - 1) & ~(kAlign - 1);
+  const uint64_t size = uint64_t(row_pitch) * h;
+  std::unique_ptr<Writeback> wb;
+  for (auto it = writeback_pool_.begin(); it != writeback_pool_.end(); ++it) {
+    if ((*it)->size >= size) {
+      wb = std::move(*it);
+      writeback_pool_.erase(it);
+      break;
+    }
+  }
+  if (!wb) {
+    wb = std::make_unique<Writeback>();
+    wb->size = size;
+    if (!CreateBuffer(device_, D3D12_HEAP_TYPE_READBACK, size, D3D12_RESOURCE_STATE_COPY_DEST,
+                      "resolve writeback", &wb->readback))
+      return;
+  }
+  static std::unordered_map<uint32_t, uint32_t> logged;  // each destination's first size
+  if (logged.size() < 64 && logged.emplace(p.dest_base, w * h).second)
+    REXLOG_INFO("ReXNative resolve writeback: {:08X} format {} {}x{} at {},{} of {}x{}{}",
+                p.dest_base, p.dest_format, w, h, dx, dy, p.dest_width, p.dest_height,
+                p.from_registers ? " (registers)" : "");
+  wb->fence = frame_fence_;
+  wb->p = p;
+  wb->x = dx;
+  wb->y = dy;
+  wb->width = w;
+  wb->height = h;
+  wb->row_pitch = row_pitch;
+  D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
+  src.pResource = texture;
+  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  dst.pResource = wb->readback.Get();
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  dst.PlacedFootprint.Footprint = {DestResourceFormat(p.dest_format), w, h, 1, row_pitch};
+  const D3D12_BOX box = {UINT(dx), UINT(dy), 0, UINT(dx) + w, UINT(dy) + h, 1};
+  list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+  writebacks_.push_back(std::move(wb));
+}
+
+void Resolver::WritebackFlush(uint64_t completed_fence) {
+  static uint64_t count = 0, bytes = 0, since = 0;
+  if (!since) since = frame_;
+  if (frame_ >= since + 600) {
+    REXLOG_INFO("ReXNative resolve writeback: {:.1f} resolves, {:.0f} KB a frame written back to "
+                "guest memory",
+                double(count) / double(frame_ - since),
+                double(bytes) / 1024.0 / double(frame_ - since));
+    count = bytes = 0;
+    since = frame_;
+  }
+  uint8_t* physical = rexnative::host::Memory()->GetPhysicalMembase();
+  auto* view = static_cast<rex::kernel::PhysicalHeap*>(
+      rexnative::host::Memory()->LookupHeap(0xA0000000u));
+  size_t kept = 0;
+  for (size_t i = 0; i < writebacks_.size(); ++i) {
+    std::unique_ptr<Writeback>& wb = writebacks_[i];
+    if (wb->fence > completed_fence) {
+      writebacks_[kept++] = std::move(wb);
+      continue;
+    }
+    const ResolveParams& p = wb->p;
+    const uint32_t bpp = DestBytesPerTexel(p.dest_format);
+    const uint32_t bpp_log2 = uint32_t(std::countr_zero(bpp));
+    // The texture cache's watches on these pages: their callbacks run and the host may write.
+    if (view && p.dest_extent_bytes)
+      view->TriggerCallbacks(0xA0000000u + p.dest_base, p.dest_extent_bytes, true, false);
+    void* data = nullptr;
+    const D3D12_RANGE range = {0, size_t(wb->size)};
+    if (SUCCEEDED(wb->readback->Map(0, &range, &data))) {
+      const uint8_t* rows = static_cast<const uint8_t*>(data);
+      for (uint32_t y = 0; y < wb->height; ++y) {
+        const uint8_t* src = rows + size_t(y) * wb->row_pitch;
+        const int32_t gy = wb->y + int32_t(y);
+        for (uint32_t x = 0; x < wb->width; ++x, src += bpp) {
+          const int32_t gx = wb->x + int32_t(x);
+          const uint32_t off =
+              p.dest_tiled ? uint32_t(texture_util::GetTiledOffset2D(gx, gy, p.dest_pitch_blocks,
+                                                                     bpp_log2))
+                           : (uint32_t(gy) * p.dest_pitch_blocks + uint32_t(gx)) << bpp_log2;
+          if (off + bpp > p.dest_extent_bytes) continue;
+          uint8_t* out = physical + p.dest_base + off;
+          if (bpp == 1) {
+            *out = *src;
+          } else if (bpp == 2) {
+            out[0] = src[p.dest_endian == 1 ? 1 : 0];
+            out[1] = src[p.dest_endian == 1 ? 0 : 1];
+          } else {
+            for (uint32_t k = 0; k < bpp; k += 4) {
+              uint32_t v;
+              std::memcpy(&v, src + k, 4);
+              switch (p.dest_endian & 3) {
+                case 1: v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu); break;
+                case 2: v = __builtin_bswap32(v); break;
+                case 3: v = (v << 16) | (v >> 16); break;
+                default: break;
+              }
+              std::memcpy(out + k, &v, 4);
+            }
+          }
+        }
+      }
+      const D3D12_RANGE none = {0, 0};
+      wb->readback->Unmap(0, &none);
+    }
+    ++count;
+    bytes += uint64_t(wb->width) * wb->height * bpp;
+    writeback_pool_.push_back(std::move(wb));
+  }
+  writebacks_.resize(kept);
 }
 
 const Resolver::Image* Resolver::Holding(const ResolveParams& p, uint32_t* row) const {
@@ -1527,6 +1671,15 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   dest.current = img;
   if (&dest == &own_) return true;
   if (changed_) changed_(p.dest_base);
+  // Written back for the CPU (rexnative.resolve_writeback): a small resolve, and one into a
+  // destination the GPU has not used (no texture, no front buffer looked it up).
+  const int32_t writeback = REXCVAR_GET(rexnative_resolve_writeback);
+  const uint64_t texels = uint64_t(w) * h;
+  if (writeback > 0 && scale == 1 &&
+      (texels <= uint64_t(writeback) ||
+       (!dest.sampled &&
+        texels <= uint64_t(std::max(0, REXCVAR_GET(rexnative_resolve_writeback_unused))))))
+    WritebackRecord(list, p, img->texture.Get(), dx, dy, w, h);
 
   if (dump_ && scale == 1) DumpRecord(list, p, img->view, uint32_t(dx) + w, uint32_t(dy) + h);
   return true;

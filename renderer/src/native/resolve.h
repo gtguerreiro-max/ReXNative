@@ -234,6 +234,9 @@ class Resolver {
   struct Destination {
     std::vector<std::unique_ptr<Image>> images;
     Image* current = nullptr;  // the last one written (Find)
+    // Looked up by the texture cache or the presenter (Find, FindContaining): the GPU uses it.
+    // A destination it never used is one the CPU reads (rexnative.resolve_writeback).
+    mutable bool sampled = false;
   };
   struct Dump;
   struct DumpDeleter {
@@ -257,6 +260,16 @@ class Resolver {
   // Oracle dumps and the self test (resolve_debug.cpp), and what they use of resolve.cpp.
   void InitializeOracles(ID3D12CommandQueue* queue);  // as their cvars ask
   // While a dump records, reads back `img`'s texels from (0, 0) to (width, height).
+  // rexnative.resolve_writeback (off by default): a resolve's texels read back to the CPU after
+  // its frame (WritebackRecord, at the copy) and written into guest memory as the console's
+  // resolve writes them, tiled and endian-swapped, once the GPU has done that frame
+  // (WritebackFlush, in BeginFrame): one to three frames after the guest's own resolve.
+  struct Writeback;
+  void WritebackRecord(CommandStream* list, const ResolveParams& p, ID3D12Resource* texture,
+                       int32_t dx, int32_t dy, uint32_t w, uint32_t h);
+  void WritebackFlush(uint64_t completed_fence);
+  std::vector<std::unique_ptr<Writeback>> writebacks_, writeback_pool_;
+
   void DumpRecord(CommandStream* list, const ResolveParams& p, const ResolvedImage& img,
                   uint32_t width, uint32_t height);
   void DumpBeginFrame(uint64_t completed_fence);
