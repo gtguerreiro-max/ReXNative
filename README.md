@@ -45,11 +45,12 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 
 ## Games
 
-Twenty-nine games tried on ReXGlue v0.11, most with a Steam Deck result. Thirteen play on the PC:
+Twenty-nine games tried on ReXGlue v0.11, most with a Steam Deck result. Fifteen play on the PC:
 From Dust, Iron Brigade, Jet Set Radio, Dungeons & Dragons: Chronicles of Mystara, Super Meat Boy,
 Minecraft, Castlevania: Symphony of the Night, Orcs Must Die!, Double Dragon Neon, Midnight Club:
-Los Angeles, Dark Souls II, Overlord and Overlord II. Fable II draws its world on the native
-renderer; ten more run in part.
+Los Angeles, Dark Souls II, Overlord, Overlord II, SSX and Forza Horizon (whose speech and media
+code are XEX DLL modules, recompiled with it). Fable II draws its world on the native renderer;
+ten more run in part.
 
 **[The full table, with title updates, Steam Deck frame rates and known problems →](docs/GAMES.md)**
 
