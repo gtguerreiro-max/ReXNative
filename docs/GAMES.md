@@ -18,7 +18,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Bionic Commando Rearmed (TU 2) | the intro at 60 FPS, the mission map | 60 FPS |
 | Midnight Club: Los Angeles - Complete Edition | plays: the city, its cars (from recorded command buffers), 30 FPS | 30 FPS |
 | Dark Souls II (TU 10) | plays: menus, a new game into Things Betwixt, 60 FPS (the console's 30 with `rexnative.menu_fps = 30`); its prologue video came out garbled before the video decoder's fix of 2026-11-18 (not checked here since) | 30 FPS (Things Betwixt) |
-| Halo: Combat Evolved Anniversary (TU 2) | plays: the menu (its ship and ring whole since SDK patch 0038), the opening cutscene textured throughout (its texture pool's GPU copies done in guest memory), the first level's cryo bay and HUD, the classic graphics (Back) and the pause menu | 30 FPS (the game's cap; the intro 60) |
+| Halo: Combat Evolved Anniversary (TU 2) | plays: the menu (its ship and ring whole since SDK patch 0038), the opening cutscene textured throughout (its texture pool's GPU copies done in guest memory), the first level's cryo bay and HUD, the classic graphics (Back) and the pause menu, 30 FPS (the game's cap) | 60 FPS (the intro) |
 | Spelunky (TU 1) | menus, with no text (also on ReXGlue's renderer, and in Xenia: [game-compatibility#97](https://github.com/xenia-project/game-compatibility/issues/97)) | 60 FPS, no text |
 | Perfect Dark (TU 3) | reaches its levels, but draws them broken (ReXGlue's renderer now reaches the menus, to compare) | 60 FPS (menus) |
 | 3D Ultra Minigolf Adventures | runs past its start-up | 60 FPS |
@@ -33,6 +33,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Blur (TU 2) | runs, its intro video plays | not tried (space) |
 | Forza Horizon (TU 4, its DLC) | plays on the native renderer: the intro videos, the main menu, the opening drive with its car, the traffic and the HUD (about 2000 draws, 30 FPS); its speech and media code are two XEX DLL modules, recompiled as ReXGlue's `[[modules]]` since 2026-11-19 (their title update patches needed SDK patch 0037) | not tried (space) |
 | SSX (TU 3, its DLC) | plays on the native renderer: the intro video, title, menus, the World Tour's first descent, 30 FPS (it drew black while its layer gave the Resolve hook a reference row's category, 2026-11-19) | not tried (space) |
+| Darwinia+ | its intros, the menu and the first level on the native renderer (since 2026-11-19: its frame's Clear, recorded in a replayed command buffer, and its BeginVertices' built-in stride); in the level the water's reflection, the terrain's grid and the cursor still differ from ReXGlue's renderer | not tried |
 | Top Spin 4 | not supported yet: `default.xex` is a loader, and both its XEX DLL modules (`Loader_DLL`, `Swing_DLL`) link their own D3D library, which the renderer's hooks (in the executable) cannot reach | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 
