@@ -103,6 +103,14 @@ class NativeRenderer {
   // mode from the guest thread's next Swap, which hands the game to the plugin as the switch
   // does). The hooks use this one, a single load while the renderer draws; while it is null the
   // guest D3D runs unchanged and nothing is tracked.
+  // An access violation in the native work of a hook (guard.h: a layer whose offsets do not fit
+  // the game's D3D read a bad guest address). From then on only Swap reaches the renderer, and it
+  // hands the game to the Xenos plugin for the rest of the run, as the renderer switch does. Any
+  // thread; logged once.
+  static void NoteCrash(const char* where);
+  static bool Crashed() { return crashed_.load(std::memory_order_relaxed); }
+  // At a Swap after NoteCrash whose OnSwap faulted as well: the hand-over alone.
+  void HandOverAfterCrash(uint8_t* base, uint32_t device) { HandOver(base, device); }
   static NativeRenderer* Live() {
     if (NativeRenderer* r = live_.load(std::memory_order_acquire)) [[likely]]
       return r;
@@ -308,6 +316,9 @@ class NativeRenderer {
   uint32_t idle_swaps_ = 0, busy_swaps_ = 0;
   bool auto_handed_over_ = false, auto_off_ = false;
   static inline std::atomic<uint32_t> suspended_draws_{0};
+  static inline std::atomic<bool> crashed_{false};  // NoteCrash
+  // ExecuteClassicSwap's own stats line: the plugin's frames since the last one, their time.
+  uint64_t classic_frames_ = 0, classic_ns_ = 0, classic_last_ns_ = 0;
   // Upscaler switch. bind_upscaler (F7) switches the scene between MSAA and the upscaler,
   // requested on the UI thread and taken at the start of the next frame. The upscaler is created
   // at its first use and kept after.

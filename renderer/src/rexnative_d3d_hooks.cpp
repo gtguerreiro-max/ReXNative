@@ -47,6 +47,7 @@
 //
 // Built into every game by rexnative_add() (renderer/rexnative.cmake), with the game's layer.
 
+#include "native/guard.h"
 #include "native/watch.h"
 #include "native/clock.h"
 #include "native/cmd_replay.h"
@@ -1420,6 +1421,18 @@ void Body(PPCContext& c, uint8_t* b) {
 }
 
 // Queues the draw a top-level BeginVertices holds: the game has written its vertices by now.
+// A hook's native work, guarded (native/guard.h): an access violation in it hands the game to
+// the Xenos plugin (NativeRenderer::NoteCrash) instead of ending it. Nothing runs after one.
+template <class F>
+inline bool Native(const char* where, F&& f) {
+  if (rexnative::NativeRenderer::Crashed()) [[unlikely]]
+    return false;
+  if (rexnative::Guarded(f)) [[likely]]
+    return true;
+  rexnative::NativeRenderer::NoteCrash(where);
+  return false;
+}
+
 inline void QueuePendingVertices(rexnative::NativeRenderer* r, const uint8_t* base) {
   if (t_pending_vertices && r) {
     t_pending_vertices = false;
@@ -1547,7 +1560,8 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
   if constexpr (IsPassThrough(kId)) {
     if (!g_tap.enabled) {
       if constexpr (!HasFastPath(kId))
-        if (t_pending_vertices) QueuePendingVertices(nat::NativeRenderer::Live(), base);
+        if (t_pending_vertices)
+          Native(kFns[kId].name, [&] { QueuePendingVertices(nat::NativeRenderer::Live(), base); });
       RunOriginal<kId, kOriginal>(ctx, base);
       return;
     }
@@ -1574,6 +1588,10 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
                 "d3d_surface.inc: RunCommandBuffer must be kOther");
   [[maybe_unused]] const uint32_t entry_r3 = ctx.r3.u32, entry_r4 = ctx.r4.u32;
   nat::NativeRenderer* r = nat::NativeRenderer::Live();
+  // After a fault in the native path (NoteCrash) only Swap reaches the renderer: it hands the game
+  // to the Xenos plugin.
+  if (kId != kFnSwap && r && nat::NativeRenderer::Crashed()) [[unlikely]]
+    r = nullptr;
   // The state tracker is one object without locks, fed from the thread that draws on the
   // followed device (and read by the render thread's register log): a call on another device,
   // from the loading thread, must not reach it, with the tap on as well (the tap check run
@@ -1604,16 +1622,19 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
       if (track && c.r3.u32) {
         const std::array<uint32_t, 8> rr = PublicRegs(kAddr, c);
         const uint32_t sp = c.r1.u32;  // at entry: stack arguments (BeginIndexedVertices)
-        nat::CallEntry e;
-        {
+        nat::CallEntry e{};
+        const bool entered = Native(kFns[kId].name, [&] {
           nat::profile::Scope scope(nat::profile::kTrack);
           e = nat::ReadDirtyMasks(b, rr[0]);
           if constexpr (kId == kFnDrawIndexed) nat::PrefetchIndexBuffer(b, rr[0]);
-        }
+        });
         RunOriginal<kId, Body<kId, kOriginal>>(c, b);
-        nat::profile::Scope scope(nat::profile::kTrack);
-        ++nat::profile::g.track_calls;
-        nat::GuestState().AfterCall(b, kAddr, e, rr.data(), c.r3.u64, sp);
+        if (entered)
+          Native(kFns[kId].name, [&] {
+            nat::profile::Scope scope(nat::profile::kTrack);
+            ++nat::profile::g.track_calls;
+            nat::GuestState().AfterCall(b, kAddr, e, rr.data(), c.r3.u64, sp);
+          });
         return;
       }
     }
@@ -1631,22 +1652,25 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
     }
     // `track && entry_r3`: exactly when `run` called AfterCall, which EndCommandBuffer pairs.
     if constexpr (kId == kFnRunCommandBuffer)
-      if (track && entry_r3) AfterRunCommandBuffer(base, entry_r3, entry_r4, nullptr);
+      if (track && entry_r3)
+        Native(kFns[kId].name,
+               [&] { AfterRunCommandBuffer(base, entry_r3, entry_r4, nullptr); });
     if constexpr (kId == kFnSwap) {
       if (nat::NativeRenderer* suspended = nat::NativeRenderer::Get()) suspended->OnSwapSuspended();
       NoteFrameBegin();
     }
     return;
   }
-  if constexpr (!HasFastPath(kId)) QueuePendingVertices(r, base);
+  if constexpr (!HasFastPath(kId)) Native(kFns[kId].name, [&] { QueuePendingVertices(r, base); });
   if constexpr (kClass == kNatQuery) {
     // GetData reads the result the renderer writes at its entry; an Issue reaches the renderer
     // once the guest D3D has recorded it.
     static_assert(kId == kFnQueryIssue || kId == kFnQueryGetData);
     const nat::HookArgs a = EntryArgs(kAddr, ctx);
-    if constexpr (kId == kFnQueryGetData) r->OnQueryGetData(base, a);
+    if constexpr (kId == kFnQueryGetData)
+      Native(kFns[kId].name, [&] { r->OnQueryGetData(base, a); });
     OnCall<kId>(ctx, base, run);
-    if constexpr (kId == kFnQueryIssue) r->OnQueryIssue(base, a);
+    if constexpr (kId == kFnQueryIssue) Native(kFns[kId].name, [&] { r->OnQueryIssue(base, a); });
   } else if constexpr (kClass == kNatNone) {
     if constexpr (kId == kFnBeginTiling || kId == kFnEndTiling) {
       const nat::TilingCall outer = t_tiling_call;
@@ -1657,7 +1681,8 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
       // After OnCall: after AfterCall copied Run's inherited flush and after the tap's exit
       // Sync, so the tap, like the GPU, sees that flush before the buffer's own writes.
       OnCall<kId>(ctx, base, run);
-      if (track && entry_r3) AfterRunCommandBuffer(base, entry_r3, entry_r4, r);
+      if (track && entry_r3)
+        Native(kFns[kId].name, [&] { AfterRunCommandBuffer(base, entry_r3, entry_r4, r); });
     } else {
       OnCall<kId>(ctx, base, run);
     }
@@ -1677,16 +1702,23 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
         t_pending_args = a;
         t_pending_vertices = true;
       } else {
-        r->OnDraw(base, a);
+        Native(kFns[kId].name, [&] { r->OnDraw(base, a); });
       }
     } else if constexpr (kClass == kNatClear) {
-      r->OnClear(base, a);
+      Native(kFns[kId].name, [&] { r->OnClear(base, a); });
     } else if constexpr (kClass == kNatResolve) {
-      if (std::exchange(t_reg_resolve_seen, false)) CheckRegisterResolve(base, a);
-      r->OnResolve(base, a);
+      Native(kFns[kId].name, [&] {
+        if (std::exchange(t_reg_resolve_seen, false)) CheckRegisterResolve(base, a);
+        r->OnResolve(base, a);
+      });
     } else {
       static_assert(kClass == kNatSwap);
-      r->OnSwap(base, a);
+      // Also after a fault (NoteCrash): this Swap hands the game to the Xenos plugin.
+      auto swap = [&] { r->OnSwap(base, a); };
+      if (!nat::Guarded(swap)) {
+        nat::NativeRenderer::NoteCrash(kFns[kId].name);
+        r->HandOverAfterCrash(base, a.device);
+      }
       NoteFrameBegin();
       if (nat::profile::On()) LogGuestD3dTimes();
     }
@@ -2006,8 +2038,9 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     // call: its tonemap rectangle came after the HUD's inline draws, with their shaders. The
     // vertices are written by now: no D3D call comes between BeginVertices and EndVertices.
     if (t_pending_vertices && !g_gap_probe.load(std::memory_order_relaxed))
-      QueuePendingVertices(rexnative::NativeRenderer::Live(), base);
-    GapEntry(base, device);
+      Native(kFns[kId].name,
+             [&] { QueuePendingVertices(rexnative::NativeRenderer::Live(), base); });
+    Native(kFns[kId].name, [&] { GapEntry(base, device); });
   }
   ++t_gap_depth;
   OnHookInner<kId, kOriginal>(ctx, base);
@@ -2161,9 +2194,10 @@ REX_HOOK_RAW(REXNATIVE_SUB(REXNATIVE_IMMEDIATE_VS)) {
     const uint32_t main_device = g_main_device.load(std::memory_order_relaxed);
     if (main_device && r[0] != main_device) return;
   }
-  if (TrackState(rexnative::NativeRenderer::Live())) {
-    rexnative::profile::Scope scope(rexnative::profile::kImmediateVs);
-    rexnative::GuestState().AfterImmediateVs(base, r.data());
-  }
+  if (TrackState(rexnative::NativeRenderer::Live()))
+    Native("ImmediateVs", [&] {
+      rexnative::profile::Scope scope(rexnative::profile::kImmediateVs);
+      rexnative::GuestState().AfterImmediateVs(base, r.data());
+    });
 }
 #endif

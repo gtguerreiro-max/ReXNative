@@ -580,6 +580,18 @@ the Clear quads in the gaps are cleared (no hook clears: the menu drew over a wh
 menus and the gameplay then draw as on the Xenos plugin, 60 FPS. The upscaler did not start there
 (no `upscaler:` line with it asked for): not looked into.
 
+A layer that does not fit its game's D3D no longer ends the game either. The hooks' native work
+(the state tracker's reads, the renderer's draw, clear, resolve and Swap entries, the walk) runs
+under a structured exception handler (`native/guard.h`); an access violation there logs "the
+native path read a bad guest address", and only Swap reaches the renderer after it: it hands the
+game to the Xenos plugin for the rest of the run, as F9 does (without marking the device's dirty
+masks, which that layer would write at the wrong place). Geometry Wars built with its old,
+PGR4-mapped layer crashed at its first draw; with the guard it played its menus and a game on the
+Xenos plugin. The plugin's frames now log a line of their own in the native stats' form
+(`ReXNative: frames N | per frame: draws 0.0 (the Xenos plugin draws the game), frame F ms`), so a
+game on the classic renderer, from its start or handed over, still shows that it runs (the
+Gestor's boot test counts those lines).
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

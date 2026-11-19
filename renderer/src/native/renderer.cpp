@@ -1091,6 +1091,13 @@ void NativeRenderer::OnQueryGetData(uint8_t* base, const HookArgs& args) {
 void NativeRenderer::OnSwapSuspended() {
   const uint32_t draws = suspended_draws_.exchange(0, std::memory_order_relaxed);
   TakeChoice();
+  if (crashed_.load(std::memory_order_relaxed)) {
+    // NoteCrash: the native path does not come back (F9, the HUD, the automatic switch).
+    wanted_.store(kWantNone, std::memory_order_relaxed);
+    switch_requested_.store(false, std::memory_order_relaxed);
+    if (classic_ && !g_failed) ClassicSwap();
+    return;
+  }
   if (SwitchRequested(/*native_now=*/false)) {
     auto_handed_over_ = false;
     auto_off_ = true;  // F9 decides from here on (HandOverRequested)
@@ -1166,7 +1173,21 @@ bool NativeRenderer::AutoHandOverDue() {
   return true;
 }
 
+void NativeRenderer::NoteCrash(const char* where) {
+  if (crashed_.exchange(true, std::memory_order_relaxed)) return;
+  REXLOG_ERROR("ReXNative: the native path read a bad guest address in {} (the fault was "
+               "caught): this game's layer does not fit its D3D. The Xenos plugin draws from the "
+               "next Swap, for the rest of the run",
+               where);
+}
+
 bool NativeRenderer::HandOverRequested() {
+  if (crashed_.load(std::memory_order_relaxed)) {
+    // NoteCrash: whatever the frame height, a crash is worse.
+    auto_off_ = true;
+    rex::cvar::SetFlagByName("rexnative_classic", "true");
+    return true;
+  }
   if (!SwitchRequested(/*native_now=*/true)) return false;
   // F9 decides from here on: the automatic hand-over stays off for the rest of the run.
   auto_off_ = true;
@@ -1188,14 +1209,17 @@ void NativeRenderer::HandOver(uint8_t* base, uint32_t device) {
   // The replaced draws (guest_d3d.h) cleared dirty bits without writing the state to the
   // stream, and the plugin skipped the shader loads: it has neither. The next draw writes all
   // of it. (Not with a device layout the layer does not know: game::kStreamOnly.)
-  if constexpr (!game::kStreamOnly) MarkAllDirty(base, device);
+  // After NoteCrash the layer's offsets are not this D3D's: writing the dirty masks there would
+  // corrupt the device. The plugin then waits for the game's next state changes.
+  if constexpr (!game::kStreamOnly)
+    if (!crashed_.load(std::memory_order_relaxed)) MarkAllDirty(base, device);
   rex::cvar::SetFlagByName("gpu_skip_draws", "false");
   if (occlusion_) rex::cvar::SetFlagByName("occlusion_query_external", "false");
   // The game waits for the plugin's vblanks again: the plugin's frames are shown as they come
   // (through the renderer's swap chain with classic_, by ReXGlue's presenter without).
   paces_frames_.store(false, std::memory_order_relaxed);
   live_.store(nullptr, std::memory_order_relaxed);
-  if (g_failed)
+  if (g_failed || crashed_.load(std::memory_order_relaxed))
     REXLOG_INFO("ReXNative: the Xenos plugin draws for the rest of the run");
   else
     REXLOG_INFO("ReXNative: renderer switch: the Xenos plugin draws");
@@ -1261,8 +1285,25 @@ void NativeRenderer::ExecuteClassicSwap(const SwapCall& swap) {
     pacer_->RetireUnshown();
   ++frame_index_;
   d.SetTitleFrame(frame_index_);
-  // The plugin's frames are not in the stats; the next native frame's time starts here.
-  frame_start_ns_ = NowNs();
+  // The plugin's frames are not in the native stats; they get a line of their own, in the same
+  // form, so a game on the classic renderer (from its start, or handed over after NoteCrash)
+  // still says that it runs (the Gestor's boot test counts these lines). A gap of more than a
+  // second (native frames between) is not counted.
+  const uint64_t now = NowNs();
+  if (classic_last_ns_ && now - classic_last_ns_ < 1000000000ull) {
+    ++classic_frames_;
+    classic_ns_ += now - classic_last_ns_;
+  }
+  classic_last_ns_ = now;
+  if (const int32_t every = REXCVAR_GET(rexnative_d3d_stats_frames);
+      every > 0 && classic_frames_ >= uint64_t(every)) {
+    REXLOG_INFO("ReXNative: frames {} | per frame: draws 0.0 (the Xenos plugin draws the game), "
+                "frame {:.2f} ms",
+                frame_index_, double(classic_ns_) / 1e6 / double(classic_frames_));
+    classic_frames_ = classic_ns_ = 0;
+  }
+  // The next native frame's time starts here.
+  frame_start_ns_ = now;
   if (queue_) {
     // The native frames' upload memory is tagged with the frames queued (QueueDraw): these count.
     Queue& q = *queue_;
