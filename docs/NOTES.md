@@ -465,6 +465,16 @@ copies are now done in guest memory when the game issues them and never reach th
 (`--rexnative_gpu_memcpy`); a memexport draw also waits for its pipeline instead of being
 skipped while it compiles (what it writes would be lost for good).
 
+Halo: Anniversary writes its textures with a memexport vertex shader (8-byte elements, a few
+MB a frame while a level streams in). Most of what it wrote was "kept" as the guest's: the
+readback took a byte that differed from the snapshot (shared memory before the draw) for one the
+guest had written after the draw, but shared memory may not hold the guest's last bytes yet
+(pages the GPU owns are copied again only once a guest write faults on them), and the textures
+kept the data they were made from: colored noise on the ship, the crew and the consoles of the
+opening cutscene. Prepare now copies the destinations from guest memory when the game issues
+the draw, and a byte stays the guest's only where it differs from that copy too. Some surfaces
+of the cutscene (the bridge's floor, its consoles) are still noise, differently from run to run.
+
 ## EDRAM aliasing
 
 - **Across MSAA:** a 4x (or 2x) depth surface over a 1x one at the same base takes its depth

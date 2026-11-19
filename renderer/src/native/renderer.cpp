@@ -289,6 +289,7 @@ struct NativeRenderer::Queue {
     DrawPrep prep;
     uint32_t copy_begin, copy_end;    // Batch::copies
     uint32_t audit_begin, audit_end;  // Batch::audits
+    uint32_t memexport_begin, memexport_end;  // Batch::memexport_guest
   };
   struct SwapCmd {
     SwapCall call;
@@ -306,6 +307,7 @@ struct NativeRenderer::Queue {
     std::vector<VertexCopy> copies;
     std::vector<uint32_t> segments;  // indices into copies where a copy segment starts
     std::vector<AuditRange> audits;
+    std::vector<uint8_t> memexport_guest;  // DrawPrep::memexport_guest
     std::vector<DrawCmd> draws;
     std::vector<ClearCall> clears;
     std::vector<ResolveParams> resolves;
@@ -317,6 +319,7 @@ struct NativeRenderer::Queue {
       copies.clear();
       segments.clear();
       audits.clear();
+      memexport_guest.clear();
       draws.clear();
       clears.clear();
       resolves.clear();
@@ -762,6 +765,8 @@ void NativeRenderer::RenderThreadMain() {
           d.prep.copy_count = to - copies_issued;
           d.prep.audit = b->audits.data() + d.audit_begin;
           d.prep.audit_count = d.audit_end - d.audit_begin;
+          d.prep.memexport_guest = b->memexport_guest.data() + d.memexport_begin;
+          d.prep.memexport_guest_size = d.memexport_end - d.memexport_begin;
           copies_issued = to;
           ExecuteDraw(d.state, &d.prep);
           break;
@@ -832,10 +837,12 @@ void NativeRenderer::QueueDraw(const uint8_t* base, const HookArgs& args) {
     if (b.draws.size() == 1) draw_->BeginCopySegment();
     d.copy_begin = uint32_t(b.copies.size());
     d.audit_begin = uint32_t(b.audits.size());
+    d.memexport_begin = uint32_t(b.memexport_guest.size());
     // Upload memory of frame F is tagged F + 1: free once F's fence completed.
-    draw_->Prepare(d.state, q.frame + 1, &d.prep, &b.copies, &b.audits);
+    draw_->Prepare(d.state, q.frame + 1, &d.prep, &b.copies, &b.audits, &b.memexport_guest);
     d.copy_end = uint32_t(b.copies.size());
     d.audit_end = uint32_t(b.audits.size());
+    d.memexport_end = uint32_t(b.memexport_guest.size());
     if (d.prep.copy_segment) b.segments.push_back(d.copy_begin);
     d.state.regs = nullptr;
     d.state.vs.immediate = d.state.ps.immediate = nullptr;  // Prepare loaded the shaders

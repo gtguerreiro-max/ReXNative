@@ -930,8 +930,15 @@ struct DrawRenderer::Impl {
   // than what the shaders write, and the rest may have been written by the CPU meanwhile.
   struct MemexportPending {
     uint32_t start, size, offset;
+    // memexport_issue holds the range's guest bytes at the draw's issue, at `offset`.
+    bool issued;
   };
   std::vector<MemexportPending> memexport_pending;
+  // Guest memory under the pending ranges when the game issued their first draws (DrawPrep::
+  // memexport_guest), at their readback offsets; MergeMemexport.
+  std::vector<uint8_t> memexport_issue;
+  // Prepare: where RequestMemexport copies the destinations' guest bytes (null: not wanted).
+  std::vector<uint8_t>* prep_memexport_guest = nullptr;
   uint32_t memexport_used = 0, memexport_capacity = 0;  // bytes of each readback buffer
   ComPtr<ID3D12Resource> memexport_before, memexport_after;
   // The asynchronous readback (--rexnative_memexport_readback_async): at the Swap the frame's
@@ -943,6 +950,7 @@ struct DrawRenderer::Impl {
     bool active = false;
     uint64_t fence = 0;
     std::vector<MemexportPending> pending;
+    std::vector<uint8_t> issue;
     uint32_t used = 0, capacity = 0;
     ComPtr<ID3D12Resource> before, after;
   } memexport_inflight;
@@ -1438,7 +1446,7 @@ struct DrawRenderer::Impl {
                         std::vector<VertexCopy>& out);
   void MarkGpuWritten(uint32_t start, uint32_t length);
   bool TexturesReadMemexport(const RegisterFile& regs, uint32_t used_textures) const;
-  void SnapshotMemexport(CommandStream* list);
+  void SnapshotMemexport(CommandStream* list, const DrawPrep* prep);
   bool CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes, bool wide,
                             D3D12_INDEX_BUFFER_VIEW* out);
   void FlushMemexport(MemexportFlush why);
@@ -1450,11 +1458,11 @@ struct DrawRenderer::Impl {
   void FinishMemexportInFlight(bool wait);
   // Writes what memexport draws changed into guest memory, from their snapshots and results:
   // returns the bytes written (and adds the bytes the guest wrote meanwhile to *kept).
-  uint64_t MergeMemexport(const uint8_t* before, const uint8_t* after,
+  uint64_t MergeMemexport(const uint8_t* before, const uint8_t* after, const uint8_t* issue,
                           const std::vector<MemexportPending>& pending, uint64_t* kept);
   void MemexportFrame(uint64_t completed_fence);
   void Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep, std::vector<VertexCopy>* out,
-               std::vector<AuditRange>* audit);
+               std::vector<AuditRange>* audit, std::vector<uint8_t>* memexport_guest);
   // A triangle fan as a host triangle list (v1, v2, v0), (v2, v3, v0)... like the plugin's
   // primitive processor; guest indices are copied raw (the VS still swaps them). The guest
   // indices are in physical memory (RequestVertices checked them); `count` >= 3. Out of line:
@@ -3307,6 +3315,9 @@ bool DrawRenderer::Impl::RequestMemexport(const DrawState& s, const DxbcShader& 
         !RequestRange(start, size, true, out))
       return false;
     MarkGpuWritten(start, size);
+    if (preparing && prep_memexport_guest)
+      prep_memexport_guest->insert(prep_memexport_guest->end(), guest_physical + start,
+                                   guest_physical + start + size);
   }
   if (preparing) segment_after_memexport = true;
   return true;
@@ -3364,7 +3375,7 @@ bool DrawRenderer::Impl::TexturesReadMemexport(const RegisterFile& regs,
 
 // Readback: the bytes of the draw's ranges (draw_memexport_ranges) before the batch's first
 // export to each, which FlushMemexport compares with.
-void DrawRenderer::Impl::SnapshotMemexport(CommandStream* list) {
+void DrawRenderer::Impl::SnapshotMemexport(CommandStream* list, const DrawPrep* prep) {
   auto covered = [&](uint32_t start, uint32_t size) {
     for (const MemexportPending& p : memexport_pending)
       if (p.start <= start && start + size <= p.start + p.size) return true;
@@ -3395,12 +3406,25 @@ void DrawRenderer::Impl::SnapshotMemexport(CommandStream* list) {
       memexport_capacity = uint32_t(size);
     }
   }
+  // Prepare's copies of the ranges, in the same order (none for a draw without Prepare).
+  uint64_t guest_size = 0;
+  for (const auto& range : draw_memexport_ranges) guest_size += range.size_bytes;
+  const uint8_t* guest = prep && guest_size && prep->memexport_guest_size == guest_size
+                             ? prep->memexport_guest
+                             : nullptr;
   TransitionShared(list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  uint32_t guest_offset = 0;
   for (const auto& range : draw_memexport_ranges) {
     const uint32_t start = range.base_address_dwords << 2, size = range.size_bytes;
+    const uint32_t at = guest_offset;
+    guest_offset += size;
     if (!size || covered(start, size)) continue;
     list->CopyBufferRegion(memexport_before.Get(), memexport_used, shared.Get(), start, size);
-    memexport_pending.push_back({start, size, memexport_used});
+    memexport_pending.push_back({start, size, memexport_used, guest != nullptr});
+    if (guest) {
+      memexport_issue.resize(memexport_used + size);
+      std::memcpy(memexport_issue.data() + memexport_used, guest + at, size);
+    }
     memexport_used += size;
   }
 }
@@ -3442,16 +3466,23 @@ bool DrawRenderer::Impl::CopyMemexportIndices(CommandStream* list, uint32_t star
 // submitted and waited for (NativeRenderer::SubmitAndWait), and the bytes that differ from the
 // snapshot written into guest memory. Textures over them load again at their next use.
 uint64_t DrawRenderer::Impl::MergeMemexport(const uint8_t* before, const uint8_t* after,
+                                            const uint8_t* issue,
                                             const std::vector<MemexportPending>& pending,
                                             uint64_t* kept_out) {
-  // A byte the guest wrote since the snapshot (it no longer holds the snapshot's value) is
-  // newer than the GPU's write, which on the console landed when the draw ran: it stays.
-  // Iron Brigade's level loading frees memory its memexport draws wrote and loads meshes into
-  // it before the next Swap; copied back over them, a house's vertex buffer became the old
-  // texture blocks (green shards).
+  // A byte the guest wrote after the draw is newer than the GPU's write, which on the console
+  // landed when the draw ran: it stays. Iron Brigade's level loading frees memory its memexport
+  // draws wrote and loads meshes into it before the next Swap; copied back over them, a house's
+  // vertex buffer became the old texture blocks (green shards). Such a byte differs from both
+  // the snapshot (shared memory before the draw) and guest memory when the game issued the draw
+  // (`issue`). Differing from the snapshot alone is no proof: shared memory may not have had
+  // the guest's last bytes yet (pages the GPU owns are copied again only once a guest write
+  // faults on them, which a write before the page's watch was armed does not), and Halo:
+  // Anniversary's textures, which a memexport shader writes, then kept the bytes it wrote them
+  // from (colored noise).
   uint64_t changed = 0, kept = 0;
-  auto merge = [&](const uint8_t* b, const uint8_t* a, uint8_t* g, uint32_t j) {
-    if (g[j] != b[j]) {
+  auto merge = [&](const uint8_t* b, const uint8_t* a, const uint8_t* i, uint8_t* g,
+                   uint32_t j) {
+    if (g[j] != b[j] && (!i || g[j] != i[j])) {
       ++kept;
       return;
     }
@@ -3462,6 +3493,7 @@ uint64_t DrawRenderer::Impl::MergeMemexport(const uint8_t* before, const uint8_t
     // Per byte (exports of 8 and 16 bit formats), 8 bytes at a time where nothing changed.
     const uint8_t* b = before + p.offset;
     const uint8_t* a = after + p.offset;
+    const uint8_t* is = p.issued && issue ? issue + p.offset : nullptr;
     uint8_t* g = guest_physical + p.start;
     uint32_t lo = p.size, hi = 0, i = 0;
     for (; i + 8 <= p.size; i += 8) {
@@ -3470,13 +3502,13 @@ uint64_t DrawRenderer::Impl::MergeMemexport(const uint8_t* before, const uint8_t
       std::memcpy(&y, a + i, 8);
       if (x == y) continue;
       for (uint32_t j = i; j < i + 8; ++j)
-        if (a[j] != b[j]) merge(b, a, g, j);
+        if (a[j] != b[j]) merge(b, a, is, g, j);
       lo = std::min(lo, i);
       hi = i + 8;
     }
     for (; i < p.size; ++i)
       if (a[i] != b[i]) {
-        merge(b, a, g, i);
+        merge(b, a, is, g, i);
         lo = std::min(lo, i);
         hi = i + 1;
       }
@@ -3547,11 +3579,13 @@ void DrawRenderer::Impl::DeferMemexport() {
   f.active = true;
   f.fence = r.frame_fence();
   f.pending.swap(memexport_pending);
+  f.issue.swap(memexport_issue);
   f.used = memexport_used;
   f.capacity = memexport_capacity;
   f.before = std::move(memexport_before);
   f.after = std::move(memexport_after);
   memexport_pending.clear();
+  memexport_issue.clear();
   memexport_used = 0;
   // The next frame's snapshots go into the other pair (none yet: SnapshotMemexport makes one).
   memexport_before = std::move(memexport_spare_before);
@@ -3587,7 +3621,7 @@ void DrawRenderer::Impl::FinishMemexportInFlight(bool wait) {
   uint64_t kept = 0;
   if (SUCCEEDED(f.before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
       SUCCEEDED(f.after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
-    MergeMemexport(before, after, f.pending, &kept);
+    MergeMemexport(before, after, f.issue.data(), f.pending, &kept);
   } else {
     REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
   }
@@ -3623,7 +3657,7 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   if (submitted &&
       SUCCEEDED(memexport_before->Map(0, &read, reinterpret_cast<void**>(&before))) &&
       SUCCEEDED(memexport_after->Map(0, &read, reinterpret_cast<void**>(&after)))) {
-    changed = MergeMemexport(before, after, memexport_pending, &kept);
+    changed = MergeMemexport(before, after, memexport_issue.data(), memexport_pending, &kept);
   } else if (submitted) {
     REXNATIVE_WARN_ONCE("ReXNative memexport: mapping the readback buffers failed");
   }
@@ -3643,6 +3677,7 @@ void DrawRenderer::Impl::FlushMemexport(MemexportFlush why) {
   mx.wait_ns += wait_ns;
   mx.wait_max_ns = std::max(mx.wait_max_ns, wait_ns);
   memexport_pending.clear();
+  memexport_issue.clear();
   memexport_used = 0;
 }
 
@@ -3740,7 +3775,8 @@ bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& 
 }
 
 void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* prep,
-                                 std::vector<VertexCopy>* out, std::vector<AuditRange>* audit) {
+                                 std::vector<VertexCopy>* out, std::vector<AuditRange>* audit,
+                                 std::vector<uint8_t>* memexport_guest) {
   prep->captured = r.textures().MarkCapture();
   if (!s.vs.ucode || !s.vs.dwords) return;
   prep->vs = LoadShader(vs_memo, vs_last, s.vs, xenos::ShaderType::kVertex);
@@ -3766,8 +3802,10 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
   preparing = true;
   segment_conflict = false;
   draw_reads.clear();
+  prep_memexport_guest = memexport_readback ? memexport_guest : nullptr;
   prep->upload_ok = indexed_ok && RequestVertices(s, *prep->vs, *out) &&
                     RequestMemexport(s, *prep->vs, prep->ps, *out);
+  prep_memexport_guest = nullptr;
   preparing = false;
   if (segment_conflict || after_memexport || segment_exact.size() >= kSegmentExactLimit) {
     NewSegment();
@@ -4990,7 +5028,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     draw_memexport_ranges.clear();
     AppendMemExportRanges(regs, *vs, draw_memexport_ranges);
     if (ps) AppendMemExportRanges(regs, *ps, draw_memexport_ranges);
-    if (memexport_readback) SnapshotMemexport(list);
+    if (memexport_readback) SnapshotMemexport(list, prep);
     if (s.indexed && !fan &&
         !CopyMemexportIndices(list, s.index_address, index_bytes, s.index_32bit, &memexport_ibv)) {
       ++stats.failed;
@@ -5298,8 +5336,9 @@ void DrawRenderer::OnDraw(const DrawState& state, const DrawPrep* prep) {
 }
 
 void DrawRenderer::Prepare(const DrawState& state, uint64_t upload_tag, DrawPrep* prep,
-                           std::vector<VertexCopy>* copies, std::vector<AuditRange>* audit) {
-  impl_->Prepare(state, upload_tag, prep, copies, audit);
+                           std::vector<VertexCopy>* copies, std::vector<AuditRange>* audit,
+                           std::vector<uint8_t>* memexport_guest) {
+  impl_->Prepare(state, upload_tag, prep, copies, audit, memexport_guest);
 }
 
 void DrawRenderer::StartAudit(uint32_t frames) { impl_->audit_left = frames; }

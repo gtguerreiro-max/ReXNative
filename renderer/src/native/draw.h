@@ -103,6 +103,11 @@ struct DrawPrep {
   // --rexnative_mark_audit: the ranges to check, set by the render side like `copies`.
   const AuditRange* audit = nullptr;
   uint32_t audit_count = 0;
+  // Memexport: the destination ranges' bytes in guest memory when the game issued the draw (its
+  // ranges in order), set by the render side like `copies`; the readback's merge keeps a byte
+  // of the guest's only where the guest changed it since then.
+  const uint8_t* memexport_guest = nullptr;
+  uint32_t memexport_guest_size = 0;
 };
 
 class DrawRenderer {
@@ -177,9 +182,11 @@ class DrawRenderer {
   //
   // While a mark audit runs (StartAudit), Prepare also checks the loaded shaders against the
   // whole guest ucode, hashes the register blocks for Draw to compare, and appends the ranges
-  // the draw reads to `audit` (each range once per frame).
+  // the draw reads to `audit` (each range once per frame). With the memexport readback on, a
+  // memexport draw's destination ranges are copied from guest memory to `memexport_guest`.
   void Prepare(const DrawState& state, uint64_t upload_tag, DrawPrep* prep,
-               std::vector<VertexCopy>* copies, std::vector<AuditRange>* audit);
+               std::vector<VertexCopy>* copies, std::vector<AuditRange>* audit,
+               std::vector<uint8_t>* memexport_guest);
   void BeginCopySegment();
   // Guest thread, at a marked Swap: audit the draws of the next `frames` frames. The render
   // thread logs those frames (LogFrames), reads back the shared memory each audited draw reads
