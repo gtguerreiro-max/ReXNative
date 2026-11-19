@@ -1042,7 +1042,32 @@ bool RenderTargets::AliasDepth(CommandStream* list, RenderTarget* rt) {
       continue;
     src = a.get();
   }
-  if (!src || !InitAliasDepth()) return false;
+  if (!src || !DepthPass(list, src, rt, step_x, step_y)) return false;
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative RT: depth of the 1x surface at base {} pitch {} copied into the "
+                      "{}x MSAA surface over it (pitch {}): EDRAM aliasing",
+                      src->edram_base, src->pitch, rt->edram_samples, rt->pitch);
+  if (log_)
+    std::fprintf(log_, "rt depth alias: base %u pitch %u -> pitch %u x%u\n", src->edram_base,
+                 src->pitch, rt->pitch, rt->edram_samples);
+  return true;
+}
+
+bool RenderTargets::CopyDepth(CommandStream* list, RenderTarget* src, RenderTarget* dst) {
+  if (!src || !dst || src == dst || !src->depth || !dst->depth || dst->samples != 1) return false;
+  Transition(list, dst, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+  if (dst->pending_count) Flush(list, dst);
+  if (!DepthPass(list, src, dst, 1, 1)) return false;
+  dst->depth_seq = ++depth_seq_;
+  if (log_)
+    std::fprintf(log_, "rt depth copy: base %u pitch %u (scene) -> full-size target\n",
+                 dst->edram_base, dst->pitch);
+  return true;
+}
+
+bool RenderTargets::DepthPass(CommandStream* list, RenderTarget* src, RenderTarget* rt,
+                              uint32_t step_x, uint32_t step_y) {
+  if (!InitAliasDepth()) return false;
   const bool source_ms = src->samples > 1;
   const uint32_t pso_key = uint32_t(rt->view_format) << 8 | rt->samples << 1 | source_ms;
   ComPtr<ID3D12PipelineState>& pso = alias_pso_[pso_key];
@@ -1106,13 +1131,6 @@ bool RenderTargets::AliasDepth(CommandStream* list, RenderTarget* rt) {
   list->RSSetScissorRects(1, &sc);
   list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list->DrawInstanced(3, 1, 0, 0);
-  REXNATIVE_LOG_FIRST(4, INFO,
-                      "ReXNative RT: depth of the 1x surface at base {} pitch {} copied into the "
-                      "{}x MSAA surface over it (pitch {}): EDRAM aliasing",
-                      src->edram_base, src->pitch, rt->edram_samples, rt->pitch);
-  if (log_)
-    std::fprintf(log_, "rt depth alias: base %u pitch %u -> pitch %u x%u\n", src->edram_base,
-                 src->pitch, rt->pitch, rt->edram_samples);
   return true;
 }
 

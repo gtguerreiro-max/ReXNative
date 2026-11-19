@@ -4953,6 +4953,28 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const auto sc = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
   PipelineKey key = BuildPipelineKey(regs, prim, mods, vst, pst, strip_cut, rasterization,
                                      polygonal, sc, depth_control, color_mask, targets);
+  // A draw after the upscaled resolve that tests the scene's depth without writing it (copied
+  // over by Upscaler::EnterPostScene): the scene drew it with the upscaler's sub-pixel jitter
+  // (and at the render size), this draw has neither, and on a slope the same surface lands on
+  // either side of it. Asura's Wrath redraws its hero this way with "greater or equal", which
+  // would fail on part of each slope. An offset of the slope over the largest error (half a render pixel on
+  // each axis, twice that when the depth was upscaled) toward the test's passing side.
+  if (const Upscaler* up = r.upscaler();
+      up && up->upscaled_this_frame() && up->post_scene() && key.depth_enable &&
+      !key.depth_write && Upscaler::IsScene(sdr.rb_surface_info)) {
+    const auto func = D3D12_COMPARISON_FUNC(key.depth_func);
+    const int toward =
+        func == D3D12_COMPARISON_FUNC_GREATER || func == D3D12_COMPARISON_FUNC_GREATER_EQUAL ? 1
+        : func == D3D12_COMPARISON_FUNC_LESS || func == D3D12_COMPARISON_FUNC_LESS_EQUAL ? -1
+                                                                                        : 0;
+    if (toward) {
+      const RenderScale render = up->scale();
+      const float ratio = std::max(targets.scale.factor(0) / render.factor(0),
+                                   targets.scale.factor(1) / render.factor(1));
+      key.slope_scaled_depth_bias += float(toward) * (ratio > 1.01f ? 2.0f * ratio : 1.0f);
+      key.depth_bias += 2 * toward;
+    }
+  }
   const uint32_t draw_index = frame_draws++;
   bool debug_skip = (debug_max_draws && draw_index >= debug_max_draws) ||
                     (!(debug_mask & kDebugNoMotion) && draw_index >= debug_skip_from &&

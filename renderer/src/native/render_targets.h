@@ -237,6 +237,11 @@ class RenderTargets {
   // missing (resolve sources). nullptr for an invalid format.
   RenderTarget* GetColor(const SurfaceRegs& regs, uint32_t index, uint32_t height);
   RenderTarget* GetDepth(const SurfaceRegs& regs, uint32_t height);
+  // Copies `src`'s depth into `dst` (1x, both at their own scales over the same guest pixels;
+  // stencil is left) after `dst`'s pending clears, which are older: the upscaler's scene depth
+  // into the surface's full-size target (Upscaler::EnterPostScene). Returns whether it recorded
+  // calls.
+  bool CopyDepth(CommandStream* list, RenderTarget* src, RenderTarget* dst);
 
   // Host width of a surface of `pitch`: the pitch, or the right edge of the predicated tiles
   // drawn on it when they lie side by side (Clear learns it from BeginTiling's clear). The
@@ -336,6 +341,10 @@ class RenderTargets {
   // it recorded calls.
   bool AliasDepth(CommandStream* list, RenderTarget* rt);
   bool InitAliasDepth();
+  // AliasDepth's and CopyDepth's pass: `src`'s depth into `rt`, `step` source pixels a target
+  // pixel's samples (1, 1 for a 1x target).
+  bool DepthPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, uint32_t step_x,
+                 uint32_t step_y);
   // EDRAM aliasing across color formats: a surface written in one format and read in another
   // at the same base, pitch and MSAA takes the same EDRAM bits, which separate host targets
   // (keyed by host format) do not share. Unreal Engine 3 (Brothers - A Tale of Two Sons)

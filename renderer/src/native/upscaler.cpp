@@ -586,14 +586,27 @@ bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const
       recorded = true;
     }
   }
-  // Depth: the upscaled resolve's clear; otherwise what the full-size target holds (a game that
-  // keeps testing the scene's depth after the resolve draws against it).
+  // Depth: the upscaled resolve's clear; otherwise the scene's own depth, which the EDRAM keeps
+  // after a colour resolve, copied into the full-size target (the scene drew into the
+  // upscaler's). Asura's Wrath draws its hero's lighting after the resolve, in additive layers
+  // that test the scene pass's depth without writing any: against the full-size target's stale
+  // depth every layer passed, his far arm and his insides over the near ones, and he looked
+  // see-through (the stock renderer kept the depth: its layers behind failed).
   if (resolve_clear_flags_ & 0x200) {
     ClearParams cp;
     cp.flags = 0x30;
     cp.depth = resolve_clear_depth_;
     cp.stencil = resolve_clear_stencil_;
     targets.Clear(list, regs, 0, true, height, cp);
+  } else if (scene_depth_) {
+    if (RenderTarget* depth = targets.GetDepth(regs, height);
+        depth && targets.CopyDepth(list, scene_depth_, depth)) {
+      REXNATIVE_LOG_FIRST(1, INFO,
+                          "ReXNative upscaler: the scene's depth copied to the full-size target "
+                          "for the draws after the upscaled resolve");
+      targets.MarkListStateLost();
+      recorded = true;
+    }
   }
   return recorded;
 }

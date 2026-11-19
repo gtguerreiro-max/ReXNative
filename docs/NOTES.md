@@ -515,6 +515,25 @@ quarter of the two-frame motion) and the HUD stays sharp. Syndicate's first miss
 colours each frame, which FidelityFX's scene change detection takes for cuts (a copy, not an
 interpolation): right for such frames.
 
+## The scene's depth after the upscaled resolve
+
+With the upscaler on (the Steam Deck's default), Asura's Wrath's hero looked see-through, his
+far arm and his insides over the near ones, while the stock renderer and the native one without
+the upscaler drew him solid. The game draws him twice a frame: in the scene's pass, dark, writing
+depth, and after its colour resolve again, as additive lighting layers that test the depth with
+"greater or equal" without writing it, so only his front surfaces take the light. A RenderDoc
+capture of each (`rdoc.ps1 history` on the depth target at a pixel of his arm) showed the
+difference: in ReXGlue's renderer the layers behind failed against the scene's depth (0.0059),
+in the native one the depth held 0 and every layer passed. The scene's draws go into the
+upscaler's own targets (RenderTargets::OverrideScene); after the upscaled resolve the surface
+takes its full-size targets again (Upscaler::EnterPostScene), and the full-size depth target
+never had the scene's depth. EnterPostScene now copies it there (RenderTargets::CopyDepth,
+AliasDepth's pass) unless the resolve cleared it. The scene drew that depth with the upscaler's
+sub-pixel jitter and the draws after it have none, so a redrawn surface lands up to half a pixel's
+slope on either side of its own depth; those draws (testing depth without writing it) take a
+slope's worth of depth bias toward passing (draw.cpp), so that a surface is not lost on part
+of its slopes.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV
