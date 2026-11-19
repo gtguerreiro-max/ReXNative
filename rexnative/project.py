@@ -461,8 +461,51 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
             subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', dst, src], capture_output=True)
         else:
             os.symlink(src, dst)
+    stamp(run, sdk_install)
     log('%s: %s' % (name, os.path.join(run, '%s.exe' % name)))
     return os.path.join(run, '%s.exe' % name)
+
+
+STAMP = 'rexnative-build.json'
+
+
+def sdk_identity(sdk_install):
+    """The SDK install as built: a hash of the name, size and time of its codegen tool and DLLs
+    (bin/), which change together when the SDK is built again with new patches."""
+    import hashlib
+    h = hashlib.sha1()
+    b = os.path.join(sdk_install, 'bin')
+    for f in sorted(glob.glob(os.path.join(b, '*.dll')) + glob.glob(os.path.join(b, 'rexglue.exe'))):
+        st = os.stat(f)
+        h.update(('%s %d %d;' % (os.path.basename(f).lower(), st.st_size, int(st.st_mtime))).encode())
+    return h.hexdigest()[:16]
+
+
+def stamp(run, sdk_install):
+    """run/rexnative-build.json: what this build was made with, the ReXNative commit of this
+    checkout (and whether its renderer/, rexnative/ or sdk/ had changes not committed) and the
+    SDK install, so a game built before a fix can be told from one built after it."""
+    import json
+    import time
+    info = {'built': int(time.time()), 'rexnative': None, 'rexnative_date': None, 'dirty': None,
+            'checkout': HERE, 'sdk_install': sdk_install, 'sdk': None}
+    try:
+        out = subprocess.run(['git', '-C', HERE, 'log', '-1', '--format=%H %ct'], capture_output=True,
+                             text=True, timeout=30).stdout.split()
+        if len(out) == 2:
+            info['rexnative'], info['rexnative_date'] = out[0], int(out[1])
+        st = subprocess.run(['git', '-C', HERE, 'status', '--porcelain', '--untracked-files=no', '--',
+                             'renderer', 'rexnative', 'sdk'], capture_output=True, text=True,
+                            timeout=30).stdout
+        info['dirty'] = bool(st.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    try:
+        info['sdk'] = sdk_identity(sdk_install)
+    except OSError:
+        pass
+    with open(os.path.join(run, STAMP), 'w', encoding='utf-8') as f:
+        json.dump(info, f, indent=1)
 
 
 # Kernel / XAM imports the runtime does not export (the link fails on them): stubs in the game,

@@ -99,7 +99,7 @@ the collection's copy changes.
 | `title-update <work>` | the title updates listed, nothing downloaded |
 | `dlc <work>/<game> <packages, folders or archives>` | its downloadable content, where the game finds it: `run/userdata/0000000000000000/<title id>/00000002` with its header files; `deck` takes it along |
 | `dlc <work>[/<game>] [--list]` | the game's (or every game's) downloadable content from the Internet Archive's Xbox 360 DLC collection, fetched and installed; `--list` downloads nothing |
-| `project <work>/<game> --build` | rebuild one game; the game's own hooks in `src/game_*.cpp` are built with it |
+| `project <work>/<game> --build` | rebuild one game; the game's own hooks in `src/game_*.cpp` are built with it. `run/rexnative-build.json` says what it was built with: the ReXNative commit (and `dirty` when `renderer/`, `rexnative/` or `sdk/` had changes not committed) and the SDK install (`sdk`, a hash of its `bin/`), so a game built before a fix can be told apart |
 | `survey --work <work>` | a table of the prepared games |
 | `deck <work>/<game>...` | built games onto a Steam Deck ([STEAM_DECK.md](STEAM_DECK.md)) |
 | `adapt` | only the layer, for a ReXGlue project of your own (below) |
