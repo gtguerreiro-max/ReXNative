@@ -13,7 +13,14 @@ REXCVAR_DEFINE_BOOL(rexnative_replace_draws, true, "ReXNative",
                     "(DrawIndexedVertices): keep the device state, skip its PM4 packets");
 REXCVAR_DECLARE(bool, rexnative);
 
+// Without ShaderLoad in the layer (REXNATIVE_SHADER_LOAD_FOUND 0) there is nothing to call and
+// the replacement stays off (sub_00000000 would not link). Layers before the macro have it.
+#if !defined(REXNATIVE_SHADER_LOAD_FOUND) || REXNATIVE_SHADER_LOAD_FOUND
+#define REXNATIVE_HAS_SHADER_LOAD 1
 REX_EXTERN(REXNATIVE_SUB(REXNATIVE_SHADER_LOAD));
+#else
+#define REXNATIVE_HAS_SHADER_LOAD 0
+#endif
 
 namespace rexnative::guest_d3d {
 
@@ -36,6 +43,11 @@ namespace rexnative::guest_d3d {
 // MayDropPackets): on a device that records a command buffer the packets it skips would be
 // missing from the buffer RunCommandBuffer runs later (cmd_replay.h).
 bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
+#if !REXNATIVE_HAS_SHADER_LOAD
+  (void)ctx;
+  (void)base;
+  return false;
+#else
   // Start-up flags: the renderer switch changes NativeRenderer::Live, not these.
   // The replacement reads the public signature's registers: not for a game whose
   // DrawIndexedVertices takes them elsewhere (game_layer.h kRemapDrawIndexedVertices).
@@ -59,6 +71,7 @@ bool DrawIndexed(PPCContext& ctx, uint8_t* base) {
   }
   std::memset(masks + 16, 0, 24);  // masks +16, +24, +32
   return true;
+#endif
 }
 
 }  // namespace rexnative::guest_d3d
