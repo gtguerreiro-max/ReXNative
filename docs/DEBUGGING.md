@@ -27,6 +27,9 @@ window and drives it to the problem; then each experiment takes seconds on the r
   motion (phase correlation of a strip). `rexnative.frame_generation_indicators` draws
   FidelityFX's marks on the generated frames (red band: reset, blue: scene change), and the
   log's frame statistics count the frames generated and the ones prepared in reset mode.
+  The generated frames are captured for eight frames in a row, so each lies between two real
+  ones it can be checked against: where it departs from their mean by more than they differ
+  from each other, the display flickers.
 
 ## RenderDoc
 

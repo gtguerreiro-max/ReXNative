@@ -24,6 +24,17 @@
 // all (in that session's logs every pair this picks has the transform bit for bit); ties keep
 // the order.
 //
+// Some games batch the copies, several to a draw, and fill the batches' slots anew every frame:
+// Sega Rally Revo draws its trees four to a draw, each one's matrix in its own registers (c7-c9,
+// c23-c25, c39-c41, c55-c57), sorted again each frame, so the tree in a draw's fourth slot was in
+// another's first the frame before (2026-11-19 capture). No draw of the previous frame then holds
+// this one's transforms, and the one matched gave its trees motion of hundreds of pixels on a
+// still view: frame generation drew them where they were not, every other frame, a flicker.
+// Registers the same in two copies of the previous frame are the frame's (the camera's,
+// its time); the others are each copy's own. When the copy matched has its own registers far
+// from this draw's (OtherCopies), it holds other objects: the draw moves with the camera instead,
+// its own registers kept and the frame's at their previous values, as static copies do.
+//
 // The frames' draws are kept in order, in arrays read and written front to back, which a
 // hash table probed at random spots for every draw is not (td-499 perf: three cache misses a
 // draw, 6 % of the render thread). The constants stay in the upload memory they were committed
@@ -143,6 +154,7 @@ class MotionHistory {
     bool several = false;
     bool use_loose = false;
     bool nearest = false;  // best taken over an equal one for its anchor
+    size_t other = n;      // another candidate than the first (OtherCopies)
     auto consider = [&](size_t i) {
       const Draw& p = previous_[i];
       if ((use_loose ? p.loose != loose : p.identity != identity) || p.matched) return;
@@ -150,6 +162,7 @@ class MotionHistory {
         best = first = i;
         return;
       }
+      if (other == n) other = i;
       if (!several) {
         several = true;
         best_same = SameRegisters(previous_[best], floats, size);
@@ -187,6 +200,13 @@ class MotionHistory {
     }
     far_ = compared_ = false;
     if (best == n) return Camera(now, floats, size);
+    // Copies batched into draws whose slots are filled anew each frame (the header): the draw
+    // matched holds other objects; the camera's motion instead.
+    if (several && other != n && OtherCopies(floats, size, best, other)) {
+      ++batch_shuffles_;
+      cursor_ = best + 1;  // the window stays in step with the frame's order
+      return nullptr;
+    }
     // A draw whose first vertex was far from this one's is another mesh, not this one moved: Jet
     // Set Radio clips its polygons on the CPU, so the road's index count changes from frame to
     // frame, and the nearest draw of this frame's count was a building a third of the screen
@@ -211,6 +231,8 @@ class MotionHistory {
     return &previous_[best].constants;
   }
   Found found() const { return found_; }
+  // Draws this frame matched with copies holding other objects (OtherCopies), and resets it.
+  uint32_t TakeBatchShuffles() { return std::exchange(batch_shuffles_, 0); }
   // The last Match's previous draw, its place in the previous frame (debugging), and the frame's.
   size_t last_index() const { return last_index_; }
   size_t previous_count() const { return previous_.size(); }
@@ -265,6 +287,35 @@ class MotionHistory {
     return same;
   }
 
+  // Whether the previous frame's copy `best` holds other objects than this draw (`floats`):
+  // its own registers (those that differ between `best` and the copy `other` of the same frame;
+  // the ones the same in both are the frame's) far from this draw's in at least 3 components
+  // (more than 0.5 apart and a quarter of their size: another object's matrix, where an object
+  // that moved changes by less in a frame). Then camera_floats() is this draw's constants with
+  // the frame's registers at their previous values (Found::kCamera).
+  bool OtherCopies(const uint8_t* floats, uint32_t size, size_t best, size_t other) {
+    const Draw& b = previous_[best];
+    const Draw& o = previous_[other];
+    if (b.size != size || o.size != size) return false;
+    const uint8_t* then = previous_floats_.data() + b.offset;
+    const uint8_t* copy = previous_floats_.data() + o.offset;
+    uint32_t apart = 0;
+    for (uint32_t i = 0; i + 4 <= size && apart < 3; i += 4) {
+      if (!std::memcmp(then + i, copy + i, 4)) continue;  // the frame's
+      float a, t;
+      std::memcpy(&a, floats + i, 4);
+      std::memcpy(&t, then + i, 4);
+      const float d = std::fabs(a - t);
+      if (std::isfinite(d) && d > 0.5f && d > 0.25f * std::max(std::fabs(a), std::fabs(t))) ++apart;
+    }
+    if (apart < 3) return false;
+    camera_floats_.assign(floats, floats + size);
+    for (uint32_t r = 0; r < size; r += 16)
+      if (!std::memcmp(then + r, copy + r, 16)) std::memcpy(camera_floats_.data() + r, then + r, 16);
+    found_ = Found::kCamera;
+    return true;
+  }
+
   // A draw without one of its identity in the previous frame (a mesh that came into view or
   // changed its level of detail) moves with the camera: camera_floats() is its own float
   // constants with those the last matched draw of its shader changed since the previous frame
@@ -291,7 +342,9 @@ class MotionHistory {
     for (uint32_t r = 0; r < size; r += 16) {
       if (!std::memcmp(ref_now + r, ref_then + r, 16))
         kept = true;
-      else
+      else if (!std::memcmp(ref_now + r, floats + r, 16))
+        // Changed since the previous frame and shared with this draw: the frame's. A register
+        // of the reference draw's own (its transform) stays this draw's.
         std::memcpy(camera_floats_.data() + r, ref_then + r, 16);
     }
     if (kept) found_ = Found::kCamera;
@@ -309,7 +362,8 @@ class MotionHistory {
   bool compared_ = false;  // the last Match compared the anchors of its draw and the one found
   uint64_t frame_ = UINT64_MAX - 1;
   Found found_ = Found::kNone;
-  std::vector<uint8_t> camera_floats_;  // Camera's
+  std::vector<uint8_t> camera_floats_;  // Camera's and OtherCopies'
+  uint32_t batch_shuffles_ = 0;         // TakeBatchShuffles
   // previous_ by loose identity, built at the first draw the window does not find this frame.
   std::unordered_map<uint64_t, std::vector<uint32_t>> by_loose_;
   bool by_loose_built_ = false;

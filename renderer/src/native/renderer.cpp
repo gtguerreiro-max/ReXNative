@@ -1529,9 +1529,14 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     d.SetGeneratedFrame(fg->Generate(d.command_list(), frame_index_,
                                      {r.left, r.top, r.width, r.height}, hudless.image));
     if (hudless.image) fg->MeasureHudless(d.command_list(), frame_index_, d.frame_fence());
-    if (present_->capturing(frame_index_))
+    // A capture takes this frame's and the next 7 frames' images, one after the other (the
+    // presenter's own captures skip a frame while one is written).
+    if (present_->capturing(frame_index_) && !fg_captures_left_) fg_captures_left_ = 8;
+    if (fg_captures_left_) {
+      --fg_captures_left_;
       fg->Capture(d.command_list(), frame_index_, d.frame_fence(),
                   REXCVAR_GET(rexnative_capture_dir), hudless.image != nullptr);
+    }
   }
   // The frame's texture copies read upload memory the untile workers fill.
   const uint64_t u0 = NowNs();

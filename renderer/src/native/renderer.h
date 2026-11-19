@@ -338,6 +338,7 @@ class NativeRenderer {
   std::unique_ptr<Upscaler> upscaler_;
   std::unique_ptr<FrameGeneration> frame_generation_;  // with the pacer
   bool frame_generation_on_ = false;  // --rexnative_frame_generation at this frame's start
+  uint32_t fg_captures_left_ = 0;     // frames still to capture (FrameGeneration::Capture)
   std::unique_ptr<NeuralPass> neural_;                 // this port: --rexnative_dlss5
   // The scene's camera for the FidelityFX effects, found each frame by FindCamera (the defaults
   // until one matches); the upscaler reads it through the pointer set_camera gave it.

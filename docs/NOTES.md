@@ -342,6 +342,19 @@ matches were refused starts the upscaler's history over (`Upscaler::NoteMotionMa
 frames of its attract demo the refused fraction stayed under a tenth in 439, at 20 to 30 % in the
 fastest pans, and above 90 % once, at a cut.
 
+Sega Rally Revo's trees flickered with frame generation: in the generated frames they stood
+where they were not. Its trees are drawn four to a draw, each one's matrix in its own registers
+(c7-c9, c23-c25, c39-c41, c55-c57), and the batches are filled anew every frame: in a RenderDoc
+capture the tree in a draw's fourth slot had been in another draw's first the frame before. The
+draw matched was the right batch by order, but held other trees: their motion was 365 pixels on
+a view that turned by 17. When the copy matched has its own registers (those that differ between
+two copies of the previous frame) far from the draw's, in 3 components or more (more than 0.5
+apart and a quarter of their size), it holds other objects, and the draw moves with the camera:
+its own registers kept, the frame's (the same in both copies: the camera's, its time) at their
+previous values. The trees' motion is then the ground's (0.1 to 0.2 pixels in a slow pan), and
+the camera fallback for a draw with no match copies only the registers it shares with the draw
+it is taken from, not that draw's own transform.
+
 ## Inline draws, found at run time
 
 `rexnative.inline_draws_auto` (on by default) watches each Swap: 30 frames in a row with at most
