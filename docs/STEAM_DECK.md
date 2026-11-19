@@ -34,6 +34,11 @@ FSR 4 upgrade, FSR 3.1 without it): on both Overlords it kept their 30 FPS and l
 the console's MSAA. Settings changed on the Deck (the HUD: View + Menu) are kept by later
 installs.
 
+Frame generation (AMD FSR, the HUD's Upscaler page) turns on and off while the game runs: the
+game at 30 FPS, the screen at 60. In Syndicate's first mission (1,500 to 1,960 draws a frame) the
+Deck kept 33.3 ms a frame with it on, every frame with a generated one before it (2026-11-19).
+It adds input delay: a frame waits for the next one, which the generated frame goes between.
+
 - `<work>/<game>/deck.toml` adds or replaces settings for the Deck alone, such as
   `[rexnative] classic = true` for a game ReXGlue's renderer draws better: it starts on that
   renderer, and the HUD's Renderer (View + Menu) switches to the native one and back while it

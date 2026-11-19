@@ -74,6 +74,7 @@ struct FrameStats {
   // at the Swap: the render thread's time (the guest thread's without it).
   uint64_t draw_ns = 0, clear_ns = 0, resolve_ns = 0;
   uint64_t swap_ns = 0;  // ExecuteSwap: record, submit, present
+  uint64_t generated = 0;  // 1: a generated frame was presented before it (frame_generation.h)
   // Guest thread: time in the On* calls (render thread mode: capturing and queueing) and the
   // part of it spent waiting for the render thread.
   uint64_t hook_ns = 0, hook_wait_ns = 0;
@@ -335,7 +336,8 @@ class NativeRenderer {
   std::unique_ptr<Presenter> present_;
   std::unique_ptr<OcclusionQueries> occlusion_;  // primary mode with --rexnative_occlusion
   std::unique_ptr<Upscaler> upscaler_;
-  std::unique_ptr<FrameGeneration> frame_generation_;  // --rexnative_frame_generation, paced
+  std::unique_ptr<FrameGeneration> frame_generation_;  // with the pacer
+  bool frame_generation_on_ = false;  // --rexnative_frame_generation at this frame's start
   std::unique_ptr<NeuralPass> neural_;                 // this port: --rexnative_dlss5
   // The scene's camera for the FidelityFX effects, found each frame by FindCamera (the defaults
   // until one matches); the upscaler reads it through the pointer set_camera gave it.

@@ -31,9 +31,14 @@
 // loading screen) is presented alone, and the next one starts the generation over: a frame ID not
 // one more than the last resets it.
 //
+// Live: --rexnative_frame_generation is read at each frame's start (NativeRenderer::BeginFrame),
+// so the settings HUD turns it on and off in game. On, the next Prepare makes the context; off,
+// Release drops it (its images and FidelityFX's, about 60 MB at 1280x800) and the frames are
+// presented alone again, the pacer back at the display's rate.
+//
 // Threading: the thread that records the frames (NativeRenderer::Execute*) but the FidelityFX
 // dispatches, which run on the device's command stream (command_stream.h); the context is made
-// again only with the stream idle (Resize).
+// again and released only with the stream idle (Resize, Release).
 #pragma once
 
 #include "d3d12_device.h"
@@ -49,7 +54,7 @@ namespace rexnative {
 
 class FrameGeneration {
  public:
-  // Whether --rexnative_frame_generation asks for it.
+  // Whether --rexnative_frame_generation asks for it now (live).
   static bool Requested();
 
   FrameGeneration(D3D12Device& device, Resolver& resolver) : device_(device), resolver_(resolver) {}
@@ -57,8 +62,11 @@ class FrameGeneration {
   FrameGeneration(const FrameGeneration&) = delete;
   FrameGeneration& operator=(const FrameGeneration&) = delete;
 
-  // Loads the FidelityFX API; false (logged) without it.
+  // Its descriptors; false (logged) on failure. The FidelityFX API is loaded at the first
+  // Prepare, when frame generation is first turned on.
   bool Initialize();
+  // Frame generation turned off: waits for the GPU and drops the context and its images, once.
+  void Release();
 
   // Upscaler::Upscale, after the upscaling of frame `frame`: records the preparation of its depth
   // and motion (in COMPUTE_READ) into `list`. The context and images follow the back buffers'

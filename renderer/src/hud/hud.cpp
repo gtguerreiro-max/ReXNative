@@ -219,12 +219,13 @@ std::vector<Option> MakeOptions() {
                remake,
                "Native AA keeps the game's resolution and only anti-aliases; the others render "
                "smaller (faster) and rebuild the picture."});
-  o.push_back({"Upscaler", "frame_generation", "Frame generation (FSR)", on_off, true,
+  o.push_back({"Upscaler", "frame_generation", "Frame generation (FSR)", on_off, false,
                [] { return Flag("rexnative_frame_generation"); },
                [](const std::string& v) { return Bool("rexnative_frame_generation", v); },
                nullptr,
                "AMD FSR frame generation: a generated frame before each of the game's, for twice "
-               "the frames shown. Needs the upscaler; best from 30 fps up."});
+               "the frames shown (the game at half the screen's rate: 30 for 60 on the Steam "
+               "Deck). Needs the upscaler; best from 30 fps up. Takes effect at once."});
   o.push_back({"DLSS 5", "dlss5", "DLSS 5 neural rendering", on_off, false,
                [] { return Flag("rexnative_dlss5"); },
                [](const std::string& v) { return Bool("rexnative_dlss5", v); }, nullptr,

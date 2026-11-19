@@ -37,6 +37,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <mutex>
 #include <span>
 #include <string>
@@ -170,7 +171,7 @@ struct NativeRenderer::Csv {
   std::unique_ptr<AsyncFile> file;
   // Window for the log summary.
   uint64_t frames = 0, draws = 0, draw_ns = 0, swap_ns = 0, frame_ns = 0, hook_ns = 0,
-           hook_wait_ns = 0;
+           hook_wait_ns = 0, generated = 0;
   // Profile: the window's stage ticks.
   uint64_t stage_ticks[profile::kStageCount] = {}, track_calls = 0;
   TextureCache::Stats tex_prev;                  // texture counters at the previous CSV row
@@ -474,15 +475,16 @@ bool NativeRenderer::Initialize() {
   resolver_ = std::make_unique<Resolver>();
   if (!resolver_->Initialize(device_->device(), rt_.get(), device_->command_queue())) return false;
   resolver_->set_gpu_timer(gpu_timer_);
-  if (FrameGeneration::Requested()) {
-    // The generated frames are paced by FIFO and the pacer's display clock (frame_generation.h).
-    if (!paced) {
-      REXLOG_ERROR("ReXNative: frame generation needs the frame pacer (--rexnative)");
-    } else if (frame_generation_ = std::make_unique<FrameGeneration>(*device_, *resolver_);
-               !frame_generation_->Initialize()) {
+  // The generated frames are paced by FIFO and the pacer's display clock (frame_generation.h):
+  // with the pacer, frame generation is there to turn on and off in game (BeginFrame).
+  if (paced) {
+    frame_generation_ = std::make_unique<FrameGeneration>(*device_, *resolver_);
+    if (!frame_generation_->Initialize()) {
       REXLOG_ERROR("ReXNative: frame generation unavailable");
       frame_generation_.reset();
     }
+  } else if (FrameGeneration::Requested()) {
+    REXLOG_ERROR("ReXNative: frame generation needs the frame pacer (--rexnative)");
   }
   // This port: DLSS 5 (neural.h), on the scene after DLAA or before the HUD; the upscaler takes
   // it as it is made.
@@ -634,7 +636,7 @@ void NativeRenderer::SwitchUpscaler(bool on) {
       Upscaler::NoteOn(false);
       return;
     }
-    upscaler_->set_frame_generation(frame_generation_.get());
+    upscaler_->set_frame_generation(frame_generation_on_ ? frame_generation_.get() : nullptr);
     upscaler_->set_camera(&camera_);
     upscaler_->set_gpu_timer(gpu_timer_);
     upscaler_->set_neural(neural_.get());
@@ -713,6 +715,15 @@ void NativeRenderer::BeginFrameModules() {
       SwitchUpscaler(false);
     }
   }
+  // Frame generation, live (the settings HUD): the frame's choice, for the upscaler's Prepare
+  // and its frame time; off, its context is dropped.
+  const bool generate = frame_generation_ && FrameGeneration::Requested();
+  if (generate != frame_generation_on_) {
+    frame_generation_on_ = generate;
+    if (frame_generation_ && !generate) frame_generation_->Release();
+    if (upscaler_) upscaler_->set_frame_generation(generate ? frame_generation_.get() : nullptr);
+    if (generate) REXLOG_INFO("ReXNative frame generation: on");
+  }
   const uint64_t fence = device_->frame_fence(), done = device_->completed_fence();
   rt_->BeginFrame(frame_index_, fence, done);
   rt_->SuspendSceneOverride(false);  // the scene at the upscaler's size again (EnterPostScene)
@@ -724,7 +735,7 @@ void NativeRenderer::BeginFrameModules() {
     const double hz =
         std::clamp(std::atof(rex::cvar::GetFlagByName("ui.video_mode_refresh_rate").c_str()),
                    24.0, 240.0);
-    const uint32_t presents = frame_generation_ ? 2 : device_->present_interval();
+    const uint32_t presents = frame_generation_on_ ? 2 : device_->present_interval();
     if (u->BeginFrame(frame_index_, device_->gpu_busy_ns(), uint64_t(1e9 * presents / hz)))
       rt_->SetSceneScale(u->scale());
   }
@@ -1499,7 +1510,7 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   const bool shown = !incomplete && d.has_swapchain();
   FrameGeneration* const fg = frame_generation_.get();
   const bool generate = shown && fg && fg->prepared(frame_index_);
-  camera_scan_ = (upscaler_ || fg) ? 8 : 0;  // FindCamera's budget in the next frame's draws
+  camera_scan_ = (upscaler_ || frame_generation_on_) ? 8 : 0;  // FindCamera's budget, next frame
   SwapCopy hudless;
   if (generate) {
     d.SetFrameImage(fg->image(), fg->image_rtv());
@@ -1511,6 +1522,7 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   if (fg) fg->OnSwap(present_->front_buffer_base());
   if (neural_) neural_->OnSwap(present_->front_buffer_base());
   if (generate) {
+    stats_.generated = 1;
     const ImageRect& r = present_->image_rect();
     d.SetGeneratedFrame(fg->Generate(d.command_list(), frame_index_,
                                      {r.left, r.top, r.width, r.height}, hudless.image));
@@ -1722,6 +1734,7 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   w.frame_ns += frame_ns;
   w.hook_ns += s.hook_ns;
   w.hook_wait_ns += s.hook_wait_ns;
+  w.generated += s.generated;
   if (profile::On()) {
     for (uint32_t i = 0; i < profile::kStageCount; ++i) w.stage_ticks[i] += profile::g.ticks[i];
     w.track_calls += profile::g.track_calls;
@@ -1734,11 +1747,14 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   REXLOG_INFO(
       "ReXNative: frames {} | per frame: draws {:.1f}, draw CPU {:.1f} us "
       "({:.4f} us/draw), swap {:.1f} us, frame {:.2f} ms, game thread {:.1f} us "
-      "(waiting {:.1f} us), begin to shown {:.1f} ms (latency {})",
+      "(waiting {:.1f} us), begin to shown {:.1f} ms (latency {}){}",
       frame_index_, w.draws / n, w.draw_ns / 1000.0 / n,
       w.draws ? w.draw_ns / 1000.0 / double(w.draws) : 0.0, w.swap_ns / 1000.0 / n,
       w.frame_ns / 1e6 / n, w.hook_ns / 1000.0 / n, w.hook_wait_ns / 1000.0 / n, shown_ms,
-      pacer_ ? pacer_->frame_latency() : 0);
+      pacer_ ? pacer_->frame_latency() : 0,
+      frame_generation_on_ || w.generated
+          ? std::format(", frame generation: {} of {} frames", w.generated, w.frames)
+          : std::string());
   if (profile::On() && w.draws) {
     // ns per draw for each stage (the hook-side ones are per draw too, for comparison).
     std::string line;
@@ -1759,7 +1775,8 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
       REXLOG_INFO("ReXNative GPU: shader {:016X} ucode:\n{}", hash,
                   draw_->ShaderDisassembly(hash));
   }
-  w.frames = w.draws = w.draw_ns = w.swap_ns = w.frame_ns = w.hook_ns = w.hook_wait_ns = 0;
+  w.frames = w.draws = w.draw_ns = w.swap_ns = w.frame_ns = w.hook_ns = w.hook_wait_ns =
+      w.generated = 0;
 }
 
 void NativeRenderer::ResetFrameCounters() {

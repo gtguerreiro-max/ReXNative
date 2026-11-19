@@ -24,7 +24,11 @@ change it.
   stays up on both, so the game can go back to Native the same way.
 - **Upscaler page:** switches the upscaler, its type (automatic, DLSS or FSR), the FSR version
   and the mode (native anti-aliasing to ultra performance) while the game runs, and says what
-  runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720").
+  runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). Frame generation (AMD FSR) switches there
+  too while the game runs (`rexnative.frame_generation`): a generated frame before each of the
+  game's, the game at half the screen's rate (30 FPS for 60 on the Steam Deck). It needs the
+  upscaler and the frame pacer (`rexnative.frame_latency` above 0); the log's frame statistics
+  say how many frames it generated ("frame generation: 120 of 120 frames").
 - **DLSS 5 page:** picks a look, one set of DLSS 5's settings per kind of game (Cinematic,
   Cinematic with two passes, Natural, Stylized, Cel-shaded / 2D, Strong, or Custom), with its
   intensity on top. `project` gives each game the look that suits it (`rexnative/dlss5.py`:

@@ -39,8 +39,6 @@ bool FrameGeneration::Requested() { return REXCVAR_GET(rexnative_frame_generatio
 FrameGeneration::~FrameGeneration() { Destroy(); }
 
 bool FrameGeneration::Initialize() {
-  api_ = LoadFfxApi();
-  if (!api_) return false;
   D3D12_DESCRIPTOR_HEAP_DESC hd = {};
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
   hd.NumDescriptors = 2;
@@ -84,6 +82,14 @@ bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint3
   copy_frame_ = frame;
   copy_ = resolver_.ResolveCopy(list, *front_);
   return true;
+}
+
+void FrameGeneration::Release() {
+  if (!context_ && !image_) return;
+  device_.WaitIdle();
+  Destroy();
+  prepared_frame_ = UINT64_MAX;
+  REXLOG_INFO("ReXNative frame generation: off");
 }
 
 void FrameGeneration::Destroy() {
@@ -166,6 +172,10 @@ void FrameGeneration::Prepare(uint64_t frame, CommandStream* list, const FfxApiR
                               FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D motion_scale,
                               const FfxCamera& camera, float frame_ms, bool reset,
                               bool depth_inverted) {
+  if (!api_ && !(api_ = LoadFfxApi())) {
+    REXNATIVE_WARN_ONCE("ReXNative frame generation: unavailable without the FidelityFX loader");
+    return;
+  }
   if (!device_.has_swapchain() ||
       !Resize(device_.width(), device_.height(), device_.hdr(), depth_inverted, FfxDebug()))
     return;
