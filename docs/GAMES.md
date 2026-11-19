@@ -32,7 +32,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Asura's Wrath (TU 1) | runs to its title screen | not tried (space) |
 | Blur (TU 2) | runs, its intro video plays | not tried (space) |
 | Forza Horizon (TU 4, its DLC) | stops at start-up: its speech and media code is in two XEX DLL modules that are not recompiled yet (ReXGlue's `[[modules]]`), and the title update's patches for them do not match | |
-| SSX (TU 3, its DLC) | its intro video, on ReXGlue's renderer (`rexnative.classic`): the native renderer draws it black | not tried (space) |
+| SSX (TU 3, its DLC) | plays on the native renderer: the intro video, title, menus, the World Tour's first descent, 30 FPS (it drew black while its layer gave the Resolve hook a reference row's category, 2026-11-19) | not tried (space) |
 | Top Spin 4 | not supported yet: `default.xex` is a loader, the game is in XEX DLL modules (as Forza Horizon's speech and media) | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
 

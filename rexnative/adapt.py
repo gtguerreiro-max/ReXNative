@@ -273,6 +273,28 @@ def adapt(target, refs, overrides=None, log=print):
     inner = funcs['ResolveInner']['address']
     if inner and inner != funcs['Resolve']['address']:
         surface = [e for e in surface if e[0] != inner]
+    # A reference's row matched to the address of a hooked function under another name gives it
+    # that row's category, and the hooks take a function's class from its row: SSX's Resolve, the
+    # public wrapper 823518A8, came out as Iron Brigade's fn_826CE9C0 (its own wrapper, kOther),
+    # so no resolve reached the renderer and the screen stayed black. A hooked function of another
+    # class than a draw (Swap, Resolve, Clear, a query, the tiling bracket, the push buffer's) keeps
+    # its own; a draw function only over a row less certain than its match (Minecraft's
+    # DrawIndexedVertices, medium, is a masked match of Iron Brigade's fn_826D6468: the row stays).
+    for canon in prof.FUNCTIONS:
+        a = funcs[canon]['address']
+        want = HOOK_CATS.get(canon, 'kDraw')
+        if not a or canon in NOT_HOOKED + ('RunCommandBuffer',):
+            continue
+        for e in surface:
+            if e[0] != a or e[2] == want:
+                continue
+            if want == 'kDraw' and not (funcs[canon]['confidence'] == 'high' and e[4] != 'high'):
+                continue
+            dropped.append((a, e[1], 'row of %s: %s' % (canon, want), '%s %s' % (e[2], e[5])))
+            if not any(o[1] == canon for o in surface):
+                e[1] = canon
+            e[2] = want
+            e[3], e[4], e[5] = funcs[canon]['how'], funcs[canon]['confidence'], 'hook'
     surface.sort()
 
     # -- device offsets ---------------------------------------------------------------------
