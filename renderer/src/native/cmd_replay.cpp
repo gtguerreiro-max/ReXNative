@@ -19,6 +19,7 @@
 
 #include <rex/cvar.h>
 #include <rex/kernel/heap.h>
+#include <rex/memory/virtual_memory.h>
 #include <rex/logging.h>
 #include "host.h"
 #include <xxhash.h>
@@ -52,11 +53,11 @@ REXCVAR_DEFINE_BOOL(rexnative_inline_draws_follow, false, "ReXNative",
                     "stream between hooked calls (recorded buffers run where no replay saw "
                     "them)");
 REXCVAR_DEFINE_BOOL(rexnative_inline_resolves, true, "ReXNative",
-                    "With rexnative.inline_draws (or its automatic trial): the resolves the "
-                    "stream between hooked calls holds, which no hooked Resolve made (an "
-                    "engine that writes its own, or a D3D path the layer does not hook), are "
-                    "copied too, decoded from the registers; rexnative.inline_draws_auto keeps "
-                    "the walk on for them");
+                    "The resolves a replayed command buffer holds, and with "
+                    "rexnative.inline_draws (or its automatic trial) the ones in the stream "
+                    "between hooked calls, which no hooked Resolve made (an engine that writes "
+                    "its own, or a D3D path the layer does not hook), are copied too, decoded "
+                    "from the registers; rexnative.inline_draws_auto keeps the walk on for them");
 REXCVAR_DEFINE_BOOL(rexnative_cmdbuf_predication, true, "ReXNative",
                     "Replayed command buffers: skip predicated packets when bin select & bin mask "
                     "is 0, as the GPU does (false: run them all)");
@@ -127,14 +128,14 @@ enum Drop : uint32_t {
   kDropInvalid,   // source select 3
   kDropImm,       // immediate indices: unsupported, as in both references
   kDropZero,      // no indices
-  kDropCopy,      // RB_MODECONTROL kCopy: a resolve recorded in the buffer
+  kDropCopy,      // RB_MODECONTROL kCopy: a resolve (rexnative.inline_resolves copies it)
   kDropInternal,  // DRAW_INDX_2: only the D3D's own paths (Clear, Resolve) emit it
   kDropViz,       // PA_SC_VIZ_QUERY enable + kill: a visibility survey, never drawn
   kDropNoVs,      // no vertex shader loaded
   kDropNoIndex,   // DMA indices at address 0
   kDropCount
 };
-constexpr const char* kDropNames[] = {"invalid",      "imm", "zero",  "copy",
+constexpr const char* kDropNames[] = {"invalid",      "imm", "zero",  "resolve",
                                       "d3d_internal", "viz", "no_vs", "no_index"};
 static_assert(std::size(kDropNames) == kDropCount);
 
@@ -315,18 +316,29 @@ uint64_t BinOverride(const std::string& text, uint64_t seed) {
 // entry). Pointers are physical memory's CPU views, which the CPU reads directly: 0xC0000000+
 // in Iron Brigade (16 MB pages), 0xA0000000+ in Midnight Club: Los Angeles (64 KB pages, whose
 // 67 buffers a frame hold its cars and were all refused), 0xE0000000+ for 4 KB pages.
+// Whether a chunk list node's `bytes` can be read: inside the physical views (the 0xE0000000 one
+// maps 4 KiB on: its last page reaches past physical memory), or on committed readable pages of
+// another heap. Forza Horizon's XDK 21119 D3D keeps a buffer's first node inside the buffer object
+// itself (object + 0xB8, on the title's 4 KiB heap): rejected as outside the views, about 108
+// buffers a frame lost their draws (its cars).
+bool NodeReadable(uint32_t node, uint32_t bytes) {
+  if (node >= 0xA0000000u && node <= 0xFFFFE000u) return true;
+  rex::kernel::GuestAddressSpace* memory = rexnative::host::Memory();
+  rex::kernel::BaseHeap* heap = memory ? memory->LookupHeap(node) : nullptr;
+  return heap && uint64_t(node) + bytes <= 0x100000000ull &&
+         heap->QueryRangeAccess(node, node + bytes - 1) != rex::memory::PageAccess::kNoAccess;
+}
+
 Reason CollectChunks(const uint8_t* base, const CommandBufferHeader& h, std::vector<Ib>& ibs,
                      uint32_t* total, uint32_t* where) {
   uint64_t sum = 0;
   uint32_t nodes = 0;
   for (uint32_t node = h.chunks; node; node = Load32(base, node)) {
     *where = node;
-    // A node's 136 bytes inside the views (the 0xE0000000 one maps 4 KiB on: its last page
-    // reaches past physical memory).
-    if (node < 0xA0000000u || node > 0xFFFFE000u || (node & 3) || ++nodes > kMaxNodes)
-      return Reason::kBadChunkList;
+    if ((node & 3) || ++nodes > kMaxNodes || !NodeReadable(node, 8)) return Reason::kBadChunkList;
     const uint32_t count = Load32(base, node + 4);
-    if (count < 1 || count > kMaxNodeEntries) return Reason::kBadChunkList;
+    if (count < 1 || count > kMaxNodeEntries || !NodeReadable(node, 8 + 8 * count))
+      return Reason::kBadChunkList;
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t d0 = Load32(base, node + 8 + 8 * i), addr = Load32(base, node + 12 + 8 * i);
       const uint32_t flag = d0 >> 24, n = d0 & 0xFFFFFF;
@@ -861,10 +873,10 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
       else if (src == 0 && !(dma_base & 0x1FFFFFFF))
         drop = kDropNoIndex;
       if (drop >= 0) ++f[kDropFirst + uint32_t(drop)];
-      // A resolve in the main stream between hooked calls: no hooked Resolve made it (an
-      // engine's own, or a D3D path the layer does not hook), so it is copied here, from the
-      // registers.
-      if (drop == kDropCopy && c.gap && emit && REXCVAR_GET(rexnative_inline_resolves)) {
+      // A resolve in the main stream between hooked calls (an engine's own, or a D3D path the
+      // layer does not hook) or recorded in a replayed buffer (the recording device's calls
+      // reach no hook: Forza Horizon records 48 a frame): copied here, from the registers.
+      if (drop == kDropCopy && emit && REXCVAR_GET(rexnative_inline_resolves)) {
         c.renderer->OnRegisterResolve(ResolveRegisters::From([&](uint32_t reg) {
           return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
         }));

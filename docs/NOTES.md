@@ -391,7 +391,18 @@ patch's header delta is a list of entries (a copy, a zero fill or LZX data) up t
 ReXGlue passed the applier the first entry's length only. The main executable's patch is one LZX
 entry; a module's starts with three copies, so its security info, and the key in it, stayed
 unpatched. SDK patch 0037 passes the descriptor's size, as Xenia does. Forza Horizon then plays
-on the native renderer.
+on the native renderer, after three more fixes found in its opening drive:
+
+- Its minimap came out as blue stripes: a 64x64 texture fetched as `k_8_8_8_8_AS_16_16_16_16`,
+  which the guest D3D resolves into as `k_8_8_8_8` (the trace's `RB_COPY_DEST_INFO`), and the
+  resolver's table of those formats lacked it.
+- Its car was not drawn (the stock renderer drew it). About 108 recorded command buffers a frame
+  were rejected: the XDK 21119 D3D keeps a buffer's first chunk node inside the buffer object
+  (object + 0xB8, on the 4 KiB heap), and the replay took only nodes in the physical views. A
+  node on committed readable pages of any heap is taken now (`BaseHeap::QueryRangeAccess`).
+- Those buffers hold 26 resolves a frame (the 64x64 textures of the car's materials: its rear
+  glass showed a grid without them), which the replay dropped: it copies them from the registers
+  now, as the walk does (`rexnative.inline_resolves`). Midnight Club's buffers hold none.
 
 Top Spin 4 is another case: its `default.xex` has no D3D at all, and both of its modules link
 their own D3D library. The renderer's hooks are in the executable; reaching functions in a module

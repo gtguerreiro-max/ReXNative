@@ -158,6 +158,8 @@ int DestBppLog2(uint32_t f) {
 uint32_t D3DCopyDestFormat(uint32_t f) {
   using enum xenos::TextureFormat;
   switch (xenos::TextureFormat(f)) {
+    case k_8_8_8_8_AS_16_16_16_16:  // Forza Horizon
+      return uint32_t(k_8_8_8_8);
     case k_2_10_10_10_AS_16_16_16_16:
       return uint32_t(k_2_10_10_10);
     case k_10_11_11_AS_16_16_16_16:

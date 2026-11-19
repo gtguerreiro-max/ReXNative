@@ -31,7 +31,7 @@ and how it was found, is in [NOTES.md](NOTES.md).
 | Deus Ex: Human Revolution - Director's Cut | title and menus as the stock renderer draws them (its GPU-owned shader constants, read since 2026-11-18); a new game asks for disc 1 | 30 FPS (title) |
 | Asura's Wrath (TU 1) | runs to its title screen | not tried (space) |
 | Blur (TU 2) | runs, its intro video plays | not tried (space) |
-| Forza Horizon (TU 4, its DLC) | plays on the native renderer: the intro videos, the main menu, the opening drive with its HUD (600-1600 draws, about 27 FPS); its speech and media code are two XEX DLL modules, recompiled as ReXGlue's `[[modules]]` since 2026-11-19 (their title update patches needed SDK patch 0037). The minimap draws as blue stripes | not tried (space) |
+| Forza Horizon (TU 4, its DLC) | plays on the native renderer: the intro videos, the main menu, the opening drive with its car, the traffic and the HUD (about 2000 draws, 30 FPS); its speech and media code are two XEX DLL modules, recompiled as ReXGlue's `[[modules]]` since 2026-11-19 (their title update patches needed SDK patch 0037) | not tried (space) |
 | SSX (TU 3, its DLC) | plays on the native renderer: the intro video, title, menus, the World Tour's first descent, 30 FPS (it drew black while its layer gave the Resolve hook a reference row's category, 2026-11-19) | not tried (space) |
 | Top Spin 4 | not supported yet: `default.xex` is a loader, and both its XEX DLL modules (`Loader_DLL`, `Swing_DLL`) link their own D3D library, which the renderer's hooks (in the executable) cannot reach | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |
