@@ -103,6 +103,17 @@ pass that tests depth and writes none: the hero's pass was upscaled, and the her
 invisible with FSR and black with DLSS. `rexnative.upscaler_depth_test = true` (Diablo III's
 settings) counts the draws that test depth too, so the second pass is the one upscaled.
 
+## Predicated tiles side by side
+
+Tetris Splash draws its 1280x720 frame with 2x MSAA in two tiles of 640x720, side by side, into a
+surface of pitch 640, and resolves the left tile and then the right one (`rect=640,0-1280,720`).
+Scene detection counted only resolves that start at x 0, so it learned a scene 640 wide; with
+the upscaler on (the Steam Deck's default) the left tile was upscaled from the scene's left half
+and the right tile copied nothing: the intro's 3D logo was cut at the middle of the screen. A
+resolve from the top that continues a seen surface past its pitch now widens the scene
+(`SceneNoteResolve`), and for a scene wider than its pitch each tile of its whole height copies
+its part of the upscaled output (`Upscaler::IsSceneResolve`).
+
 ## Fibers
 
 Double Dragon Neon and Dungeons & Dragons: Chronicles of Mystara use XAPI fibers. Their five fiber

@@ -66,6 +66,16 @@ class Upscaler {
   static bool IsSceneWidth(int32_t x0, int32_t x1) {
     return x0 <= 0 && x1 >= int32_t(SceneWidth());
   }
+  // Whether a resolve of the scene surface copies the scene: all its width (or bands of it), or,
+  // for a scene wider than its surface's pitch (predicated tiles side by side: Tetris Splash's
+  // 1280x720 in two tiles 640 wide), a tile of its whole height. Each tile then copies its part
+  // of the upscaled output; with the width alone, the left tile was upscaled from a scene 640
+  // wide and the right one copied nothing (the right half of the 3D logo was black).
+  static bool IsSceneResolve(int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    if (IsSceneWidth(x0, x1)) return true;
+    return SceneWidth() > ScenePitch() && y0 <= 0 && y1 >= int32_t(SceneHeight()) && x0 >= 0 &&
+           x1 > x0 && x1 <= int32_t(SceneWidth());
+  }
 
   Upscaler() = default;
   // This port: the output at this many host pixels per guest pixel (the resolution scale), the

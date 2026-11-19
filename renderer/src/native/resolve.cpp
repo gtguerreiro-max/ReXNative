@@ -1541,7 +1541,7 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
     // after the upscaled resolve too): an earlier pass's resolve copies the render-size target,
     // and the scene goes on at the render size.
     if (upscaler_ && !depth && Upscaler::IsScene(p.regs.surface_info) &&
-        Upscaler::IsSceneWidth(p.x0, p.x1) && upscaler_->SceneResolveDue() &&
+        Upscaler::IsSceneResolve(p.x0, p.y0, p.x1, p.y1) && upscaler_->SceneResolveDue() &&
         !upscaler_->post_scene()) {
       RenderTarget* upscaled = upscaler_->Upscale(list, *targets_, p.regs);
       if (upscaled) upscaler_->NoteSceneResolve(p);

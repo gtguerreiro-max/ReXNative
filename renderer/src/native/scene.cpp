@@ -64,7 +64,7 @@ const char* FormatName(uint32_t f) {
 // One colour surface resolved in the frame.
 struct Seen {
   uint32_t key = 0;     // surface_info & kSceneMask
-  uint32_t width = 0;   // the widest resolve that starts at x 0
+  uint32_t width = 0;   // the widest resolve that starts at x 0 (or its tiles side by side)
   uint32_t height = 0;  // the lowest resolve bottom (tiles cover the frame in bands)
   uint32_t format = 0;
   uint32_t order = 0;   // its first resolve's place in the frame
@@ -130,19 +130,28 @@ void SceneNoteResolve(const ResolveParams& p) {
   Init();
   if (!SceneAuto() || p.source >= 4) return;  // colour surfaces only
   const uint32_t order = g.resolves++;
-  if (p.x0 > 0 || p.x1 <= 0 || p.y1 <= 0) return;  // a corner of a surface: not the frame
+  if (p.x1 <= 0 || p.y1 <= 0) return;
   // What the resolve copies: the rectangle, within its destination.
   const uint32_t w = uint32_t(std::min<int64_t>(p.x1, int64_t(p.dest_x) + p.dest_width));
   const uint32_t h = uint32_t(std::min<int64_t>(p.y1, int64_t(p.dest_y) + p.dest_height));
   const uint32_t key = p.regs.surface_info & kSceneMask;
   for (uint32_t i = 0; i < g.seen_count; ++i) {
     Seen& s = g.seen[i];
-    if (s.key == key) {
-      s.width = std::max(s.width, w);
-      s.height = std::max(s.height, h);
+    if (s.key != key) continue;
+    if (p.x0 > 0) {
+      // Predicated tiles side by side (Tetris Splash's 1280x720 2x MSAA in two tiles 640
+      // wide, of a surface of pitch 640): the next tile, from the top, reaching past the
+      // surface's pitch, makes the frame wider. Any other resolve not at x 0 is a corner
+      // (a rear-view mirror), not the frame.
+      if (p.y0 <= 0 && uint32_t(p.x0) <= s.width && uint32_t(p.x1) > (key & 0x3FFF))
+        s.width = std::max(s.width, w);
       return;
     }
+    s.width = std::max(s.width, w);
+    s.height = std::max(s.height, h);
+    return;
   }
+  if (p.x0 > 0) return;  // a corner of a surface: not the frame
   if (g.seen_count == g.seen.size()) return;
   uint32_t draws = 0;
   for (uint32_t i = 0; i < g.depth_draw_keys; ++i)
