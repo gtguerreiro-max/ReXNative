@@ -1445,6 +1445,11 @@ struct DrawRenderer::Impl {
   bool RequestMemexport(const DrawState& s, const DxbcShader& vs, const DxbcShader* ps,
                         std::vector<VertexCopy>& out);
   void MarkGpuWritten(uint32_t start, uint32_t length);
+  // A memexport draw (non-indexed) whose exports overlap a vertex buffer it reads: how many
+  // vertices one host draw may run before the next must see its writes, 0 for one draw;
+  // *reverse: the chunks from the last (the exports lie above what they are made from).
+  uint32_t MemexportChunk(const RegisterFile& regs, const DxbcShader& vs, uint32_t count,
+                          bool* reverse) const;
   bool TexturesReadMemexport(const RegisterFile& regs, uint32_t used_textures) const;
   void SnapshotMemexport(CommandStream* list, const DrawPrep* prep);
   bool CopyMemexportIndices(CommandStream* list, uint32_t start, uint32_t bytes, bool wide,
@@ -3321,6 +3326,57 @@ bool DrawRenderer::Impl::RequestMemexport(const DrawState& s, const DxbcShader& 
   }
   if (preparing) segment_after_memexport = true;
   return true;
+}
+
+// Halo: Anniversary converts streamed textures in place: its memexport vertex shader
+// (9E10D1C39A24E18B) reads 64 bytes a vertex and writes 64 bytes a vertex 256 KB below them
+// (88064 vertices from 1306D000 to 1302D000). The Xenos runs vertices in order, so a write only
+// lands on source the earlier vertices have read; a PC GPU runs them in any order, and vertex
+// i + 4096 overwrote vertex i's source before it was read: colored noise on the textures it
+// made, different each run. In chunks of at most (distance / bytes a vertex) vertices, with a
+// UAV barrier between them, every write lands on source already read: from the first chunk when
+// the exports lie below their source, from the last when above. Strides are taken from the
+// vertex bindings and from the export range over the vertex count (a larger estimate only makes
+// the chunks smaller).
+uint32_t DrawRenderer::Impl::MemexportChunk(const RegisterFile& regs, const DxbcShader& vs,
+                                            uint32_t count, bool* reverse) const {
+  constexpr uint64_t kMaxChunks = 256;
+  if (count < 2) return 0;
+  const std::vector<Shader::VertexBinding>& bindings = ShaderVertexBindings::Of(vs);
+  uint64_t chunk = UINT64_MAX;
+  int direction = 0;  // -1: exports below their source, +1: above
+  for (const auto& range : draw_memexport_ranges) {
+    const uint64_t d0 = uint64_t(range.base_address_dwords) << 2, d1 = d0 + range.size_bytes;
+    if (d0 == d1) continue;
+    const uint64_t d_step = (uint64_t(range.size_bytes) + count - 1) / count;
+    for (const Shader::VertexBinding& b : bindings) {
+      const xenos::VertexFetch f = regs.GetVertexFetch(b.fetch_constant);
+      if (f.type != xenos::FetchConstantType::kVertex) continue;
+      const uint64_t s0 = uint64_t(f.address) << 2, s1 = s0 + (uint64_t(f.size) << 2);
+      // Apart, or each vertex rewriting its own bytes: one draw.
+      if (s1 <= d0 || d1 <= s0 || s0 == d0) continue;
+      const int dir = d0 < s0 ? -1 : 1;
+      if (direction && dir != direction) return 0;
+      direction = dir;
+      const uint64_t step = std::max<uint64_t>({uint64_t(b.stride_words) * 4, d_step, 1});
+      chunk = std::min(chunk, (dir < 0 ? s0 - d0 : d0 - s0) / step);
+    }
+  }
+  if (!direction || chunk >= count) return 0;
+  if (!chunk || (count + chunk - 1) / chunk > kMaxChunks) {
+    REXNATIVE_LOG_FIRST(4, INFO,
+                        "ReXNative memexport: a draw of {} vertices exports over its own vertex "
+                        "buffer too closely to split ({} vertices a chunk): one draw",
+                        count, chunk);
+    return 0;
+  }
+  *reverse = direction > 0;
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative memexport: a draw of {} vertices exports over its own vertex "
+                      "buffer: {} host draws of {} vertices{}",
+                      count, (count + chunk - 1) / chunk, chunk,
+                      direction > 0 ? ", from the last" : "");
+  return uint32_t(chunk);
 }
 
 void DrawRenderer::Impl::MarkGpuWritten(uint32_t start, uint32_t length) {
@@ -5203,11 +5259,27 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   } else {
     draw_indexed = false;
   }
+  // A memexport draw that rewrites its own vertex buffer (MemexportChunk): in chunks.
+  bool chunk_reverse = false;
+  const uint32_t chunk =
+      memexport && !draw_indexed ? MemexportChunk(regs, *vs, draw_count, &chunk_reverse) : 0;
   auto issue = [&] {
-    if (draw_indexed)
+    if (draw_indexed) {
       list->DrawIndexedInstanced(draw_count, 1, first_index, 0, 0);
-    else
+    } else if (chunk) {
+      const uint32_t chunks = (draw_count + chunk - 1) / chunk;
+      D3D12_RESOURCE_BARRIER b = {};
+      b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+      b.UAV.pResource = shared.Get();
+      for (uint32_t k = 0; k < chunks; ++k) {
+        const uint32_t c = chunk_reverse ? chunks - 1 - k : k;
+        const uint32_t first = c * chunk;
+        if (k) list->ResourceBarrier(1, &b);
+        list->DrawInstanced(std::min(chunk, draw_count - first), 1, first, 0);
+      }
+    } else {
       list->DrawInstanced(draw_count, 1, 0, 0);
+    }
   };
   OcclusionQueries* const occlusion = r.occlusion();
   const uint32_t pair =
