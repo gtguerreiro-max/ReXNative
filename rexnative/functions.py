@@ -267,9 +267,26 @@ def jump_tables(generated, image_path, back=24, all_tables=False):
                                                   for k in range(j + 1, i)):
                         bound = int(m.group(3))
                         break
-            if None in (lo, hi, bound) or scale_src is None:
+            if None in (lo, hi) or scale_src is None:
                 continue
             table = ((hi << 16) + lo) & 0xFFFFFFFF
+            if bound is None:
+                # No bound check (the index from a mask: Bink's 8362CDC0 in The Bureau, r19 from
+                # clrlwi 29 or 7 + clrlwi 30, so 0..10; codegen read 8): a table right after the
+                # bctr ends where the first of its cases begins.
+                if table != addr + 4:
+                    continue
+                first = None
+                k = 0
+                while k < 1024 and (first is None or table + 4 * k < first):
+                    t = word(table + 4 * k)
+                    if not addr < t < code0 + code_size:
+                        break
+                    first = t if first is None else min(first, t)
+                    k += 1
+                if not k or table + 4 * k != first:
+                    continue
+                bound = k - 1
             if not base <= table < base + size - 4 * (bound + 1):
                 continue
             targets = [word(table + 4 * k) for k in range(bound + 1)]

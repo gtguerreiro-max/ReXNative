@@ -13,7 +13,9 @@ made functions; codegen handles their calls.
 
 - **Jump tables** codegen read short are found from their bound check (`cmplwi`, `bgt`,
   `lis`/`addi`, `lwzx`, `bctr`) and given whole as `[[switch_tables]]` (Double Dragon Neon trapped
-  on its cases 16 to 143).
+  on its cases 16 to 143). A table with no such check (its index from masks, or checked with `ble`)
+  that sits right after its `bctr` is read up to the first of its cases (The Bureau's Bink decoder:
+  11 cases read as 8, a trap on the BinkAsy2 thread when its first video played).
 - **Gotos** to labels of other functions become functions (Minecraft).
 - **Imports** the runtime lacks become stubs (the Vision camera, `XUsbcam*`).
 - **One function per layer address** (Perfect Dark, Bionic Commando Rearmed).
