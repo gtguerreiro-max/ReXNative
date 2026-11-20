@@ -408,9 +408,12 @@ bool Presenter::Impl::CaptureRequested(uint64_t frame) {
   const int32_t at = REXCVAR_GET(rexnative_capture_frame);
   bool want = at >= 0 && frame == uint64_t(at);
   if (capture_dir.empty()) return want;
+  // The mark key takes a burst as the request file does (--rexnative_capture_burst): a flicker
+  // shows only across frames in a row.
   if (MarkPressed()) {
     REXLOG_INFO("ReXNative mark at frame {}", frame);
     want = true;
+    burst_left = uint32_t(std::clamp(REXCVAR_GET(rexnative_capture_burst), 1, 8) - 1);
   }
   // Every 16th frame: a file query goes through Wine's path translation, and the scripts that
   // write the request do not mind a few frames' delay.
