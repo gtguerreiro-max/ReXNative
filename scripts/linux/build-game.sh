@@ -31,6 +31,10 @@ if [[ -n $vkn ]]; then
       "-DREXNATIVE_FIDELITYFX_SDK=${REXNATIVE_FIDELITYFX:?set REXNATIVE_FIDELITYFX}"
       "-DREXNATIVE_DXVK_NATIVE_INCLUDE=$vkn/include/d3d12-overlay;$vkn/include/dxvk")
 fi
+# Before configuring, which writes the new header list: a precompiled header of the generated
+# code made before spin_pause.h joined it goes, as Ninja would not compile that code again.
+pch=build/CMakeFiles/${name}_recompiled.dir/cmake_pch.hxx
+if [[ -n $vkn && -f $pch ]] && ! grep -q spin_pause.h "$pch"; then rm -f "$pch"*; fi
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ "-DCMAKE_C_FLAGS=$flags" "-DCMAKE_CXX_FLAGS=$flags" \
   "-DCMAKE_PREFIX_PATH=$sdk" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \

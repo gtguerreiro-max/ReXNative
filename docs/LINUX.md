@@ -205,9 +205,35 @@ build:
 
 The same 30 FPS and frame times for half the power, under Proton as natively: a change for every
 game ReXNative draws, on the Steam Deck as it runs them today. Natively it ends 0.5 W lower than
-under Proton (the Xenos command thread's 5 % against 23 % of a core). The Windows build was tried
-under Proton only, from a test folder (`proton-shim`'s `REXNATIVE_WIN_BUILD`): not yet on the
-PC, nor on other games.
+under Proton (the Xenos command thread's 5 % against 23 % of a core). The Windows builds ran
+under Proton from test folders (`proton-shim`'s `REXNATIVE_WIN_BUILD`; the installed games
+untouched), alternated with [deck-spin-ab.sh](../scripts/linux/deck-spin-ab.sh).
+
+Overlord II's 3D main menu (446 draws, GPU 9.4-9.7 ms a frame either way; a fresh userdata for
+every run, START pressed by hand at "Press Start"):
+
+| Build | Spin wait | SoC power | Game's CPU | Main thread | Frame time 99th pct |
+| --- | --- | --- | --- | --- | --- |
+| Windows, Proton | spins (1 / 2) | 10.7 / 11.3 W | 179 % | 99 % | 34.2 / 34.6 ms |
+| Windows, Proton | sleeps (1 / 2) | **5.6 / 5.6 W** | 126-127 % | 34-35 % | 34.0 / 34.1 ms |
+| Native Linux | spins (1 / 2) | 8.4 / 5.7 W | 113-121 % | 82-92 % | 34.6 / 34.4 ms |
+| Native Linux | sleeps (1 / 2) | **4.6 / 5.2 W** | 53-57 % | 22-24 % | 34.4 / 34.6 ms |
+
+Tetris Splash's title (60 FPS), under Proton: the same with the sleep and without (3.5-4.2 W,
+60.0 FPS, 99th percentile 17.0-17.05 ms, the longest frame 17.4-17.7 ms): its main thread does
+not spin there. On the PC (Windows' own D3D12), Jet Set Radio's process takes 32-34 % of a core
+instead of 112-114 %, at the same 30 FPS.
+
+One spin it does not reach: Overlord II's intro videos under Proton keep its main thread at
+76-80 % (9.7-10.7 W) with the sleep or without, while the native build sleeps there. The game
+waits there in many short KeDelayExecutionThread calls, and ReXGlue's Windows `SleepFor` spins
+the last 250 µs of every wait for precision (`kSpinTail`), which a game that waits briefly and
+often pays for in full; the POSIX `SleepFor` is a plain `nanosleep`. A patch for the SDK, not
+done here.
+
+Building it: the precompiled header changes, but Ninja does not compile the generated code again
+in a build folder made before; `rexnative project --build` and `build-game.sh` remove such a
+stale header first (else the build keeps the old code without a word).
 
 ## Next: ReXNative on Vulkan (not started)
 
