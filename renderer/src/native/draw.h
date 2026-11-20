@@ -229,6 +229,8 @@ class DrawRenderer {
 
   // Ucode hashes of a prepared draw's (vertex, pixel) shaders, 0 where there is none.
   static std::pair<uint64_t, uint64_t> ShaderHashes(const DrawPrep& prep);
+  // A prepared draw's first texture's size (width << 16 | height), 0 without one.
+  static uint32_t FirstTextureSize(const DrawState& state, const DrawPrep& prep);
   // The ucode disassembly of a loaded shader; empty when no loaded shader has the hash.
   std::string ShaderDisassembly(uint64_t hash) const;
 

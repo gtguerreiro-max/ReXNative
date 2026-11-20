@@ -5603,6 +5603,15 @@ std::pair<uint64_t, uint64_t> DrawRenderer::ShaderHashes(const DrawPrep& prep) {
   return {prep.vs ? prep.vs->GetUcodeDataHash() : 0, prep.ps ? prep.ps->GetUcodeDataHash() : 0};
 }
 
+uint32_t DrawRenderer::FirstTextureSize(const DrawState& state, const DrawPrep& prep) {
+  if (!prep.ps) return 0;
+  const auto& bindings = prep.ps->GetTextureBindings();
+  if (bindings.empty()) return 0;
+  TextureKey key;
+  if (!TextureKeyFromFetch(state.fetch(bindings[0].fetch_constant), &key)) return 0;
+  return (key.width << 16) | (key.height & 0xFFFF);
+}
+
 std::string DrawRenderer::ShaderDisassembly(uint64_t hash) const {
   const DxbcShader* shader = impl_->shaders.Find(hash);
   return shader ? shader->GetUcodeDisassembly() : std::string();

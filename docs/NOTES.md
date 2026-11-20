@@ -580,6 +580,21 @@ quarter of the two-frame motion) and the HUD stays sharp. Syndicate's first miss
 colours each frame, which FidelityFX's scene change detection takes for cuts (a copy, not an
 interpolation): right for such frames.
 
+Frame generation tried on more games (2026-11-20) found two more ways to lose the HUD.
+Overlord's minion counter came out with its letters scrambled ("1/30", "V0/0") in every generated
+frame: the copy held it. Its main menu and pause screen darken the view with a full-screen quad
+of the HUD sprites' pixel shader, the measurement learned that shader as a full-screen pass, and
+in the game the copy then waited for the first HUD sprite. A learned pass is now its pixel shader
+with its first texture's size (the counter's 260x90 is no full-screen overlay's), and the counter
+stays sharp after the menus. Dark Souls II and Minecraft resolve their front buffer from the
+scene's surface, where they go on drawing after the upscaled resolve (post-processing, then the
+HUD), so they had no copy at all, a rule made for Jet Set Radio (its HUD drawn into the scene
+before the scene's resolve, where an early resolve would run the upscaler): their hotbars, item
+slots and button prompts came out doubled and half transparent as the view turned. After the
+upscaled resolve those draws go into the upscaler's full-size target, which an early resolve
+copies as it is, so from there their draws are watched as another game's into its front buffer;
+Minecraft's flicker measure fell from 2.3 to 0.6 % and both HUDs stay sharp.
+
 ## Frame generation's optical flow
 
 With the HUD-less copy right, the generated frames still smeared what moved without motion

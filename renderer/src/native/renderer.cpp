@@ -1339,9 +1339,17 @@ void NativeRenderer::ExecuteDraw(const DrawState& state, const DrawPrep* prep) {
       neural_->BeforeDraw(device_->command_list(), frame_index_, state.regs, *rt_, upscaler(),
                           prep ? DrawRenderer::ShaderHashes(*prep).second : 0))
     draw_->InvalidateListState();
-  if (frame_generation_ &&
-      frame_generation_->BeforeDraw(device_->command_list(), frame_index_, state.regs,
-                                    prep ? DrawRenderer::ShaderHashes(*prep).second : 0))
+  if (frame_generation_ && frame_generation_->Watching(frame_index_) &&
+      frame_generation_->BeforeDraw(
+          device_->command_list(), frame_index_, state.regs,
+          prep ? DrawRenderer::ShaderHashes(*prep).second : 0,
+          prep ? DrawRenderer::FirstTextureSize(state, *prep) : 0, [&] {
+            const Upscaler* up = upscaler();
+            using Stage = FrameGeneration::SceneStage;
+            return !up || !up->upscaled_this_frame() ? Stage::kScene
+                   : up->post_scene()                ? Stage::kPostScene
+                                                     : Stage::kUpscaled;
+          }()))
     draw_->InvalidateListState();
   draw_->OnDraw(state, prep);
   SubmitEarly();

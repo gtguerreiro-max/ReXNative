@@ -100,15 +100,22 @@ void FrameGeneration::OnSwap(uint32_t front_base) {
 }
 
 bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs,
-                                uint64_t pixel_shader) {
+                                uint64_t pass, SceneStage stage) {
   if (!REXCVAR_GET(rexnative_frame_generation_hudless)) return false;
   const SurfaceRegs& f = front_->regs;
   // A game whose front buffer is resolved from the scene's surface itself (Jet Set Radio: its
   // characters, their outlines and its HUD all drawn into the scene, blended after opaque
   // draws): the early resolve would be the scene's, which runs the upscaler there, before the
-  // draws after it (headless characters in every frame). No HUD-less copy: its HUD is generated
-  // with the rest of the image. PGR4 composites into a surface of its own.
-  if (IsSceneSurface(f.surface_info)) return false;
+  // draws after it (headless characters in every frame). No HUD-less copy there: its HUD is
+  // generated with the rest of the image. PGR4 composites into a surface of its own. A game that
+  // goes on drawing into the scene's surface after its upscaled resolve (Dark Souls II,
+  // Minecraft: post-processing, then the HUD) draws there into the upscaler's full-size target
+  // (Upscaler::EnterPostScene), which the early resolve copies as it is: from the upscaled
+  // resolve on, its draws are watched as another game's into its front buffer, the copy made
+  // once the full-size target is in place. Without it their HUD was generated with the scene,
+  // doubled and smeared in the generated frames as the view moved.
+  const bool scene_front = IsSceneSurface(f.surface_info);
+  if (scene_front && stage == SceneStage::kScene) return false;
   // RT 0 of the draw is the front buffer's surface (pitch, MSAA, EDRAM data), written.
   if (regs[XE_GPU_REG_RB_SURFACE_INFO] != f.surface_info ||
       ColorStorage(regs[XE_GPU_REG_RB_COLOR_INFO]) != ColorStorage(f.color_info[front_->source]) ||
@@ -125,10 +132,11 @@ bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint3
   }
   if (composited_frame_ != frame) return false;
   const uint32_t index = blended_++;
-  if (frame_blends_.size() < 32) frame_blends_.push_back(pixel_shader);
+  if (frame_blends_.size() < 32) frame_blends_.push_back(pass);
   if (copy_frame_ == frame) return false;
   // A full-screen pass learned before the HUD: the copy waits for it.
-  if (index < post_passes_.size() && post_passes_[index] == pixel_shader) return false;
+  if (index < post_passes_.size() && post_passes_[index] == pass) return false;
+  if (scene_front && stage != SceneStage::kPostScene) return false;
   copy_frame_ = frame;
   copy_index_ = index;
   copy_ = resolver_.ResolveCopy(list, *front_);

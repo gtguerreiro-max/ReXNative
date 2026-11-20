@@ -33,8 +33,11 @@
 // and the generated frame is a copy of the real one (2026-11-19). So every 15th frame the copy is
 // compared with the image (MeasureHudless, on the CPU a few frames later): differing in more than
 // half of the pixels, the blended draws up to the copy point are full-screen passes, and their
-// pixel shaders, in order, are learned (post_passes_); the copy then waits for them, the first
-// blended draw that is not the next of them being the HUD's. The generation reads the scene's
+// pixel shaders and first textures' sizes, in order, are learned (post_passes_); the copy then
+// waits for them, the first blended draw that is not the next of them being the HUD's. The
+// texture's size tells a HUD sprite from a full-screen overlay of the same pixel shader: Overlord
+// darkens its pause screen with its sprites' shader, and after a pause the copy waited for the
+// first HUD sprite as for a full-screen pass, its minion counter generated with the scene. The generation reads the scene's
 // part of both (Generate's rect). A frame without the scene's inputs (the upscaler off, a
 // loading screen) is presented alone, and the next one starts the generation over: a frame ID not
 // one more than the last resets it.
@@ -104,13 +107,20 @@ class FrameGeneration {
   void OnSwap(uint32_t front_base);
   // Before each draw of frame `frame` (`regs` its register file): when the draw is the HUD's first,
   // records the copy into `list` and returns true (the list's compute state changed).
-  // `pixel_shader`: the draw's pixel shader hash (0: unknown).
+  // Where the frame's scene is at a draw (the upscaler's): drawn, upscaled (its resolve ran),
+  // or drawn into at the output's size after that (Upscaler::post_scene).
+  enum class SceneStage { kScene, kUpscaled, kPostScene };
+  // `pixel_shader`: the draw's pixel shader hash (0: unknown); `texture_size`: its first
+  // texture's (DrawRenderer::FirstTextureSize).
   bool BeforeDraw(CommandStream* list, uint64_t frame, const uint32_t* regs,
-                  uint64_t pixel_shader) {
-    if (!front_ || prepared_frame_ != frame) [[likely]]
+                  uint64_t pixel_shader, uint32_t texture_size, SceneStage stage) {
+    if (!Watching(frame)) [[likely]]
       return false;
-    return CopyAtHud(list, frame, regs, pixel_shader);
+    return CopyAtHud(list, frame, regs,
+                     pixel_shader ^ (uint64_t(texture_size) * 0x9E3779B97F4A7C15ull), stage);
   }
+  // Whether BeforeDraw looks at frame `frame`'s draws now (after its Prepare, with a front buffer).
+  bool Watching(uint64_t frame) const { return front_ && prepared_frame_ == frame; }
   // Frame `frame`'s copy (ResolvedImage of the front buffer's format and size), nullptr without.
   const ResolvedImage* hudless_source(uint64_t frame) const {
     return copy_frame_ == frame ? copy_ : nullptr;
@@ -157,7 +167,9 @@ class FrameGeneration {
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT motion_footprint{};
   };
   std::vector<PendingCapture> captures_;
-  bool CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs, uint64_t pixel_shader);
+  // `pass`: the draw's pixel shader hash with its first texture's size (BeforeDraw).
+  bool CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs, uint64_t pass,
+                 SceneStage stage);
   // The share of pixels where the two readbacks differ (sampled every 4th pixel each way).
   double HudlessDifference() const;
   // The HUD over the generated frame (Generate with the HUD-less copy): FidelityFX generates
@@ -194,12 +206,13 @@ class FrameGeneration {
   uint64_t composited_frame_ = UINT64_MAX;  // the last frame drawn opaque into front_'s surface
   uint64_t copy_frame_ = UINT64_MAX;        // the last frame CopyAtHud ran in
   const ResolvedImage* copy_ = nullptr;     // its copy
-  // The HUD-less copy's place: the pixel shaders of the full-screen passes blended over the
-  // composite before the HUD, in order (learned by MeasureHudless).
+  // The HUD-less copy's place: the full-screen passes blended over the composite before the HUD,
+  // in order, each its pixel shader with its first texture's size (BeforeDraw; learned by
+  // MeasureHudless).
   std::vector<uint64_t> post_passes_;
   uint32_t blended_ = 0;                // blended draws since the composite, this frame
   uint32_t copy_index_ = 0;             // the one the copy was made before
-  std::vector<uint64_t> frame_blends_;  // their pixel shaders, this frame (at most 32)
+  std::vector<uint64_t> frame_blends_;  // their passes, this frame (at most 32)
   struct Measure {
     bool pending = false;
     uint64_t frame = 0, fence = 0;
