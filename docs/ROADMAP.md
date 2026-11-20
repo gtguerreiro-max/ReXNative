@@ -16,9 +16,11 @@
 - Memexport: a game whose picture needs it, and no GPU wait when nothing on the CPU reads its
   results.
 - Build a game end to end from `scripts\build-sdk.ps1` on a clean machine.
-- Vulkan and native Linux (experimental, `vulkan-experiment`): a game builds and runs on the
-  Steam Deck without Proton on ReXGlue's renderer; a Vulkan backend for ReXNative itself, its
-  cost and what it would gain are in [LINUX.md](LINUX.md).
+- Native Linux (experimental, `vulkan-experiment`): ReXNative runs on the Steam Deck without
+  Proton or Wine (vkd3d-proton and DXVK Native as Linux libraries), the same frames for about
+  40 % less power on Jet Set Radio. Next there: an optimized build (LTO, the Deck's CPU), FSR on
+  Vulkan, a Steam shortcut of its own. A Vulkan backend for ReXNative would not be faster; its
+  cost is in [LINUX.md](LINUX.md).
 - Every new game becomes a reference and makes the next one easier.
 
 ## Done

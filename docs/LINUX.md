@@ -7,8 +7,9 @@
 ReXNative draws with Direct3D 12, so a game drawn by it is a Windows executable and runs on the
 Steam Deck under Proton (vkd3d-proton turns the D3D12 calls into Vulkan). ReXGlue itself builds
 for Linux, and its own renderer, the Xenos GPU emulation, has a Vulkan driver (`gpu.driver`:
-`d3d12`, `vulkan` or `any`). This page has what was measured and how a game is built and run on
-Linux without ReXNative.
+`d3d12`, `vulkan` or `any`). This page has what was measured, how a game is built and run on
+Linux, on ReXGlue's renderer or on ReXNative's without Wine, and what a Vulkan backend for
+ReXNative would take.
 
 ## What was measured
 
@@ -94,6 +95,74 @@ it from Steam:
 The native build, started that way: the title screen drawn right, 60 FPS, its audio stream on
 PipeWire, the Deck's controls found through Steam Input ("New controller connected to user 0").
 
+## ReXNative on Linux, without Wine
+
+ReXNative's D3D12 code also runs as a native Linux program: its D3D12 calls go to vkd3d-proton
+built as a Linux library, and its swap chain comes from DXVK Native's DXGI on the game's SDL3
+window. Nothing of the renderer is rewritten; what Windows gave it, a few files give it there.
+
+```
+game (Linux ELF) -> ReXNative (D3D12) -> libvkd3d-proton-d3d12.so -> Vulkan (RADV)
+                                      -> libdxvk_dxgi.so (swap chain on the SDL3 window)
+                                      -> libvkd3d-utils.so.1 (D3DCompile, WineHQ vkd3d)
+```
+
+- [build-vkd3d-dxvk.sh](../scripts/linux/build-vkd3d-dxvk.sh) builds vkd3d-proton 3.1 and DXVK
+  Native 3.1.1. vkd3d-proton needs one fix for that
+  ([vkd3d-proton-native-adapter-parent.patch](../scripts/linux/vkd3d-proton-native-adapter-parent.patch)):
+  on Linux it ignored the DXGI adapter it was given, and DXVK's DXGI, making a swap chain, asks
+  the device for it (a null pointer: a crash).
+- The headers are DXVK Native's (mingw-w64's, with `wchar_t` names as DXVK's DXGI has them),
+  with mingw-w64 14's newer `d3d12.h`; vkd3d-proton returns structures (descriptor handles,
+  resource descriptions) through a pointer as MSVC does, so they are used with
+  `WIDL_EXPLICIT_AGGREGATE_RETURNS`.
+- [renderer/src/compat/linux](../renderer/src/compat/linux) and
+  [renderer/src/linux](../renderer/src/linux): WRL's `ComPtr`; the Win32 calls on eventfd
+  (events, which vkd3d-proton's fences signal), timerfd (waitable timers), pthreads, dlopen and
+  SDL3; the D3D12 and DXGI entry points; no DLSS (NVIDIA's NGX is Windows only); `D3DCompile`
+  for ReXNative's own shaders from WineHQ vkd3d (HLSL to DXBC, as `d3dcompiler_47`), called with
+  the Windows calling convention, which that library keeps on Linux. Arch's DXC package
+  asserts on any shader, and Microsoft's own DXC release was not tried.
+- `build-game.sh ... --rexnative <vkn out>` builds a game so and puts the libraries in `lib/`.
+
+Tetris Splash and Jet Set Radio run so on the Steam Deck, started from Steam, their pictures
+right. Tetris Splash's title screen (as in the first table):
+
+| Tetris Splash, title | FPS | Frame time, mean / 99th pct | GPU busy | SoC power | Game's CPU |
+| --- | --- | --- | --- | --- | --- |
+| ReXNative under Proton | 60.0 | 16.68 / 17.04 ms | 1-2 % | 5.2 W | 32 % |
+| ReXNative, native Linux | 60.0 | 16.67 / 17.17 ms | 2-4 % | 4.4 W | 24 % |
+
+Jet Set Radio's heavy start (1,100-1,450 draws a frame, the same every time; see "What it
+would gain" below), upscaler off, 30 seconds after 40, Proton and native runs alternated, from
+the same Steam shortcut:
+
+| Jet Set Radio, start | FPS | Frame time 99th pct | SoC power | Game's CPU | Whole CPU | Draw CPU per draw |
+| --- | --- | --- | --- | --- | --- | --- |
+| ReXNative under Proton, 1 | 30.0 | 34.45 ms | 9.2 W | 162 % | 23 % | 0.99 µs |
+| ReXNative, native Linux, 1 | 30.0 | 34.40 ms | 5.5 W | 113 % | 17 % | 1.25 µs |
+| ReXNative under Proton, 2 | 30.0 | 34.42 ms | 9.6 W | 153 % | 21 % | 0.98 µs |
+| ReXNative, native Linux, 2 | 30.0 | 34.36 ms | 6.6 W | 117 % | 17 % | 1.22 µs |
+
+- **The same frames for about 40 % less power** (5.3-6.6 W against 9.2-9.6 W over three native
+  runs): on a game the GPU hardly works for (3-10 % busy), the CPU is most of the SoC's power,
+  and natively the game uses about a third less of it. Battery life, not frame rate, is what a
+  native build buys on games like these.
+- Most of it is in ReXGlue's own threads, not ReXNative's: the Xenos command thread (its waits
+  on the GPU) takes 21-22 % of a core under Wine and 5 % natively, and the game's main thread,
+  which waits in a loop, 92-100 % against 76-84 %: waiting through Wine's synchronization most
+  likely costs more than through Linux's futexes.
+- Recording a draw costs a quarter more natively (1.22-1.25 against 0.98-0.99 µs): this
+  vkd3d-proton is a plain meson release build, GE-Proton's may be built otherwise. 1.5 ms a frame,
+  not the bottleneck; an optimized build (LTO, `-march=znver2`, the Steam Deck's CPU) is the next
+  thing to try for it.
+
+What is not there on Linux yet: DLSS (never on the Deck), FSR and frame generation (the
+FidelityFX SDK's DX12 runtime; FSR 3.1 has a Vulkan backend, FSR 4 does not), the classic
+renderer switch (the Xenos driver presents with Vulkan, not into ReXNative's D3D12 swap chain),
+HDR (not tried), the hardware memory watch, and a Steam shortcut of its own (the test starts it
+through an installed game's, `proton-shim`).
+
 ## Next: ReXNative on Vulkan (not started)
 
 What a Vulkan backend for ReXNative's own renderer would take, starting with the core draw path
@@ -175,10 +244,8 @@ mostly idle. The frames the Deck's logs show missing their target have fewer dra
 others; where the GPU is the limit (Overlord II's GPU time per frame: median 17 ms, 90th
 percentile 33 ms, with the upscaler), Vulkan would draw the same shaders. A Vulkan backend
 would be worth it to run without Proton or Wine at all, not for speed. For that alone,
-ReXNative's D3D12 code on a native `libvkd3d-proton.so` (below) would do it for much less work,
+ReXNative's D3D12 code on a native `libvkd3d-proton.so` (above) does it for much less work,
 since vkd3d-proton is no slower than a native driver.
 
-A shorter way to the Linux part alone: vkd3d-proton also builds as a native Linux library
-(`--native`, `libvkd3d-proton.so`, with a swap chain on native surfaces since 2.9), so ReXNative's
-D3D12 code could run on Linux without Wine once its Windows calls are replaced. Its own
-documentation calls that build development-oriented, and the GPU work would stay as it is.
+That shorter way is the one taken above ("ReXNative on Linux, without Wine"): vkd3d-proton's
+native build, which its documentation calls development-oriented, works for the two games tried.
