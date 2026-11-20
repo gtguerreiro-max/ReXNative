@@ -13,6 +13,7 @@
 #include <rex/logging.h>
 
 #include <array>
+#include <thread>
 #include <utility>
 
 REXCVAR_DEFINE_BOOL(rexnative_frame_generation, false, "ReXNative",
@@ -48,6 +49,27 @@ REXCVAR_DEFINE_BOOL(rexnative_frame_generation_indicators, false, "ReXNative",
                     "lines (left green, right a colour per frame), a red band at the top when it "
                     "started over (a reset: the frame copied, not generated), a blue one below "
                     "when it saw a scene change");
+
+REXCVAR_DEFINE_BOOL(rexnative_frame_generation_debug, false, "ReXNative",
+                    "FidelityFX's debug view in the generated frames (live): its inputs and "
+                    "internal surfaces (motion vectors, optical flow, disocclusion) in a grid");
+
+REXCVAR_DEFINE_BOOL(rexnative_frame_generation_check, false, "ReXNative",
+                    "FidelityFX checks the frame generation's inputs and logs what it finds "
+                    "wrong (FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING; when the context is "
+                    "made)");
+
+namespace {
+// FidelityFX's messages, into the log.
+void FgMessage(uint32_t type, const wchar_t* message) {
+  std::string s;
+  for (const wchar_t* p = message; p && *p; ++p) s += *p < 128 ? char(*p) : '?';
+  if (type == FFX_API_MESSAGE_TYPE_ERROR)
+    REXNATIVE_LOG_FIRST(32, ERROR, "ReXNative frame generation (FidelityFX): {}", s);
+  else
+    REXNATIVE_LOG_FIRST(32, WARN, "ReXNative frame generation (FidelityFX): {}", s);
+}
+}  // namespace
 
 bool FrameGeneration::Requested() { return REXCVAR_GET(rexnative_frame_generation); }
 
@@ -111,6 +133,125 @@ bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint3
   return true;
 }
 
+namespace {
+// CompositeHud: where the frame (t0) and its HUD-less copy (t1) differ in a 3x3 neighbourhood by
+// more than the copy's rounding (3 steps of 8 bits, 12 of 10), the frame's pixel replaces the
+// generated one (u0). `origin` and `size`: the generation rect.
+constexpr char kHudHlsl[] = R"(
+Texture2D<float4> frame : register(t0);
+Texture2D<float4> hudless : register(t1);
+RWTexture2D<float4> generated : register(u0);
+cbuffer Constants : register(b0) { uint2 origin; uint2 size; };
+[numthreads(8, 8, 1)]
+void main(uint2 id : SV_DispatchThreadID) {
+  if (any(id >= size)) return;
+  const int2 p = int2(origin + id);
+  const int2 lo = int2(origin), hi = int2(origin + size) - 1;
+  float d = 0.0;
+  [unroll] for (int y = -1; y <= 1; ++y) {
+    [unroll] for (int x = -1; x <= 1; ++x) {
+      const int3 q = int3(clamp(p + int2(x, y), lo, hi), 0);
+      const float3 e = abs(frame.Load(q).rgb - hudless.Load(q).rgb);
+      d = max(d, max(e.r, max(e.g, e.b)));
+    }
+  }
+  if (d > 0.0125) generated[p] = frame.Load(int3(p, 0));
+}
+)";
+}  // namespace
+
+bool FrameGeneration::CreateHudPass() {
+  if (hud_tried_) return hud_ok_;
+  hud_tried_ = true;
+  ID3D12Device* device = device_.device();
+  const D3D12_DESCRIPTOR_RANGE ranges[2] = {
+      {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0},
+      {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 2},
+  };
+  D3D12_ROOT_PARAMETER params[2] = {};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[0].DescriptorTable = {2, ranges};
+  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[1].Constants = {0, 0, 4};
+  const D3D12_ROOT_SIGNATURE_DESC rs = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+  ComPtr<ID3DBlob> blob, err;
+  const D3D12_DESCRIPTOR_HEAP_DESC hd = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3,
+                                         D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+  if (Failed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err),
+             "frame generation HUD root signature serialize") ||
+      Failed(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         IID_PPV_ARGS(&hud_signature_)),
+             "frame generation HUD root signature") ||
+      Failed(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&hud_heap_)),
+             "frame generation HUD heap"))
+    return false;
+  hud_stride_ = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  const pD3DCompile compile = D3DCompiler();
+  constexpr char kName[] = "rexnative_frame_generation_hud.hlsl";
+  ComPtr<ID3DBlob> code, error;
+  if (!compile || FAILED(compile(kHudHlsl, sizeof(kHudHlsl) - 1, kName, nullptr, nullptr, "main",
+                                 "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &error))) {
+    REXLOG_ERROR("ReXNative frame generation: {}: {}", kName,
+                 error ? static_cast<const char*>(error->GetBufferPointer()) : "?");
+    return false;
+  }
+  D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+  pd.pRootSignature = hud_signature_.Get();
+  pd.CS = {code->GetBufferPointer(), code->GetBufferSize()};
+  hud_ok_ = !Failed(device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&hud_pso_)), kName);
+  return hud_ok_;
+}
+
+void FrameGeneration::WriteHudViews() {
+  if (!hud_ok_ || !image_) return;
+  ID3D12Device* device = device_.device();
+  const DXGI_FORMAT format = image_->GetDesc().Format;
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = hud_heap_->GetCPUDescriptorHandleForHeapStart();
+  D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+  sd.Format = format;
+  sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  sd.Texture2D.MipLevels = 1;
+  device->CreateShaderResourceView(image_.Get(), &sd, cpu);
+  cpu.ptr += hud_stride_;
+  device->CreateShaderResourceView(hudless_.Get(), &sd, cpu);
+  cpu.ptr += hud_stride_;
+  D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+  ud.Format = format;
+  ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(output_.Get(), nullptr, &ud, cpu);
+}
+
+void FrameGeneration::CompositeHud(CommandStream* list, FfxApiRect2D rect) {
+  list->Call([this, rect](CommandStream::List* l) {
+    D3D12_RESOURCE_BARRIER b[3] = {};
+    ID3D12Resource* const res[3] = {image_.Get(), hudless_.Get(), output_.Get()};
+    const D3D12_RESOURCE_STATES to[3] = {D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+    for (int i = 0; i < 3; ++i) {
+      b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      b[i].Transition.pResource = res[i];
+      b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+      b[i].Transition.StateAfter = to[i];
+    }
+    l->ResourceBarrier(3, b);
+    ID3D12DescriptorHeap* heaps[] = {hud_heap_.Get()};
+    l->SetDescriptorHeaps(1, heaps);
+    l->SetComputeRootSignature(hud_signature_.Get());
+    l->SetPipelineState(hud_pso_.Get());
+    l->SetComputeRootDescriptorTable(0, hud_heap_->GetGPUDescriptorHandleForHeapStart());
+    const uint32_t c[4] = {uint32_t(rect.left), uint32_t(rect.top), uint32_t(rect.width),
+                           uint32_t(rect.height)};
+    l->SetComputeRoot32BitConstants(1, 4, c, 0);
+    l->Dispatch((c[2] + 7) / 8, (c[3] + 7) / 8, 1);
+    for (D3D12_RESOURCE_BARRIER& x : b)
+      std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
+    l->ResourceBarrier(3, b);
+  });
+}
+
 void FrameGeneration::Release() {
   if (!context_ && !image_) return;
   device_.WaitIdle();
@@ -159,6 +300,7 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool dep
     return false;
   device->CreateRenderTargetView(image_.Get(), nullptr, image_rtv());
   device->CreateRenderTargetView(hudless_.Get(), nullptr, hudless_rtv());
+  if (CreateHudPass()) WriteHudViews();
 
   ffxCreateBackendDX12Desc backend = {};
   backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
@@ -173,7 +315,10 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool dep
   // The game's scene depth, reversed (cleared to 0) or not (Upscaler::SceneKind); with HDR the
   // image is PQ.
   cd.flags = (depth_inverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0u) |
-             (hdr ? FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE : 0u);
+             (hdr ? FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE : 0u) |
+             (REXCVAR_GET(rexnative_frame_generation_check)
+                  ? FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING
+                  : 0u);
   cd.displaySize = {width, height};
   cd.maxRenderSize = {SceneWidth(), SceneHeight()};
   cd.backBufferFormat = ffxApiGetSurfaceFormatDX12(format);
@@ -184,13 +329,29 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool dep
     context_ = nullptr;
     return false;
   }
+  if (REXCVAR_GET(rexnative_frame_generation_check)) {
+    ffxConfigureDescGlobalDebug g = {};
+    g.header.type = FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG;
+    g.effectId = FFX_API_EFFECT_ID_FRAMEGENERATION;
+    g.fpMessage = FgMessage;
+    g.debugLevel = 1;
+    if (api_->configure(&context_, &g.header) != FFX_API_RETURN_OK)
+      REXLOG_WARN("ReXNative frame generation: FidelityFX's message callback refused");
+  }
   width_ = width;
   height_ = height;
   hdr_ = hdr;
   depth_inverted_ = depth_inverted;
   debug_ = debug;
-  REXLOG_INFO("ReXNative frame generation: {}x{}{}{}", width, height, hdr ? " HDR10" : "",
-              debug ? ", debug view" : "");
+  // The provider the loader picked: 4.x (machine learning) on RDNA 4, 3.1.x elsewhere.
+  ffxQueryGetProviderVersion provider = {};
+  provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+  const char* name = api_->query(&context_, &provider.header) == FFX_API_RETURN_OK &&
+                             provider.versionName
+                         ? provider.versionName
+                         : "?";
+  REXLOG_INFO("ReXNative frame generation: {} {}x{}{}{}", name, width, height,
+              hdr ? " HDR10" : "", debug ? ", debug view" : "");
   return true;
 }
 
@@ -322,7 +483,8 @@ void FrameGeneration::MeasureHudless(CommandStream* list, uint64_t frame, uint64
       src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
       l->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
-    for (D3D12_RESOURCE_BARRIER& x : b) std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
+    for (D3D12_RESOURCE_BARRIER& x : b)
+      std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
     l->ResourceBarrier(2, b);
   });
 }
@@ -390,19 +552,36 @@ void FrameGeneration::FinishCaptures(uint64_t completed_fence) {
     PendingCapture& c = captures_.front();
     const D3D12_SUBRESOURCE_FOOTPRINT& f = c.footprint.Footprint;
     ID3D12Resource* const readbacks[3] = {c.real.Get(), c.generated.Get(), c.hudless.Get()};
+    // The texels are copied out here and converted and written by a thread of its own: written
+    // on this thread (three PNGs a frame, eight frames in a row) they held the frames back, and a
+    // game that moves by the clock (Sega Rally Revo) jumped up to half a second between the
+    // frames captured, so the generated ones looked far worse than in play.
+    struct Image {
+      std::vector<uint8_t> texels;
+      std::filesystem::path path;
+    };
+    std::vector<Image> images;
     for (uint32_t i = 0; i < 3; ++i) {
       ID3D12Resource* readback = readbacks[i];
       void* p = nullptr;
-      const D3D12_RANGE range = {0, SIZE_T(f.RowPitch) * f.Height};
+      const SIZE_T bytes = SIZE_T(f.RowPitch) * f.Height;
+      const D3D12_RANGE range = {0, bytes};
       if (!readback || FAILED(readback->Map(0, &range, &p))) continue;
-      std::vector<uint8_t> rgb;
-      present_debug::ToRgb(static_cast<const uint8_t*>(p), f.RowPitch, f.Width, f.Height,
-                           D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, c.hdr, &rgb);
+      Image& im = images.emplace_back();
+      im.texels.assign(static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + bytes);
+      im.path = c.dir / ("f" + std::to_string(c.frame) + kNames[i]);
       const D3D12_RANGE none = {0, 0};
       readback->Unmap(0, &none);
-      const std::filesystem::path path = c.dir / ("f" + std::to_string(c.frame) + kNames[i]);
-      present_debug::WritePng(path.c_str(), rgb, f.Width, f.Height);
     }
+    std::thread([images = std::move(images), pitch = f.RowPitch, w = f.Width, h = f.Height,
+                 hdr = c.hdr] {
+      for (const Image& im : images) {
+        std::vector<uint8_t> rgb;
+        present_debug::ToRgb(im.texels.data(), pitch, w, h,
+                             D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, hdr, &rgb);
+        present_debug::WritePng(im.path.c_str(), rgb, w, h);
+      }
+    }).detach();
     REXLOG_INFO("ReXNative frame generation: capture of frame {} ({})", c.frame,
                 c.dir.string());
     captures_.erase(captures_.begin());
@@ -415,7 +594,8 @@ ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, F
   c.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
   c.frameGenerationEnabled = true;
   c.flags = FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY;
-  if (debug_) c.flags |= FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW;
+  if (debug_ || REXCVAR_GET(rexnative_frame_generation_debug))
+    c.flags |= FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW;
   if (REXCVAR_GET(rexnative_frame_generation_indicators))
     c.flags |= FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES |
                FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_RESET_INDICATORS;
@@ -423,11 +603,13 @@ ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, F
   c.frameID = frame;
   REXNATIVE_LOG_FIRST(2, INFO, "ReXNative frame generation: generation rect {},{} {}x{} of {}x{}",
                       rect.left, rect.top, rect.width, rect.height, width_, height_);
-  if (hudless)
-    c.HUDLessColor = ffxApiGetResourceDX12(hudless_.Get(), FFX_API_RESOURCE_STATE_PRESENT);
+  // With the HUD-less copy: FidelityFX generates between the HUD-less copies, and CompositeHud
+  // puts the frame's HUD over the result (see frame_generation.h).
+  const bool own_hud = hudless && hud_ok_;
   ffxDispatchDescFrameGeneration d = {};
   d.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
-  d.presentColor = ffxApiGetResourceDX12(image_.Get(), FFX_API_RESOURCE_STATE_PRESENT);
+  d.presentColor = ffxApiGetResourceDX12(own_hud ? hudless_.Get() : image_.Get(),
+                                         FFX_API_RESOURCE_STATE_PRESENT);
   d.outputs[0] = ffxApiGetResourceDX12(output_.Get(), FFX_API_RESOURCE_STATE_PRESENT);
   d.numGeneratedFrames = 1;
   d.backbufferTransferFunction =
@@ -444,6 +626,7 @@ ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, F
     if (rc != FFX_API_RETURN_OK)
       REXNATIVE_WARN_ONCE("ReXNative frame generation: ffxDispatch failed ({})", rc);
   });
+  if (own_hud) CompositeHud(list, rect);
   return output_.Get();
 }
 

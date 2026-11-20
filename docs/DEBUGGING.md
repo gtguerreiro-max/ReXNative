@@ -19,17 +19,26 @@ window and drives it to the problem; then each experiment takes seconds on the r
 - `live.ps1 control "peek 03FD1000 131072"`: how many bytes of guest physical memory there are
   not zero, and the first 32, in the log (whether the CPU wrote something or only the GPU did);
   `scripts\rdoc.ps1 save <capture> -Event N -Texture T -X 4` saves a texture's mip 4.
-- Frame generation: with it on, each capture (`touch <live>\cap\capture.request`, eight
-  frames with `--rexnative_capture_burst=8`) also writes the frame as presented, the frame
-  generated before it and the HUD-less copy (`f<N>-fg-real.png`, `-fg-generated.png`,
-  `-fg-hudless.png`). A generated frame equal to the real one is a copy, not an interpolation;
+- Frame generation: with it on, each capture (`touch <live>\cap\capture.request`) also writes,
+  for eight frames in a row, the frame as presented, the frame generated before it and the
+  HUD-less copy (`f<N>-fg-real.png`, `-fg-generated.png`, `-fg-hudless.png`), off the render
+  thread. With frame generation on a capture does not hold the guest thread for the Xenos
+  plugin's copy (`--rexnative_capture_xenos`): the half-second hold made FidelityFX see a scene
+  change, and the next four generated frames, the ones the capture takes, were copies. A generated frame equal to the real one is a copy, not an interpolation;
   one between the real frames before and after it moves about a quarter of their two-frame
   motion (phase correlation of a strip). `rexnative.frame_generation_indicators` draws
   FidelityFX's marks on the generated frames (red band: reset, blue: scene change), and the
   log's frame statistics count the frames generated and the ones prepared in reset mode.
   The generated frames are captured for eight frames in a row, so each lies between two real
   ones it can be checked against: where it departs from their mean by more than they differ
-  from each other, the display flickers.
+  from each other, the display flickers (a moving high-contrast edge departs from that mean by
+  itself, so compare runs with alike motion). `rexnative.frame_generation_debug` (live) puts
+  FidelityFX's debug view in the generated frames: top row the game's motion vectors (grey: none),
+  their depth priority and the optical flow; bottom row the disocclusion mask (yellow: seen in
+  both frames, red: only in the previous one, green: only in this one, black: in neither), the
+  frame interpolated from and the HUD-less frame. A flat grey optical flow while the view moves is
+  the fault NOTES.md's "Frame generation's optical flow" tells of. `--rexnative_frame_generation_check`
+  turns on FidelityFX's checks of its inputs, its messages in the log.
 
 ## RenderDoc
 

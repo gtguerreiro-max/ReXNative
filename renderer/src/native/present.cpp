@@ -42,8 +42,9 @@ REXCVAR_DEFINE_INT32(rexnative_capture_hold_ms, 500, "ReXNative",
                      "finishes the frame before its front buffer is read from guest memory");
 REXCVAR_DEFINE_BOOL(rexnative_capture_xenos, true, "ReXNative",
                     "Captures also write the Xenos plugin's copy of the frame and the PSNR "
-                    "between them, holding the guest thread (--rexnative_capture_hold_ms); "
-                    "false: the native image alone, written off the guest thread");
+                    "between them, holding the guest thread (--rexnative_capture_hold_ms; not "
+                    "with frame generation on); false: the native image alone, written off the "
+                    "guest thread");
 REXCVAR_DEFINE_BOOL(rexnative_luma_probe, false, "ReXNative",
                     "Read back three rows of every front buffer (at 10, 40 and 80 % of its "
                     "height) and log their mean brightness in the frame CSV, to find frames "
@@ -708,7 +709,10 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       (swap.capture_request < 0 ? CaptureRequested(r.frame_index()) : swap.capture_request > 0)) {
     if (glitch.on()) glitch.Mark(r.frame_index());
     c.armed = true;
-    c.xenos = REXCVAR_GET(rexnative_capture_xenos);
+    // Not with frame generation: holding the guest thread half a second makes FidelityFX see a
+    // scene change, and its next 4 generated frames are copies of the real ones (no motion), the
+    // very frames the capture burst takes (frame_generation.h).
+    c.xenos = REXCVAR_GET(rexnative_capture_xenos) && !r.frame_generation_on();
     if (c.xenos) {
       capture_holding.store(true, std::memory_order_release);
       HoldFullReadback(true);

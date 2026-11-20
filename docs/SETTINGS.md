@@ -30,7 +30,8 @@ change it.
   upscaler and the frame pacer (`rexnative.frame_latency` above 0); the log's frame statistics
   say how many frames it generated ("frame generation: 120 of 120 frames (2 reset)").
   `rexnative.frame_generation_hudless` (on) keeps the HUD out of the generated frames;
-  `rexnative.frame_generation_indicators` draws FidelityFX's reset and scene change marks.
+  `rexnative.frame_generation_indicators` draws FidelityFX's reset and scene change marks;
+  `rexnative.frame_generation_debug` its debug view (DEBUGGING.md).
 - **DLSS 5 page:** picks a look, one set of DLSS 5's settings per kind of game (Cinematic,
   Cinematic with two passes, Natural, Stylized, Cel-shaded / 2D, Strong, or Custom), with its
   intensity on top. `project` gives each game the look that suits it (`rexnative/dlss5.py`:

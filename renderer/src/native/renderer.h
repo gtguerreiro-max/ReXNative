@@ -182,6 +182,8 @@ class NativeRenderer {
   // The scene's upscaler while it replaces the scene's MSAA (--rexnative_upscaler, switched
   // with bind_upscaler); nullptr otherwise.
   Upscaler* upscaler() { return upscaler_on_ ? upscaler_.get() : nullptr; }
+  // --rexnative_frame_generation as this frame began (BeginFrame).
+  bool frame_generation_on() const { return frame_generation_on_; }
 
   // The in-game settings (games/pgr4/src/pgr4_settings.cpp), from any thread.
   // The scene's antialiasing settings changed (--rexnative_msaa, --rexnative_upscaler and

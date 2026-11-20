@@ -20,21 +20,22 @@
 // (FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY).
 //
 // The HUD is not interpolated: drawn over the scene after its motion was taken, it would smear
-// between two frames (td-314). FidelityFX takes it from the frame's image where the image and a
-// HUD-less copy of it differ (HUDLessColor), which needs the two to match exactly elsewhere: the
-// copy is the front buffer's resolve (the last resolve before the previous Swap) run early
-// (Resolver::ResolveCopy), before the frame's first blended draw into its surface after an
-// opaque one, the final composite (BeforeDraw; draw logs of td-265: pixel shader
-// 6B06B8CDADD9CCBF, then 40 blended quads of HUD), and the Presenter draws it into hudless() as
-// it draws the front buffer into the image (SwapCopy). Other games blend full-screen passes over
-// the composite before their HUD (Sega Rally Revo's haze): a copy before them differs from the
-// image almost everywhere, FidelityFX takes all of it for HUD and the generated frame is a copy
-// of the real one (2026-11-19). So every 15th frame the copy is compared with the image
-// (MeasureHudless, on the CPU a few frames later): differing in more than half of the pixels, the
-// blended draws up to the copy point are full-screen passes, and their pixel shaders, in order,
-// are learned (post_passes_); the copy then waits for them, the first blended draw that is not
-// the next of them being the HUD's. The generation reads the
-// scene's part of both (Generate's rect). A frame without the scene's inputs (the upscaler off, a
+// between two frames (td-314). FidelityFX generates between HUD-less copies of the frames, and
+// CompositeHud takes the HUD from the frame's image where the image and its copy differ, which
+// needs the two to match exactly elsewhere (FidelityFX's own HUD-less input, HUDLessColor, does the
+// same but leaves its optical flow at zero: CompositeHud below). The copy is the front buffer's
+// resolve (the last resolve before the previous Swap) run early (Resolver::ResolveCopy), before
+// the frame's first blended draw into its surface after an opaque one, the final composite
+// (BeforeDraw; draw logs of td-265: pixel shader 6B06B8CDADD9CCBF, then 40 blended quads of HUD),
+// and the Presenter draws it into hudless() as it draws the front buffer into the image (SwapCopy).
+// Other games blend full-screen passes over the composite before their HUD (Sega Rally Revo's
+// haze): a copy before them differs from the image almost everywhere, all of it is taken for HUD
+// and the generated frame is a copy of the real one (2026-11-19). So every 15th frame the copy is
+// compared with the image (MeasureHudless, on the CPU a few frames later): differing in more than
+// half of the pixels, the blended draws up to the copy point are full-screen passes, and their
+// pixel shaders, in order, are learned (post_passes_); the copy then waits for them, the first
+// blended draw that is not the next of them being the HUD's. The generation reads the scene's
+// part of both (Generate's rect). A frame without the scene's inputs (the upscaler off, a
 // loading screen) is presented alone, and the next one starts the generation over: a frame ID not
 // one more than the last resets it.
 //
@@ -155,6 +156,20 @@ class FrameGeneration {
   bool CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs, uint64_t pixel_shader);
   // The share of pixels where the two readbacks differ (sampled every 4th pixel each way).
   double HudlessDifference() const;
+  // The HUD over the generated frame (Generate with the HUD-less copy): FidelityFX generates
+  // from the HUD-less copies alone, and this pass writes the frame's own pixels over the
+  // generated one where the frame and its HUD-less copy differ (the HUD), and one pixel around.
+  // FidelityFX's own HUD-less input (HUDLessColor) left its optical flow at zero whenever the
+  // copy was another resource than presentColor (3.1.6, 2026-11-20): the generated frames moved
+  // by the game's motion vectors alone, and whatever had none (mud, dust, thin posts) smeared.
+  bool CreateHudPass();
+  void WriteHudViews();
+  void CompositeHud(CommandStream* list, FfxApiRect2D rect);
+  ComPtr<ID3D12RootSignature> hud_signature_;
+  ComPtr<ID3D12PipelineState> hud_pso_;
+  ComPtr<ID3D12DescriptorHeap> hud_heap_;  // image_'s SRV, hudless_'s, output_'s UAV
+  uint32_t hud_stride_ = 0;
+  bool hud_tried_ = false, hud_ok_ = false;
 
   D3D12Device& device_;
   Resolver& resolver_;

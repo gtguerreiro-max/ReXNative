@@ -526,6 +526,31 @@ quarter of the two-frame motion) and the HUD stays sharp. Syndicate's first miss
 colours each frame, which FidelityFX's scene change detection takes for cuts (a copy, not an
 interpolation): right for such frames.
 
+## Frame generation's optical flow
+
+With the HUD-less copy right, the generated frames still smeared what moved without motion
+vectors of its own (mud thrown up, dust, thin fence posts in Sega Rally Revo): where the game's
+motion vectors disagree with the two frames, FidelityFX's frame generation takes its own optical
+flow instead, and FidelityFX's debug view (`rexnative.frame_generation_debug`) showed that flow
+flat grey, no motion at all, frame after frame. Swapping the inputs found the cause in the
+provider (FSR 3.1.6, the frame generation DLL 4.0.2): with a HUD-less copy (HUDLessColor) that
+is another resource than the frame (presentColor), the optical flow stays at zero; with the copy
+left out, or the same resource given for both, it follows the picture. So FidelityFX now takes
+the HUD-less copy as its frame and no HUD-less input, and generates between HUD-less copies; a
+pass of ours (FrameGeneration::CompositeHud) then puts the frame's own pixels over the generated
+one where the frame and its copy differ, and one pixel around (the HUD: 5 to 7 % of a race's
+pixels). That is FidelityFX's own way of keeping the HUD (the frame's pixels where the two
+differ), done after it. With the flow, the debug view shows it moving with the picture and the
+generated frames keep mud and posts in place; dust clouds behind the car, which no draw gives
+motion vectors (blended draws do not write them), still break into blocks of the flow's 8-pixel
+grid.
+
+Captures misled the first measurements: a capture held the guest thread for half a second for
+the Xenos plugin's copy, FidelityFX's scene change detection saw the jump, and for the next four
+frames (its scene change history) it copied the real frames instead of generating, so the first
+frames of every capture burst looked worst and the optical flow read zero there. With frame
+generation on, captures no longer hold the guest thread (DEBUGGING.md).
+
 ## The scene's depth after the upscaled resolve
 
 With the upscaler on (the Steam Deck's default), Asura's Wrath's hero looked see-through, his
