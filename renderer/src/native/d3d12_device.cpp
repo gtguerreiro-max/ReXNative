@@ -19,6 +19,7 @@
 #include <cwchar>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 REXCVAR_DEFINE_BOOL(rexnative_gpu_serialize, false, "ReXNative",
                     "Debug: wait for the GPU at the end of every frame, so no frame is in flight "
@@ -71,6 +72,46 @@ std::string Narrow(const wchar_t* w) {
   std::string s;
   for (; w && *w; ++w) s += *w < 128 ? char(*w) : '?';
   return s;
+}
+
+// Windows' "SDR content brightness" (Settings > Display > HDR) for the display whose GDI name is
+// given: the luminance in nits it shows SDR white at while in HDR mode, so 1.0 here looks as an
+// SDR game does on that display. 0 where it is not known (Wine has no such query).
+float SdrWhiteNits(const wchar_t* gdi_name) {
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+  LONG result = ERROR_INSUFFICIENT_BUFFER;
+  for (int tries = 0; tries < 4 && result == ERROR_INSUFFICIENT_BUFFER; ++tries) {
+    UINT32 path_count = 0, mode_count = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) !=
+        ERROR_SUCCESS)
+      return 0.0f;
+    paths.resize(path_count);
+    modes.resize(mode_count);
+    result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count,
+                                modes.data(), nullptr);
+    paths.resize(path_count);
+  }
+  if (result != ERROR_SUCCESS) return 0.0f;
+  for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path.sourceInfo.adapterId;
+    source.header.id = path.sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+        std::wcscmp(source.viewGdiDeviceName, gdi_name) != 0)
+      continue;
+    DISPLAYCONFIG_SDR_WHITE_LEVEL white = {};
+    white.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+    white.header.size = sizeof(white);
+    white.header.adapterId = path.targetInfo.adapterId;
+    white.header.id = path.targetInfo.id;
+    // In thousandths of 80 nits (the scRGB 1.0).
+    if (DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS && white.SDRWhiteLevel)
+      return float(white.SDRWhiteLevel) * 80.0f / 1000.0f;
+  }
+  return 0.0f;
 }
 
 }  // namespace
@@ -430,6 +471,7 @@ bool D3D12Device::SetUpColorSpace() {
   const float display_peak = od.MaxLuminance;
   const int32_t peak = REXCVAR_GET(rexnative_hdr_peak_nits);
   hdr_peak_nits_ = peak > 0 ? float(peak) : display_peak > 0.0f ? display_peak : 1000.0f;
+  hdr_sdr_white_nits_ = SdrWhiteNits(od.DeviceName);
   // The image is fitted to the peak already, so the display has nothing left to tone map.
   // Primaries: the game's, BT.709 with a D65 white, in units of 0.00002.
   DXGI_HDR_METADATA_HDR10 md = {};
@@ -442,8 +484,9 @@ bool D3D12Device::SetUpColorSpace() {
   ComPtr<IDXGISwapChain4> sc4;
   if (SUCCEEDED(swapchain_.As(&sc4)))
     Failed(sc4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(md), &md), "SetHDRMetaData");
-  REXLOG_INFO("ReXNative: HDR10 output, peak {:.0f} nits (the display reports {:.0f})",
-              hdr_peak_nits_, display_peak);
+  REXLOG_INFO("ReXNative: HDR10 output, peak {:.0f} nits (the display reports {:.0f}), "
+              "Windows' SDR white {:.0f} nits",
+              hdr_peak_nits_, display_peak, hdr_sdr_white_nits_);
   return true;
 }
 
@@ -468,6 +511,45 @@ bool D3D12Device::GetBackBuffers() {
   held_image_.Reset();
   if (present_interval_ > 1 && !CreateHeldImage()) present_interval_ = 1;
   return true;
+}
+
+bool D3D12Device::FollowDisplayMode() {
+  if (!swapchain_ || !REXCVAR_GET(rexnative_hdr) || ++display_check_frames_ < 60) return true;
+  display_check_frames_ = 0;
+  constexpr DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+  ComPtr<IDXGIOutput> output;
+  ComPtr<IDXGIOutput6> output6;
+  DXGI_OUTPUT_DESC1 od = {};
+  if (FAILED(swapchain_->GetContainingOutput(&output)) || FAILED(output.As(&output6)) ||
+      FAILED(output6->GetDesc1(&od)))
+    return true;
+  const bool display_hdr = od.ColorSpace == kHdr10;
+  if (display_hdr == hdr_) {
+    if (hdr_) {
+      const float white = SdrWhiteNits(od.DeviceName);
+      if (white != hdr_sdr_white_nits_) {
+        REXLOG_INFO("ReXNative: Windows' SDR white {:.0f} -> {:.0f} nits", hdr_sdr_white_nits_,
+                    white);
+        hdr_sdr_white_nits_ = white;
+      }
+    }
+    return true;
+  }
+  // The swapchain again as created: the HDR format, then SetUpColorSpace's choice.
+  REXLOG_INFO("ReXNative: the display {} HDR mode", display_hdr ? "entered" : "left");
+  WaitIdle();
+  for (auto& b : back_buffers_) b.Reset();
+  held_image_.Reset();
+  if (Failed(swapchain_->ResizeBuffers(kBackBuffers, width_, height_, kHdrBackBufferFormat,
+                                       swapchain_flags_),
+             "ResizeBuffers(display mode)"))
+    return false;
+  if (hdr_) {
+    hdr_ = false;
+    Failed(swapchain_->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
+           "SetColorSpace1(sRGB)");
+  }
+  return SetUpColorSpace() && GetBackBuffers();
 }
 
 // The game window's client size changed (window resize, fullscreen toggle): the swapchain
@@ -699,7 +781,7 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   end_frame_times_.stream_wait_ns = stream_wait_ns_.exchange(0, std::memory_order_relaxed);
   if (REXCVAR_GET(rexnative_gpu_serialize)) WaitFence(slot_fence_[slot_]);
   slot_ = (slot_ + 1) % kFramesInFlight;
-  if (!FollowWindowSize()) return false;
+  if (!FollowWindowSize() || !FollowDisplayMode()) return false;
   // The next frame's slot: its upload memory and timestamps are free once the GPU finished the
   // slot's last frame.
   const uint64_t t0 = NowNs();

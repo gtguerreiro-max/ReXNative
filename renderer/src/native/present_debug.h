@@ -24,6 +24,7 @@ struct BlitConstants {
   uint32_t hdr;
   float paper_white, peak, knee;
   float white[3];  // HDR: the ramp's white in linear light
+  uint32_t srgb;   // HDR: SDR values to light with the sRGB curve (else a 2.2 power)
 };
 
 // 32bpp host texels (row pitch; RGBA8 or RGB10A2 unorm) -> 8-bit RGB with a D3D12 component

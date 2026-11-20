@@ -885,3 +885,29 @@ against 40-45 ms, the same frames. The Deck's installs now use 1 (rexnative/deck
 Not reached: Overlord II's intro videos under Proton keep its main thread at 76-80 %: the game
 waits there in many short KeDelayExecutionThread calls, and ReXGlue's Windows `SleepFor` spins
 the last 250 µs of every wait (`kSpinTail`).
+
+## SDR white in HDR output
+
+With HDR10 output the game's 1.0, its white (and the HUD), goes out at a paper white, and only what
+it renders above that reaches past it. Blur on a 456-nit Windows display looked far brighter and
+harder than in Xenia Canary on the same desktop, though the frame it composes was the same: in
+RenderDoc captures of both at the race start the composite pass's output averaged 76.9 and 75.7
+(of 255), and Xenia's presenter applied the same gamma table the log shows (64/128/192 -> 193/462/741
+of 1023). The difference was all in the presentation:
+
+- **Paper white.** 400 nits, gamescope's level for SDR content, put the game's white near the
+  display's peak, where Windows shows SDR windows (Xenia's) at the display's SDR content brightness
+  (Settings > Display > HDR; 240 nits there). `--rexnative_hdr_paper_white=0` (the default) takes
+  that level on Windows, read with
+  `DisplayConfigGetDeviceInfo(DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL)` (thousandths of
+  80 nits); Wine has no such query and 400 stays.
+- **The curve.** DWM turns SDR windows into light with the piecewise sRGB curve; a 2.2 power, which
+  the blit used, gives the shadows a third or less of that light near black (0.05: 0.0014 against
+  0.0039), the hard, flat look. `--rexnative_hdr_sdr_curve=auto` takes the sRGB curve where Windows
+  reports its SDR brightness and keeps the 2.2 power under Wine.
+- **Switching HDR while the game runs.** The colour space was chosen once, with the swapchain, so
+  turning Windows' HDR off left an HDR10 signal on an SDR desktop. `D3D12Device::FollowDisplayMode`
+  looks at the window's display about once a second and sets the swapchain up again when its HDR
+  mode changes (and takes a new SDR brightness).
+
+The log's `HDR10 output` line gives the levels.

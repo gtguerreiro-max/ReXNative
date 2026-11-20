@@ -58,10 +58,18 @@ REXCVAR_DEFINE_BOOL(rexnative_fsr, true, "ReXNative",
 REXCVAR_DEFINE_DOUBLE(rexnative_fsr_sharpness, 0.2, "ReXNative",
                       "FSR 1's sharpening (RCAS) reduction in stops: 0 the sharpest, 2 soft")
     .range(0.0, 2.0);
-REXCVAR_DEFINE_INT32(rexnative_hdr_paper_white, 400, "ReXNative",
-                     "HDR output: the luminance of SDR white (the HUD, the game's 1.0) in nits. "
-                     "400 is what gamescope shows SDR content at (--hdr-sdr-content-nits), so the "
-                     "game is as bright as in SDR up to white; ITU-R BT.2408's reference is 203");
+REXCVAR_DEFINE_STRING(rexnative_hdr_sdr_curve, "auto", "ReXNative",
+                      "HDR output: the curve that turns the game's SDR values (up to its white) "
+                      "into light: srgb (the piecewise sRGB curve, which Windows shows SDR "
+                      "windows with in HDR mode, Xenia's among them), 2.2 (a 2.2 power, darker "
+                      "shadows) or auto (srgb where Windows reports its SDR brightness, 2.2 "
+                      "elsewhere)");
+REXCVAR_DEFINE_INT32(rexnative_hdr_paper_white, 0, "ReXNative",
+                     "HDR output: the luminance of SDR white (the HUD, the game's 1.0) in nits; "
+                     "0: Windows' SDR content brightness for the display (Settings > Display > "
+                     "HDR), so the game is as bright as an SDR game there up to white, else 400, "
+                     "what gamescope shows SDR content at (--hdr-sdr-content-nits). ITU-R "
+                     "BT.2408's reference is 203");
 
 namespace rexnative {
 
@@ -92,7 +100,8 @@ static_assert(sizeof(rex::graphics::reg::DC_LUT_PWL_DATA) == 4 &&
 // HDR output (hdr = 1): src is the front buffer's linear image (ResolvedImage::linear), the
 // game's color before the front buffer clips it at 1. The game renders linear light and leaves
 // the display curve to the gamma ramp, so up to 1 a texel is shown as in SDR: through the ramp,
-// then the 2.2 gamma of an SDR display, with SDR white at paper_white. Above 1 it continues
+// then an SDR display's curve (srgb: the piecewise sRGB one Windows shows SDR windows with in HDR
+// mode; else a 2.2 power), with SDR white at paper_white. Above 1 it continues
 // linearly from the ramp's white. A hue-preserving shoulder (Reinhard on the largest component,
 // slope 1 at the knee) fits the highlights under the display's peak; the HUD stays at paper
 // white. Then BT.709 -> BT.2020 and the PQ curve (SMPTE ST 2084).
@@ -101,7 +110,7 @@ Texture2D<float4> src : register(t0);
 cbuffer blit : register(b0) {
   float2 image_size; uint ramp_mode; uint point_sampled;
   uint hdr; float paper_white; float peak; float knee;  // paper_white in 10000 nits (PQ 1.0);
-  float3 white;                                         // peak and knee over SDR white
+  float3 white; uint srgb;                              // peak and knee over SDR white
 };
 cbuffer gamma : register(b1) { uint4 ramp[96]; };
 void vs(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 texel : TEXCOORD0) {
@@ -127,7 +136,9 @@ float3 Gamma(float3 c) {
 float3 Texel(int2 p) {
   float3 c = src.Load(int3(p, 0)).rgb;
   if (!hdr) return Gamma(c);
-  return c > 1.0 ? white * c : pow(Gamma(max(c, 0.0)), 2.2);
+  float3 g = Gamma(saturate(c));
+  float3 sdr = srgb ? (g <= 0.04045 ? g / 12.92 : pow((g + 0.055) / 1.055, 2.4)) : pow(g, 2.2);
+  return c > 1.0 ? white * c : sdr;
 }
 float3 Hdr10(float3 c) {
   float m = max(max(c.r, c.g), c.b);
@@ -159,6 +170,16 @@ float4 ps(float4 pos : SV_Position, float2 texel : TEXCOORD0) : SV_Target {
 
 // The Xenos driver's command processor's gamma ramps (rex/xenos/draw_hook.h, sdk/patches).
 rex::xenos::GammaRampView GuestGammaRamps() { return rex::xenos::GetGammaRampView(); }
+
+// --rexnative_hdr_sdr_curve: auto takes sRGB where Windows reports its SDR brightness (DWM shows
+// SDR windows through the sRGB curve, so the game matches them, Xenia's included), and the 2.2
+// power under Wine (gamescope's HDR).
+uint32_t SrgbCurve(const D3D12Device& d) {
+  const std::string curve = REXCVAR_GET(rexnative_hdr_sdr_curve);
+  if (curve == "srgb") return 1;
+  if (curve == "2.2") return 0;
+  return d.hdr_sdr_white_nits() > 0.0f ? 1 : 0;
+}
 
 // Output of a PWL ramp channel for a 10-bit input (the shader's math), for the log.
 double PwlOut(const uint32_t* words, uint32_t channel, uint32_t x) {
@@ -637,7 +658,10 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       // The Xenos plugin applied the ramp to its frame already.
       const RampMode wanted = classic ? kRampNone : rgb10a2 ? kRampPwl : kRampTable;
       const uint32_t ramp_slot = d.frame_slot();
-      const float paper_white = float(std::max(1, REXCVAR_GET(rexnative_hdr_paper_white)));
+      const int32_t paper_white_cvar = REXCVAR_GET(rexnative_hdr_paper_white);
+      const float paper_white = paper_white_cvar > 0             ? float(paper_white_cvar)
+                                : d.hdr_sdr_white_nits() > 0.0f ? d.hdr_sdr_white_nits()
+                                                                : 400.0f;
       const float peak = d.hdr_peak_nits() / paper_white;
       BlitConstants constants = {{iw, ih},
                                  wanted != kRampNone && WriteRamp(wanted, ramp_slot) ? wanted
@@ -648,10 +672,16 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                                  peak,
                                  // The shoulder starts halfway to the peak, above white.
                                  std::max(std::min(1.0f, peak), 0.5f * peak),
-                                 {}};
-      for (uint32_t c = 0; c < 3; ++c)
-        constants.white[c] =
-            constants.ramp_mode == kRampNone ? 1.0f : std::pow(ramp_white[c], 2.2f);
+                                 {},
+                                 SrgbCurve(d)};
+      // The ramp's white through the same curve as the shader's SDR values.
+      for (uint32_t c = 0; c < 3; ++c) {
+        const float w = ramp_white[c];
+        constants.white[c] = constants.ramp_mode == kRampNone ? 1.0f
+                             : !constants.srgb               ? std::pow(w, 2.2f)
+                             : w <= 0.04045f                 ? w / 12.92f
+                                             : std::pow((w + 0.055f) / 1.055f, 2.4f);
+      }
       list->SetGraphicsRoot32BitConstants(1, sizeof(constants) / 4, &constants, 0);
       list->SetGraphicsRootConstantBufferView(
           2, ramp_buffer->GetGPUVirtualAddress() + uint64_t(ramp_slot) * kRampSlotBytes);

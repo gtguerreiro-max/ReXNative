@@ -123,6 +123,9 @@ class D3D12Device {
   bool hdr() const { return hdr_; }
   // With hdr(): the luminance, in nits, that the presented image peaks at (the HDR10 metadata).
   float hdr_peak_nits() const { return hdr_peak_nits_; }
+  // With hdr(): Windows' SDR content brightness for the display in nits, the level it shows SDR
+  // white at in HDR mode; 0 where unknown (under Wine).
+  float hdr_sdr_white_nits() const { return hdr_sdr_white_nits_; }
 
   // Fence value EndFrame signals for the frame being recorded; last value the GPU reached. The
   // stream's thread signals it after the frame's calls, so a wait (WaitFence) flushes the stream.
@@ -213,6 +216,10 @@ class D3D12Device {
   void ReadBusy();
   bool GetBackBuffers();
   bool FollowWindowSize();
+  // The display's HDR mode or SDR brightness changed while the game runs (Windows' HDR switch,
+  // its SDR content brightness, the window on another display): the swapchain follows, looked at
+  // about once a second.
+  bool FollowDisplayMode();
   // The stream's thread: the copy of `image` (PRESENT state) into the current back buffer.
   void CopyToBackBuffer(List* list, ID3D12Resource* image);
   // The frame being recorded draws into held_image_ (set_present_interval).
@@ -262,6 +269,8 @@ class D3D12Device {
   bool vsync_ = false;
   bool hdr_ = false;
   float hdr_peak_nits_ = 0.0f;
+  float hdr_sdr_white_nits_ = 0.0f;
+  uint32_t display_check_frames_ = 0;
   bool latency_waitable_ = false;
   HWND game_window_ = nullptr;
 
