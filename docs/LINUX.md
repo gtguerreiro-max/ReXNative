@@ -235,6 +235,27 @@ Building it: the precompiled header changes, but Ninja does not compile the gene
 in a build folder made before; `rexnative project --build` and `build-game.sh` remove such a
 stale header first (else the build keeps the old code without a word).
 
+### Frame latency 1, with the sleep
+
+With the CPU no longer spinning, frame latency 1 (`--rexnative_frame_latency=1`: a frame begins
+only once the one before it was shown, against 2 for the installed games) was tried on Jet Set
+Radio's heavy start, 2 and 1 alternated (`AB=latency deck-spin-ab.sh`; "begin to shown" is the
+pacer's own measure, from a frame's beginning, the game reading its pad, to the display showing
+it: deck-measure.sh's `SHOWN` line):
+
+| Build | Frame latency | Begin to shown | Frame time 99th pct / max | SoC power |
+| --- | --- | --- | --- | --- |
+| Windows, Proton | 2 (1 / 2) | 42.3 / 45.2 ms | 34.8 / 36.0-36.3 ms | 4.2 / 4.4 W |
+| Windows, Proton | 1 (1 / 2) | **33.3 / 23.4 ms** | 34.8-35.1 / 35.4-36.3 ms | 4.5 / 4.5 W |
+| Native Linux | 2 (1 / 2) | 41.2 / 39.9 ms | 34.3-34.4 / 34.6-35.1 ms | 3.9 / 3.8 W |
+| Native Linux | 1 (1 / 2) | **33.3 / 23.1 ms** | 34.3-34.4 / 34.6-34.8 ms | 4.3 / 4.0 W |
+
+The same 30 FPS and frame times, the picture 8 to 22 ms sooner after the pad (a fifth to a
+half less); 33.3 ms where the pacer had not yet learnt to begin the frame later in its slot, 23
+ms where it had. It costs 0.1-0.4 W. Not tried yet on a game whose GPU or CPU fills more of the
+frame (Overlord II's menu: 9.5 ms of GPU a frame), nor on Midnight Club's races, which fell to
+22-29 FPS at 1 before the sleep (docs/ROADMAP.md).
+
 ## Next: ReXNative on Vulkan (not started)
 
 What a Vulkan backend for ReXNative's own renderer would take, starting with the core draw path
