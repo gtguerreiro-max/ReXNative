@@ -401,6 +401,25 @@ frame's draws of the shader, removed the ground without motion that a RenderDoc 
 around the car (a new tile, the first of its shader, keeps its own constants), but raised the
 flicker by 0.9 points (better in 6 of 22): left out.
 
+That flicker measure favours a generated frame that is the mean of the two around it, which is
+what a surface without motion gives, so the ground without motion stayed and the captures kept
+showing it: in most frames of a race 10 to 30 % of the pixels, the ground around and below the
+car, had no motion at all, and the generated frames there had a copy of the number plate below
+the bumper, or the plate twice. The motion log showed the draws: the ground nearest the car is
+drawn first among its shader's, in tiles whose index counts change from frame to frame (no draw
+of their identity in the previous frame), and the camera fallback had no draw of the shader
+matched before them to take the camera's registers from. Such a draw now gets its previous
+constants as a copy of its own in upload memory of their own, and the first draw of its shader
+matched later in the frame writes the camera's registers into that copy, as the fallback would
+have (MotionHistory::pendable): the GPU reads the copy only once the list is submitted, and the
+list submitted before (every 256 draws) leaves its pending copies as they were. With this on in
+odd frames only (draw-debug 2097152 with 1048576), pixels without motion went from 6.5 % to
+0.1 % of the frames, the plate's copies were in the frames without it (5152, 5156, 5158 of
+one capture) and not in those with it, and the flicker measure moved by -0.1 points (9 of 17).
+Warping the frame before by the new vectors left more error than no motion in that zone (13.8
+against 9.0): the dust cloud behind the car, which no draw gives motion vectors and which moves
+with the car, covers much of it.
+
 ## Inline draws, found at run time
 
 `rexnative.inline_draws_auto` (on by default) watches each Swap: 30 frames in a row with at most

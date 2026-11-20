@@ -1274,6 +1274,9 @@ struct DrawRenderer::Impl {
     uint64_t motion_nearest = 0;  // told apart from draws as alike by their first vertex
     uint64_t motion_far = 0;      // refused the nearest previous draw: its first vertex too far
     uint64_t motion_other_buffers = 0;  // moved with the camera: another mesh's buffer found
+    // Draws given the camera's motion by a draw of their shader later in the frame
+    // (MotionHistory::pendable), and those left without motion.
+    uint64_t motion_late = 0, motion_unresolved = 0;
   } diag;
   // Where Prepare's counters go: with the render thread, which owns diag, the guest thread's own.
   PrepareDiag& PrepDiag() { return threaded ? prep_diag : diag.prep; }
@@ -1330,7 +1333,8 @@ struct DrawRenderer::Impl {
     kDebugNoAnchor = 65536,  // motion: no first vertex tie-break (MotionHistory::Nearer)
     kDebugLogMotion = 262144,  // log every motion draw's match while set (MotionHistory)
     kDebugNoBufferMatch = 524288,  // motion: matches not told apart by their vertex buffers
-    kDebugAlternateMotion = 1048576,  // 524288 and 4194304 in even frames only (A/B in one run)
+    kDebugAlternateMotion = 1048576,  // the motion bits in even frames only (A/B in one run)
+    kDebugNoLateCamera = 2097152,     // motion: no camera from later in the frame (pendable)
     kDebugNoAnchor16 = 4194304,  // motion: no first vertex of 16-bit components
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
@@ -2702,6 +2706,22 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
       previous = &camera;
     }
   }
+  // No draw of its shader matched yet this frame (MotionHistory::pendable): its own constants
+  // in memory of their own, which take the camera's registers from a later draw of its shader.
+  MotionHistory::Constants late;
+  if (found == MotionHistory::Found::kNone && motion_history.pendable() &&
+      !(motion_off & kDebugNoLateCamera)) {
+    UploadPool::Alloc a;
+    if (constant_upload.Allocate(cb_float_vs.size, 256, r.frame_fence(), &a)) {
+      std::memcpy(a.cpu, cb_float_vs.last, cb_float_vs.size);
+      late = now;
+      late.float_constants = a.gpu;
+      previous = &late;
+      motion_history.AddPending(static_cast<uint8_t*>(a.cpu));
+    }
+  }
+  diag.motion_late += motion_history.TakeLate();
+  diag.motion_unresolved += motion_history.TakeDropped();
   ++diag.motion_draws;
   ++motion_ordinal;
   diag.motion_copies += found == MotionHistory::Found::kCopy;
@@ -2711,10 +2731,12 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   if (Upscaler* u = r.upscaler())
     u->NoteMotionMatch(motion_history.compared(), motion_history.refused());
   diag.motion_camera += previous == &camera;
-  if (previous && previous->vs == vs)
+  if (previous == &late) {
+  } else if (previous && previous->vs == vs) {
     ++diag.motion_matched;
-  else
+  } else {
     previous = &now;
+  }
   // The previous pass computes the vertex index with this draw's first vertex (the system
   // constants are this draw's). A game that writes each frame's vertices into another buffer
   // and draws them from offsets into it (Jet Set Radio: two 4 MB buffers in turn, every draw
@@ -2728,14 +2750,15 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
     // of that frame. found: 0 none, 1 order, 2 copy, 3 nearest, 4 camera; prev: its index in
     // the previous frame's motion draws.
     const MotionHistory::Constants* p =
-        previous != &now && previous != &camera ? previous : nullptr;
+        previous != &now && previous != &camera && previous != &late ? previous : nullptr;
     REXLOG_INFO(
-        "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
+        "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
         "buffers {} refusal {} formats {} | "
         "prev off {} base {:08X} | anchor {} ({:.4g} {:.4g} {:.4g} {:.4g} {:.4g}) prev {} "
         "({:.4g} {:.4g} {:.4g} {:.4g} {:.4g})",
         list_frame, motion_ordinal, frame_draws, s.count, uint32_t(s.primitive),
         uint32_t(found), motion_history.global() ? " global" : "", motion_history.refused() ? " far" : "",
+        previous == &late ? " late" : "",
         double(motion_history.anchor_limit()),
         p ? int64_t(motion_history.last_index()) : -1, motion_history.previous_count(),
         vertex_index_offset, now.vertex_base[0], motion_history.stable() ? "kept" : "-",
@@ -5569,6 +5592,7 @@ void DrawRenderer::InvalidateListState(ListBreak why) {
   if (submit) {
     impl_->shared_state = D3D12_RESOURCE_STATE_COMMON;
     impl_->memexport_indices_state = D3D12_RESOURCE_STATE_COMMON;
+    impl_->motion_history.DropPending();  // their constants are the GPU's now
   }
   if (impl_->draw_log)
     std::fprintf(impl_->draw_log, "%s (after draw %u)\n", submit ? "submit" : "resolve",
@@ -5678,13 +5702,15 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
           "constants: {:.1f}/frame told apart from copies of their mesh, {:.1f}/frame moved with "
           "the camera, {:.1f}/frame from their previous vertex buffer, {:.1f}/frame told apart "
           "by their first vertex, {:.1f}/frame refused theirs for its distance, {:.1f}/frame "
-          "refused another mesh's vertex buffer{}",
+          "refused another mesh's vertex buffer, {:.1f}/frame moved with the camera by a draw "
+          "later in the frame, {:.1f}/frame without one{}",
           double(d.motion_draws) / double(d.frames),
           100.0 * double(d.motion_matched) / double(d.motion_draws),
           double(d.motion_copies) / double(d.frames), double(d.motion_camera) / double(d.frames),
           double(d.motion_moved) / double(d.frames), double(d.motion_nearest) / double(d.frames),
           double(d.motion_far) / double(d.frames),
           double(d.motion_other_buffers) / double(d.frames),
+          double(d.motion_late) / double(d.frames), double(d.motion_unresolved) / double(d.frames),
           impl_->motion_history.stable() ? " (vertex buffers kept)" : "");
     d = Impl::Diag{};
   }

@@ -118,6 +118,7 @@ class MotionHistory {
   // Frame `frame`'s first draw: the last frame's draws become the previous frame's, if that was
   // frame - 1 (the constant pool keeps one frame's memory, drawn or not).
   void BeginFrame(uint64_t frame) {
+    DropPending();  // submitted with the last frame
     std::swap(current_, previous_);
     std::swap(current_floats_, previous_floats_);
     stable_ = buffer_matches_ >= 64 && same_buffer_matches_ * 10 >= buffer_matches_ * 9;
@@ -233,7 +234,7 @@ class MotionHistory {
       if (auto it = by_loose_.find(loose); it != by_loose_.end())
         for (uint32_t i : it->second) consider(i);
     }
-    far_ = compared_ = false;
+    far_ = compared_ = pendable_ = false;
     last_refusal_ = 0;
     if (buffers_ && best != n && !best_buffer && now.vertex_base[0] && stable_ &&
         !(now.anchor_valid && previous_[best].constants.anchor_valid &&
@@ -251,7 +252,7 @@ class MotionHistory {
       found_ = Found::kNone;  // no camera without a matched draw of the shader: that draw
       last_refusal_ = 2;
     }
-    if (best == n) return Camera(now, floats, size);
+    if (best == n) return CameraOrLater(now, floats, size);
     if (now.vertex_base[0]) {
       ++buffer_matches_;
       same_buffer_matches_ += best_buffer;
@@ -274,7 +275,7 @@ class MotionHistory {
       compared_ = true;
       if (d > anchor_limit_) {
         far_ = true;
-        return Camera(now, floats, size);
+        return CameraOrLater(now, floats, size);
       }
     }
     found_ = !several || best == first ? Found::kOrder
@@ -282,6 +283,7 @@ class MotionHistory {
                                         : Found::kCopy;
     previous_[best].matched = true;
     current_.back().previous = uint32_t(best);
+    if (!pending_.empty()) ResolvePending();
     cursor_ = best + 1;
     last_index_ = best;
     return &previous_[best].constants;
@@ -301,6 +303,25 @@ class MotionHistory {
   void set_buffers(bool on) { buffers_ = on; }
   // Draws this frame sent to the camera instead of another mesh's vertex buffer, and resets it.
   uint32_t TakeOtherBuffers() { return std::exchange(other_buffers_, 0); }
+  // The last Match's draw found no draw of its shader matched before it in the frame for the
+  // camera (Found::kNone): the first of its shader to come into view, or to change its level of
+  // detail, before any of its shader that kept theirs. Sega Rally Revo draws the ground around
+  // the car first, in tiles whose index counts change from frame to frame: a fifth of the
+  // screen without motion in most frames of a race (2026-11-20 captures), where frame
+  // generation drew the road under the car twice, the bumper over it. Its previous constants,
+  // bound as a copy of its own (AddPending, the copy's upload memory: no motion, as before),
+  // take the camera's from the first draw of its shader matched later in the frame, before the
+  // list that reads them is submitted (DropPending).
+  bool pendable() const { return pendable_; }
+  void AddPending(uint8_t* cpu) { pending_.push_back({uint32_t(current_.size() - 1), cpu}); }
+  // The list is submitted: the pending copies are the GPU's now, left without motion.
+  void DropPending() {
+    dropped_ += uint32_t(pending_.size());
+    pending_.clear();
+  }
+  // Pending draws given the camera's motion this frame, and those dropped; both reset.
+  uint32_t TakeLate() { return std::exchange(late_, 0); }
+  uint32_t TakeDropped() { return std::exchange(dropped_, 0); }
   bool refused() const { return far_; }  // the last Match refused the nearest draw: too far
   bool compared() const { return compared_; }
   float anchor_limit() const { return anchor_limit_; }
@@ -397,6 +418,7 @@ class MotionHistory {
   // (a moving object's, nothing of the frame's told apart from its own).
   const Constants* Camera(const Constants& now, const uint8_t* floats, uint32_t size) {
     found_ = Found::kNone;
+    no_ref_ = false;
     const Draw* ref = nullptr;
     for (size_t i = current_.size() - 1; i-- > 0;) {
       const Draw& c = current_[i];
@@ -405,21 +427,59 @@ class MotionHistory {
         break;
       }
     }
-    if (!ref) return nullptr;
+    if (!ref) {
+      no_ref_ = true;
+      return nullptr;
+    }
     const uint8_t* ref_now = current_floats_.data() + ref->offset;
     const uint8_t* ref_then = previous_floats_.data() + previous_[ref->previous].offset;
+    if (!Kept(ref_now, ref_then, size)) return nullptr;
     camera_floats_.assign(floats, floats + size);
-    bool kept = false;
-    for (uint32_t r = 0; r < size; r += 16) {
-      if (!std::memcmp(ref_now + r, ref_then + r, 16))
-        kept = true;
-      else if (!std::memcmp(ref_now + r, floats + r, 16))
-        // Changed since the previous frame and shared with this draw: the frame's. A register
-        // of the reference draw's own (its transform) stays this draw's.
-        std::memcpy(camera_floats_.data() + r, ref_then + r, 16);
-    }
-    if (kept) found_ = Found::kCamera;
+    FrameRegisters(ref_now, ref_then, floats, camera_floats_.data(), size);
+    found_ = Found::kCamera;
     return nullptr;
+  }
+  // Camera, and whether its draw may take the camera's later in the frame (pendable).
+  const Constants* CameraOrLater(const Constants& now, const uint8_t* floats, uint32_t size) {
+    const Constants* c = Camera(now, floats, size);
+    pendable_ = found_ == Found::kNone && no_ref_;
+    return c;
+  }
+  // Whether a reference draw (its constants now and in the previous frame) kept a register: one
+  // that changed them all is a moving object's, nothing of the frame's told apart from its own.
+  static bool Kept(const uint8_t* ref_now, const uint8_t* ref_then, uint32_t size) {
+    for (uint32_t r = 0; r < size; r += 16)
+      if (!std::memcmp(ref_now + r, ref_then + r, 16)) return true;
+    return false;
+  }
+  // Into `out`, a draw's own float constants (`own`): the registers the reference changed since
+  // the previous frame and shares with the draw, the frame's, at their previous values. A
+  // register of the reference draw's own (its transform) stays the draw's.
+  static void FrameRegisters(const uint8_t* ref_now, const uint8_t* ref_then, const uint8_t* own,
+                             uint8_t* out, uint32_t size) {
+    for (uint32_t r = 0; r < size; r += 16)
+      if (std::memcmp(ref_now + r, ref_then + r, 16) && !std::memcmp(ref_now + r, own + r, 16))
+        std::memcpy(out + r, ref_then + r, 16);
+  }
+  // The frame's last draw matched: the pending draws of its shader (pendable) take the camera's
+  // registers from it, written into their copies' upload memory (written only: write-combined).
+  void ResolvePending() {
+    const Draw& ref = current_.back();
+    const uint8_t* ref_now = current_floats_.data() + ref.offset;
+    const uint8_t* ref_then = previous_floats_.data() + previous_[ref.previous].offset;
+    if (!Kept(ref_now, ref_then, ref.size)) return;
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
+                                  [&](const Pending& p) {
+                                    const Draw& d = current_[p.draw];
+                                    if (d.constants.vs != ref.constants.vs || d.size != ref.size)
+                                      return false;
+                                    FrameRegisters(ref_now, ref_then,
+                                                   current_floats_.data() + d.offset, p.cpu,
+                                                   d.size);
+                                    ++late_;
+                                    return true;
+                                  }),
+                   pending_.end());
   }
   std::vector<Draw> current_, previous_;
   std::vector<uint8_t> current_floats_, previous_floats_;
@@ -446,6 +506,16 @@ class MotionHistory {
   bool buffers_ = true;
   uint32_t last_refusal_ = 0;
   uint32_t buffer_matches_ = 0, same_buffer_matches_ = 0, other_buffers_ = 0;
+  // Draws waiting for a matched draw of their shader (pendable): their place in current_, and
+  // the upload memory of their previous float constants.
+  struct Pending {
+    uint32_t draw;
+    uint8_t* cpu;
+  };
+  std::vector<Pending> pending_;
+  bool pendable_ = false;  // the last Match's draw may wait (pendable)
+  bool no_ref_ = false;    // the last Camera found no matched draw of the shader
+  uint32_t late_ = 0, dropped_ = 0;  // TakeLate, TakeDropped
 };
 
 }  // namespace rexnative
