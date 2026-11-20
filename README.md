@@ -30,7 +30,9 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 ## Features
 
 - **Upscaling and anti-aliasing:** NVIDIA DLAA, DLSS Super Resolution and DLSS 5 neural rendering
-  on RTX GPUs; AMD FSR 4 and 3.1 on the others, the Steam Deck included; FSR frame generation.
+  on RTX GPUs; AMD FSR 4 and 3.1 on the others, the Steam Deck included.
+- **Frame generation** (AMD FSR): a 30 FPS game shown at 60, switched on and off in the running
+  game, with motion vectors from every draw and the game's HUD kept out of the generated frames.
 - **Image:** MSAA up to 8x, anisotropic filtering, FSR 1 screen scaling, HDR10 output, the
   console's gamma ramps, frame pacing on the display.
 - **A settings HUD over the running game** (F1, or Back + Start on a pad), saved into the game's
@@ -40,17 +42,21 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 - **The stock renderer one setting away:** the HUD's Renderer switches to ReXGlue's Xenos GPU
   emulation, Xenia's renderer, and back while the game runs, on the Steam Deck too, and keeps the
   choice for the next start (F9 switches for that run only): a game the native renderer does not
-  draw right yet stays playable.
+  draw right yet stays playable. A fault in the native path hands the game to it by itself.
+- **Games as they come:** archives, disc images and Xbox Live packages; the newest title update
+  and the game's DLC (`prepare --title-update --dlc`); a game's XEX DLL modules recompiled with
+  it; a D3D older than every reference drawn from its push buffer alone.
 - **Windows and Steam Deck** (under Proton, through vkd3d-proton).
 
 ## Games
 
-Twenty-nine games tried on ReXGlue v0.11, most with a Steam Deck result. Fifteen play on the PC:
-From Dust, Iron Brigade, Jet Set Radio, Dungeons & Dragons: Chronicles of Mystara, Super Meat Boy,
-Minecraft, Castlevania: Symphony of the Night, Orcs Must Die!, Double Dragon Neon, Midnight Club:
-Los Angeles, Dark Souls II, Overlord, Overlord II, SSX and Forza Horizon (whose speech and media
-code are XEX DLL modules, recompiled with it). Fable II draws its world on the native renderer;
-ten more run in part.
+Thirty-seven games tried on ReXGlue v0.11, most with a Steam Deck result. Twenty-one play on the
+PC: From Dust, Iron Brigade, Jet Set Radio, Dungeons & Dragons: Chronicles of Mystara, Super Meat
+Boy, Minecraft, Castlevania: Symphony of the Night, Orcs Must Die!, Double Dragon Neon, Midnight
+Club: Los Angeles, Dark Souls II, Overlord, Overlord II, SSX, Forza Horizon (whose speech and media
+code are XEX DLL modules, recompiled with it), Halo: Combat Evolved Anniversary, Asura's Wrath,
+Sega Rally Revo, Deus Ex: Human Revolution, Geometry Wars: Retro Evolved and Tetris Splash.
+Fable II draws its world on the native renderer; most of the rest run in part.
 
 **[The full table, with title updates, Steam Deck frame rates and known problems →](docs/GAMES.md)**
 
@@ -71,9 +77,13 @@ scripts\build-sdk.ps1 -Llvm C:\path\to\LLVM-20\bin
 python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --title-update --dlc --project
 ```
 
-The game is then in `D:\rexnative-work\<game>\run\`; F1 opens its settings. To put it on a Steam
-Deck over SSH: `python -m rexnative deck D:\rexnative-work\<game> --host deck@<ip> --key <ssh key>
---steam` ([docs/STEAM_DECK.md](docs/STEAM_DECK.md)).
+The game is then in `D:\rexnative-work\<game>\run\`; F1 opens its settings.
+
+**On a Steam Deck:** the **ReXNative Manager**, a Windows app (first release soon), will do all of
+the above and the install for you, from your archive to the Deck's Steam library, with a mode
+for the Deck itself ([docs/STEAM_DECK.md](docs/STEAM_DECK.md#the-rexnative-manager)). Until
+then: `python -m rexnative deck D:\rexnative-work\<game> --host deck@<ip> --key <ssh key> --steam`
+([docs/STEAM_DECK.md](docs/STEAM_DECK.md)).
 
 ## Documentation
 
@@ -82,7 +92,7 @@ Deck over SSH: `python -m rexnative deck D:\rexnative-work\<game> --host deck@<i
 | [Games](docs/GAMES.md) | what each game does, on the PC and on the Steam Deck |
 | [Getting started](docs/GETTING_STARTED.md) | requirements, building, the tool's commands, adding it to a ReXGlue project |
 | [Keys and settings](docs/SETTINGS.md) | the HUD, `rexnative.*` settings, inline draws |
-| [Steam Deck](docs/STEAM_DECK.md) | installing games on the Deck, its settings, Steam artwork |
+| [Steam Deck](docs/STEAM_DECK.md) | the ReXNative Manager, installing games on the Deck, its settings, Steam artwork |
 | [Debugging a game](docs/DEBUGGING.md) | a live game for experiments, RenderDoc, the Deck |
 | [How it works](docs/ARCHITECTURE.md) | the hooks, how a game is matched, the repository layout |
 | [The game layer](docs/GAME_LAYER.md) | what `game_layer.h` and `overrides.json` hold |

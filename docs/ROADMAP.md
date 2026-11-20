@@ -2,6 +2,12 @@
 
 ## Next
 
+- The ReXNative Manager's first release (the app that installs games on the Steam Deck:
+  [STEAM_DECK.md](STEAM_DECK.md#the-rexnative-manager)).
+- Frame generation on the Steam Deck with the fixes of 2026-11-20, and what it still gets wrong in
+  Sega Rally Revo: dust behind the car in blocks, the car's shadow, foliage that shimmers.
+- Brothers and The Bureau (Unreal Engine 3): find their scene among the passes on one surface,
+  so the upscaler and frame generation run there; Blur's races, their scenery black.
 - Deus Ex: Human Revolution's disc 2: XamSwapDisc can't insert another disc yet (SDK patch
   0039 answers only for the running one).
 - Fable II on the Steam Deck past its title screen, and Diablo III's replayed command buffers
@@ -12,7 +18,8 @@
   Spelunky's missing text.
 - A reactive mask for the upscalers (FSR's own, made from the scene before and after its
   transparent draws), where motion vectors cannot be right: particles, and the draws whose mesh
-  the previous frame did not have.
+  the previous frame did not have. Frame generation has no such input, so for it translucent
+  draws need another way.
 - Memexport: a game whose picture needs it, and no GPU wait when nothing on the CPU reads its
   results.
 - Build a game end to end from `scripts\build-sdk.ps1` on a clean machine.
@@ -37,3 +44,14 @@
   latency 2, and the README's details moved into `docs/`. Deus Ex: Human Revolution on the
   native renderer: the GPU-owned shader constants its own code loads (found by a probe of the
   push buffer between the hooks), and its Resolve's arguments from where the clear colour is.
+- 2026-11-19: Forza Horizon (its XEX DLL modules recompiled with it), SSX, Darwinia+, LIMBO,
+  Syndicate's menus (resolves into a 3D texture), Halo's textured cutscene, Deus Ex's new campaign
+  on disc 1; frame generation switched in the running game; the system dialogs answer to the pad;
+  games on the Deck's microSD card; Asura's Wrath with the upscaler (a scene resolved through
+  another format's bits), Tetris Splash's tiles side by side; Geometry Wars: Retro Evolved from its
+  push buffer alone (a D3D older than every reference), and a fault in the native path handed to
+  the classic renderer.
+- 2026-11-20: frame generation's optical flow (left at zero by FSR 3.1.6 with a separate HUD-less
+  input: the HUD now composited by ReXNative), motion vectors for terrain tiles and for the first
+  draws of a shader, the HUD kept out of the generated frames in Overlord, Dark Souls II,
+  Minecraft and Orcs Must Die!; frame generation tried in nine games.

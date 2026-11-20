@@ -21,7 +21,9 @@ change it.
 - **Renderer**, the first setting: Native (ReXNative) or Classic (ReXGlue's Xenos GPU emulation,
   Xenia's renderer), for a game the native renderer does not draw right yet. It switches at once,
   on the Steam Deck too, and the choice is kept for the next start (`rexnative.classic`). The HUD
-  stays up on both, so the game can go back to Native the same way.
+  stays up on both, so the game can go back to Native the same way. A fault in the native path
+  (a layer whose offsets do not fit the game's D3D) hands the game to the classic renderer for
+  the rest of the run instead of crashing.
 - **Upscaler page:** switches the upscaler, its type (automatic, DLSS or FSR), the FSR version
   and the mode (native anti-aliasing to ultra performance) while the game runs, and says what
   runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). Frame generation (AMD FSR) switches there
