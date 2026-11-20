@@ -46,8 +46,10 @@
 // first among those of its identity. Without one, in a game whose matches nearly all keep their
 // buffer (stable_), the draw found is another mesh (a tile in another's place: one that came
 // into view or changed its level of detail, its vertices in a buffer of each level's), and this
-// draw moves with the camera (Camera) instead of taking that mesh's vertices. Told apart by
-// nothing else from a draw that writes its vertices anew each frame (the ground beside a
+// draw moves with the camera (Camera) instead of taking that mesh's vertices, unless both first
+// vertices are known and apart: their distance then tells another mesh from this one moved (the
+// anchor limit below), as for Jet Set Radio. Otherwise told apart by nothing else from a draw that
+// writes its vertices anew each frame (the ground beside a
 // building in the same race), which the camera also moves exactly while it stands still; a
 // moving one of those loses its own motion, where another tile's vertices put motion vectors
 // hundreds of pixels off. Where most draws write their vertices anew (Jet Set Radio's ring of
@@ -233,9 +235,13 @@ class MotionHistory {
     }
     far_ = compared_ = false;
     last_refusal_ = 0;
-    if (buffers_ && best != n && !best_buffer && now.vertex_base[0] && stable_) {
+    if (buffers_ && best != n && !best_buffer && now.vertex_base[0] && stable_ &&
+        !(now.anchor_valid && previous_[best].constants.anchor_valid &&
+          Distance2(now, previous_[best].constants) > 0)) {
       // Another buffer's vertices, in a game whose meshes keep their buffers: another mesh (a
-      // tile in another's place).
+      // tile in another's place). With both first vertices known and apart, their distance
+      // tells (below); the same first vertex in two buffers tells nothing (Sega Rally Revo's
+      // ground tiles all start at the same corner, their place in another binding).
       Camera(now, floats, size);
       if (found_ == Found::kCamera) {
         ++other_buffers_;
@@ -389,10 +395,6 @@ class MotionHistory {
   // new draws are; a moving object's own motion is missing for its first frame. nullptr, with
   // Found::kCamera, or Found::kNone without such a draw or if that draw changed every register
   // (a moving object's, nothing of the frame's told apart from its own).
-  // The frame's first draw of its shader has no such draw: Sega Rally Revo's ground tiles that
-  // came into view or changed their level of detail, the first of their shader, kept their own
-  // constants, no motion at all, on up to a sixth of the screen (the ground around the car,
-  // 2026-11-20). Those take the previous frame's draws of the shader instead (PreviousFrame).
   const Constants* Camera(const Constants& now, const uint8_t* floats, uint32_t size) {
     found_ = Found::kNone;
     const Draw* ref = nullptr;
@@ -403,7 +405,7 @@ class MotionHistory {
         break;
       }
     }
-    if (!ref) return PreviousFrame(now, floats, size);
+    if (!ref) return nullptr;
     const uint8_t* ref_now = current_floats_.data() + ref->offset;
     const uint8_t* ref_then = previous_floats_.data() + previous_[ref->previous].offset;
     camera_floats_.assign(floats, floats + size);
@@ -417,33 +419,6 @@ class MotionHistory {
         std::memcpy(camera_floats_.data() + r, ref_then + r, 16);
     }
     if (kept) found_ = Found::kCamera;
-    return nullptr;
-  }
-  // Camera without a matched draw of the shader this frame: the registers that three draws of
-  // the shader in the previous frame (two if it had only two) had alike are the frame's, at their
-  // previous values there; where this draw's differ (the camera moved), camera_floats() takes
-  // those. A draw's own registers (its transform) differ between those draws and stay its own.
-  const Constants* PreviousFrame(const Constants& now, const uint8_t* floats, uint32_t size) {
-    const Draw* like[3] = {};
-    uint32_t found = 0;
-    for (size_t i = previous_.size(); i-- > 0 && found < 3;) {
-      const Draw& p = previous_[i];
-      if (p.constants.vs == now.vs && p.size == size) like[found++] = &p;
-    }
-    if (found < 2) return nullptr;
-    camera_floats_.assign(floats, floats + size);
-    const uint8_t* first = previous_floats_.data() + like[0]->offset;
-    bool moved = false;
-    for (uint32_t r = 0; r < size; r += 16) {
-      bool frame = true;
-      for (uint32_t k = 1; k < found && frame; ++k)
-        frame = !std::memcmp(first + r, previous_floats_.data() + like[k]->offset + r, 16);
-      if (frame && std::memcmp(first + r, floats + r, 16)) {
-        std::memcpy(camera_floats_.data() + r, first + r, 16);
-        moved = true;
-      }
-    }
-    if (moved) found_ = Found::kCamera;
     return nullptr;
   }
   std::vector<Draw> current_, previous_;

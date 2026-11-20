@@ -382,14 +382,24 @@ another tile's vertices too. Now among draws of one identity the one with this d
 buffer (its first binding's base and first vertex) comes first; and in a game whose matches
 nearly all keep their buffer (90 %, Sega Rally 98 %), a draw whose match has another buffer moves
 with the camera instead: exact for the tiles, and for a draw that writes its vertices anew every
-frame while it stands still. Matched draws with another buffer went from 32.5 a frame to none.
+frame while it stands still. The first vertex (the anchor) is now also read from positions of 4
+half floats or 4 16-bit integers, Sega Rally's formats (its ground, its small objects), so that
+draws as alike are told apart by it there too; where both first vertices are known and apart,
+their distance decides instead of the buffer, and a small object that writes its vertices anew
+keeps its own motion. The ground tiles all start at the same corner, so for them the buffer
+decides. Matched draws with another buffer went from 32.5 a frame to 0.2.
 
-A RenderDoc capture showed what was left: the ground around the car, a sixth of the screen, with
-no motion at all. Its tile was a new one, the first of its shader in the frame, and the camera
-fallback had no matched draw of the shader before it to take the camera's registers from, so it
-kept its own constants. Such a draw now takes the registers that the previous frame's draws of
-its shader (three of them) had alike, at their values there, where its own differ: the frame's,
-the camera's. Pixels without motion went from 3 to 7 % of those frames to none.
+Frame generation hides much of this: where the game's motion vectors and the two frames disagree,
+its optical flow takes over. Captures taken minutes apart differ too much in what they show to
+compare, so the draw-debug bits can apply in even frames only (1048576): the rules are then on
+in one frame and off in the next of the same capture, and each generated frame of the one is
+compared with the mean of the two around it of the other (flicker as DEBUGGING.md measures
+it; an A/A run gave -0.06 points, 14 of 24 frames better). The buffer rules left the share of flickering pixels where it was on average
+but lowered it in 17 and 18 of 24 frames; the anchors of 16-bit components lowered it by 0.37
+points (18 of 24). A camera for the frame's first draw of a shader, taken from the previous
+frame's draws of the shader, removed the ground without motion that a RenderDoc capture showed
+around the car (a new tile, the first of its shader, keeps its own constants), but raised the
+flicker by 0.9 points (better in 6 of 22): left out.
 
 ## Inline draws, found at run time
 

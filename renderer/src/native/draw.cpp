@@ -1330,6 +1330,8 @@ struct DrawRenderer::Impl {
     kDebugNoAnchor = 65536,  // motion: no first vertex tie-break (MotionHistory::Nearer)
     kDebugLogMotion = 262144,  // log every motion draw's match while set (MotionHistory)
     kDebugNoBufferMatch = 524288,  // motion: matches not told apart by their vertex buffers
+    kDebugAlternateMotion = 1048576,  // 524288 and 4194304 in even frames only (A/B in one run)
+    kDebugNoAnchor16 = 4194304,  // motion: no first vertex of 16-bit components
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -2633,9 +2635,15 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   now.vertex_index_offset = vertex_index_offset;
   for (uint32_t i = 0; i < bases; ++i)
     now.vertex_base[i] = fetch_constants[fetch_dword0(bindings[i].fetch_constant)];
+  // A/B in one run (kDebugAlternateMotion): the motion bits apply in even frames only.
+  const uint32_t motion_off =
+      (debug_mask & kDebugAlternateMotion) && (list_frame & 1) ? 0 : debug_mask;
   // Its first vertex (MotionHistory::Constants::anchor): in the first binding, the first
   // attribute of 3 or 4 floats (x, y, z) and the first of 2, at the draw's first vertex,
-  // swapped as the fetch constant says.
+  // swapped as the fetch constant says. A position of 4 half floats, or of 4 16-bit integers
+  // taken as they are (Sega Rally Revo's ground tiles; their scale is the shader's, alike for
+  // the draws compared), counts as one of floats: x and y in the first dword's low and high
+  // halves, z in the second's low half, as the vertex fetch reads them.
   if (bases && membase && !(debug_mask & kDebugNoAnchor)) {
     const rex::gpu::Shader::VertexBinding& b = bindings[0];
     const uint32_t endian = fetch_constants[fetch_dword0(b.fetch_constant) + 1] & 3;
@@ -2643,28 +2651,44 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
     for (const rex::gpu::Shader::VertexBinding::Attribute& a : b.attributes) {
       const auto& fa = a.fetch_instr.attributes;
       const bool pair = fa.data_format == xenos::VertexFormat::k_32_32_FLOAT;
+      const bool sixteen = !(motion_off & kDebugNoAnchor16);
+      const bool half4 = sixteen && fa.data_format == xenos::VertexFormat::k_16_16_16_16_FLOAT;
+      const bool short4 = sixteen && fa.data_format == xenos::VertexFormat::k_16_16_16_16;
       const bool position = fa.data_format == xenos::VertexFormat::k_32_32_32_FLOAT ||
-                            fa.data_format == xenos::VertexFormat::k_32_32_32_32_FLOAT;
+                            fa.data_format == xenos::VertexFormat::k_32_32_32_32_FLOAT ||
+                            half4 || short4;
       if ((!pair || have_pair) && (!position || have_position)) continue;
-      const uint32_t n = position ? 3 : 2, into = position ? 0 : 3;
+      const uint32_t n = half4 || short4 ? 2 : position ? 3 : 2, into = position ? 0 : 3;
       const uint64_t at = uint64_t(now.vertex_base[0] & 0x1FFFFFFCu) +
                           4 * (uint64_t(vertex_index_offset) * b.stride_words + uint32_t(fa.offset));
       if (fa.offset < 0 || at + 4 * n > (uint64_t(512) << 20)) continue;
+      uint32_t dwords[3];
       for (uint32_t k = 0; k < n; ++k) {
         uint32_t v;
         std::memcpy(&v, membase + at + 4 * k, 4);
         if (endian == 1) v = ((v & 0xFF00FF00u) >> 8) | ((v & 0x00FF00FFu) << 8);  // 8in16
         if (endian == 2) v = __builtin_bswap32(v);                                   // 8in32
         if (endian == 3) v = (v >> 16) | (v << 16);                                  // 16in32
-        std::memcpy(&now.anchor[into + k], &v, 4);
-        finite = finite && std::isfinite(now.anchor[into + k]);
+        dwords[k] = v;
       }
+      if (half4 || short4) {
+        const uint16_t c[3] = {uint16_t(dwords[0]), uint16_t(dwords[0] >> 16),
+                               uint16_t(dwords[1])};
+        for (uint32_t k = 0; k < 3; ++k)
+          now.anchor[k] = half4             ? rex::xenos::HalfToFloat(c[k])
+                          : fa.is_signed    ? float(int16_t(c[k]))
+                                            : float(c[k]);
+      } else {
+        for (uint32_t k = 0; k < n; ++k) std::memcpy(&now.anchor[into + k], &dwords[k], 4);
+      }
+      for (uint32_t k = 0; k < (position ? 3u : 2u); ++k)
+        finite = finite && std::isfinite(now.anchor[into + k]);
       (position ? have_position : have_pair) = true;
       if (have_position && have_pair) break;
     }
     now.anchor_valid = finite && (have_position || have_pair);
   }
-  motion_history.set_buffers(!(debug_mask & kDebugNoBufferMatch));
+  motion_history.set_buffers(!(motion_off & kDebugNoBufferMatch));
   const MotionHistory::Constants* previous =
       motion_history.Match(identity, loose, now, cb_float_vs.last, cb_float_vs.size);
   const MotionHistory::Found found = motion_history.found();
@@ -2707,7 +2731,7 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
         previous != &now && previous != &camera ? previous : nullptr;
     REXLOG_INFO(
         "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
-        "buffers {} refusal {} | "
+        "buffers {} refusal {} formats {} | "
         "prev off {} base {:08X} | anchor {} ({:.4g} {:.4g} {:.4g} {:.4g} {:.4g}) prev {} "
         "({:.4g} {:.4g} {:.4g} {:.4g} {:.4g})",
         list_frame, motion_ordinal, frame_draws, s.count, uint32_t(s.primitive),
@@ -2715,7 +2739,14 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
         double(motion_history.anchor_limit()),
         p ? int64_t(motion_history.last_index()) : -1, motion_history.previous_count(),
         vertex_index_offset, now.vertex_base[0], motion_history.stable() ? "kept" : "-",
-        motion_history.last_refusal(), p ? p->vertex_index_offset : 0u,
+        motion_history.last_refusal(), [&] {
+          std::string f;
+          if (bases)
+            for (const auto& a : bindings[0].attributes)
+              f += std::to_string(uint32_t(a.fetch_instr.attributes.data_format)) + "@" +
+                   std::to_string(a.fetch_instr.attributes.offset) + ",";
+          return f;
+        }(), p ? p->vertex_index_offset : 0u,
         p ? p->vertex_base[0] : 0u, now.anchor_valid ? 1 : 0, now.anchor[0], now.anchor[1],
         now.anchor[2], now.anchor[3], now.anchor[4], p && p->anchor_valid ? 1 : 0,
         p ? p->anchor[0] : 0.f, p ? p->anchor[1] : 0.f, p ? p->anchor[2] : 0.f,

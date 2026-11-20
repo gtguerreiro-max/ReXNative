@@ -37,7 +37,9 @@
 #   first vertex (MotionHistory's anchor: no tie-break, no distance limit), 262144 log each
 #   motion draw's match ("ReXNative motion: f<frame> #<k>": the k-th draw writing the motion
 #   target in a capture of that frame), 524288 motion vectors without the vertex buffer rules
-#   (MotionHistory: the draw with this one's buffer first, another's refused). Draws in
+#   (MotionHistory: the draw with this one's buffer first, another's refused), 4194304 without
+#   the first vertex of 16-bit components, 1048576 those two bits in even frames only (an A/B
+#   in one capture). Draws in
 #   [skip_from, skip_to) are skipped. 16 and 256 act when they are set,
 #   so -Pulse clears the file again.
 # Keys: hold:<keys joined by +>:<ms> with real key-down/up (SPACE, ENTER, TAB, arrows, letters;
