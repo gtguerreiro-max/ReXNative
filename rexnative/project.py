@@ -90,13 +90,14 @@ endif()
 rexglue_setup_target({name})
 target_link_libraries({name} PRIVATE {name}_common)
 
-# ReXNative draws with D3D12, so on Windows only (and under Proton). -DREXNATIVE=OFF, and any
-# other system (a native Linux build), builds the game without it: ReXGlue's own renderer, its
-# Xenos GPU emulation (gpu.driver: Vulkan, or D3D12 on Windows), draws it.
+# ReXNative draws with D3D12: on Windows (and under Proton) the system's. -DREXNATIVE=OFF builds
+# the game without it: ReXGlue's own renderer, its Xenos GPU emulation (gpu.driver: Vulkan, or
+# D3D12 on Windows), draws it. On Linux it is off unless asked for: there ReXNative draws through
+# vkd3d-proton and DXVK Native (experimental, docs/LINUX.md; REXNATIVE_DXVK_NATIVE_INCLUDE).
 if(WIN32)
     option(REXNATIVE "Draw the game with ReXNative (D3D12)" ON)
 else()
-    set(REXNATIVE OFF)
+    option(REXNATIVE "Draw the game with ReXNative (D3D12 through vkd3d-proton)" OFF)
 endif()
 if(REXNATIVE)
     set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
@@ -104,6 +105,7 @@ if(REXNATIVE)
     set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
     set(REXNATIVE_DLSS_SDK "" CACHE PATH "NVIDIA DLSS SDK")
     set(REXNATIVE_DLSS_NR "" CACHE PATH "NVIDIA DLSS 5 headers")
+    set(REXNATIVE_DXVK_NATIVE_INCLUDE "" CACHE PATH "Linux: DXVK Native's include/dxvk")
     include("${{REXNATIVE_DIR}}/renderer/rexnative.cmake")
     rexnative_add({name}_common
         EXECUTABLE      {name}
@@ -111,7 +113,8 @@ if(REXNATIVE)
         REXGLUE_SDK_SRC "${{REXNATIVE_REXGLUE_SDK_SRC}}"
         FIDELITYFX_SDK  "${{REXNATIVE_FIDELITYFX_SDK}}"
         DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
-        DLSS_NR         "${{REXNATIVE_DLSS_NR}}")
+        DLSS_NR         "${{REXNATIVE_DLSS_NR}}"
+        DXVK_NATIVE_INCLUDE "${{REXNATIVE_DXVK_NATIVE_INCLUDE}}")
 else()
     target_compile_definitions({name}_common PRIVATE REXNATIVE_OFF=1)
 endif()

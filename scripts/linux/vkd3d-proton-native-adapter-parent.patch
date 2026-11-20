@@ -1,0 +1,15 @@
+diff --git a/libs/d3d12core/main.c b/libs/d3d12core/main.c
+index fa299e3..e95cafd 100644
+--- a/libs/d3d12core/main.c
++++ b/libs/d3d12core/main.c
+@@ -721,6 +721,10 @@ static HRESULT STDMETHODCALLTYPE d3d12core_CreateDeviceFromFactory(
+         device_create_info.device_extensions = (const char *const *)extensions;
+         device_create_info.device_extension_count = len;
+     }
++#else
++    /* Native: the adapter (DXVK's DXGI) is the device's parent, which a swap chain's
++     * GetAdapter() returns; DXVK's DXGI asks for it when it makes a swap chain. */
++    device_create_info.parent = adapter;
+ #endif
+ 
+     hr = vkd3d_create_device(&device_create_info, iid, device);

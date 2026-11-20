@@ -174,9 +174,16 @@ void* Window() {
   }
   if (!ui || ui->IsHeadless() || !ui->HasWindow()) return nullptr;
   auto native = ui->GetNativeWindow();
+#if defined(REXNATIVE_LINUX)
+  // Linux: DXVK Native's DXGI takes the game's SDL_Window as an HWND.
+  if (!native || !native->sdl) return nullptr;
+  std::lock_guard lock(s.mutex);
+  s.window = static_cast<HWND>(native->sdl);
+#else
   if (!native || native->type != rex::NativeWindow::Type::kWin32) return nullptr;
   std::lock_guard lock(s.mutex);
   s.window = static_cast<HWND>(native->window);
+#endif
   return s.window;
 }
 

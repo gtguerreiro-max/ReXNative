@@ -372,13 +372,21 @@ HRESULT PipelineLibrary::Create(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
   }
   wchar_t name[20];
   std::swprintf(name, 20, L"%016llX", static_cast<unsigned long long>(h));
-  HRESULT hr = library_->LoadGraphicsPipeline(name, &desc, IID_PPV_ARGS(out));
+#if defined(REXNATIVE_LINUX)
+  // vkd3d-proton reads the name as UTF-16 (a 2-byte WCHAR); this build's wchar_t has 4 bytes.
+  char16_t name16[20] = {};
+  for (int i = 0; i < 19 && name[i]; ++i) name16[i] = char16_t(name[i]);
+  const auto* key = reinterpret_cast<const wchar_t*>(name16);
+#else
+  const wchar_t* key = name;
+#endif
+  HRESULT hr = library_->LoadGraphicsPipeline(key, &desc, IID_PPV_ARGS(out));
   if (SUCCEEDED(hr)) {
     *loaded = true;
     loaded_.fetch_add(1, std::memory_order_relaxed);
   } else {
     hr = device_->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(out));
-    if (SUCCEEDED(hr) && SUCCEEDED(library_->StorePipeline(name, *out))) {
+    if (SUCCEEDED(hr) && SUCCEEDED(library_->StorePipeline(key, *out))) {
       stored_.fetch_add(1, std::memory_order_relaxed);
       dirty_.store(true, std::memory_order_relaxed);
     }

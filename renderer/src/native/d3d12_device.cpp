@@ -140,6 +140,15 @@ bool CreateBuffer(ID3D12Device* device, D3D12_HEAP_TYPE type, uint64_t size,
                  what);
 }
 
+#if defined(REXNATIVE_LINUX)
+// Linux: WineHQ vkd3d's D3DCompile (HLSL to DXBC, as d3dcompiler_47's), through
+// linux/d3dcompile_vkd3d.cpp.
+HRESULT WINAPI D3DCompileVkd3d(const void* data, SIZE_T size, const char* name,
+                               const D3D_SHADER_MACRO* defines, ID3DInclude* include,
+                               const char* entry, const char* target, UINT flags1, UINT flags2,
+                               ID3DBlob** code, ID3DBlob** errors);
+pD3DCompile D3DCompiler() { return &D3DCompileVkd3d; }
+#else
 pD3DCompile D3DCompiler() {
   static const pD3DCompile compile = [] {
     const HMODULE dll = LoadLibraryW(L"d3dcompiler_47.dll");
@@ -150,13 +159,24 @@ pD3DCompile D3DCompiler() {
   }();
   return compile;
 }
+#endif
 
 D3D12Device::~D3D12Device() {
   WaitIdle();
   stream_.Stop();
+#if !defined(REXNATIVE_LINUX)
   if (HWND h = hwnd_.load()) PostMessageW(h, WM_CLOSE, 1, 0);
+#endif
   if (window_thread_.joinable()) window_thread_.join();
 }
+
+#if defined(REXNATIVE_LINUX)
+// Linux: no debug window of its own; the renderer always presents into the game's.
+bool D3D12Device::CreateWindowThread(const wchar_t*) {
+  REXLOG_ERROR("ReXNative: no game window, and no debug window on Linux");
+  return false;
+}
+#else
 
 LRESULT CALLBACK D3D12Device::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   auto* self = reinterpret_cast<D3D12Device*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -237,6 +257,7 @@ bool D3D12Device::CreateWindowThread(const wchar_t* title) {
   }
   return true;
 }
+#endif  // REXNATIVE_LINUX
 
 bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* title,
                              HWND game_window) {

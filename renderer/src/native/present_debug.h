@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 struct ID3D12Device;
@@ -33,6 +34,15 @@ void ToRgb(const uint8_t* src, uint32_t pitch, uint32_t width, uint32_t height, 
 // rgb: width * height * 3 bytes, written as stored deflate blocks (no compression library).
 bool WritePng(const wchar_t* path, const std::vector<uint8_t>& rgb, uint32_t width,
               uint32_t height);
+#if defined(REXNATIVE_LINUX)
+// Linux: std::filesystem::path::c_str() is a narrow string.
+inline bool WritePng(const char* path, const std::vector<uint8_t>& rgb, uint32_t width,
+                     uint32_t height) {
+  std::wstring w;
+  for (const char* c = path; *c; ++c) w += wchar_t((unsigned char)*c);
+  return WritePng(w.c_str(), rgb, width, height);
+}
+#endif
 
 // --rexnative_glitch_catch: the blit drawn again at half the image's size (a 2x2 box filter),
 // copied to a readback slot per frame in flight and handed, when the slot comes round, to a
