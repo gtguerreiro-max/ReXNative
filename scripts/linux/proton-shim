@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
-# Stands in for Proton in an installed game's play.sh (REXNATIVE_PROTON, from a temporary
-# deck.env): runs the game's native Linux build instead, under Steam's launch of the shortcut,
-# so gamescope shows it. play.sh's arguments (waitforexitandrun, the .exe, its flags) are dropped.
+# Stands in for Proton in an installed game's play.sh (REXNATIVE_PROTON=<this folder>, from a
+# temporary deck.env), so the game's Steam shortcut starts a test build instead, which gamescope
+# then shows as the game:
+#   REXNATIVE_LINUX_BUILD=<folder>   the game's native Linux build (its run-linux.sh);
+#   REXNATIVE_WIN_BUILD=<folder>     a Windows build of it, under the real Proton
+#                                    (REXNATIVE_REAL_PROTON, else the newest GE-Proton), with
+#                                    the installed game's environment (its prefix) and the
+#                                    test folder's try.flags.
+# play.sh's own arguments (waitforexitandrun, the installed .exe, its flags) are dropped.
+if [[ -n ${REXNATIVE_WIN_BUILD:-} ]]; then
+  real=${REXNATIVE_REAL_PROTON:-$(ls -1d "$HOME"/.local/share/Steam/compatibilitytools.d/GE-Proton*/ 2>/dev/null | sort -V | tail -1)}
+  real=${real%/}
+  exe=$(ls -1t "$REXNATIVE_WIN_BUILD"/*.exe | head -1)
+  cd "$REXNATIVE_WIN_BUILD" || exit 1
+  mkdir -p logs
+  extra=()
+  [[ -f try.flags ]] && read -r -a extra < try.flags
+  exec "$real/proton" waitforexitandrun "$exe" "--log_file=$(basename "$exe" .exe)" "${extra[@]}"
+fi
 exec "${REXNATIVE_LINUX_BUILD:?}/run-linux.sh"

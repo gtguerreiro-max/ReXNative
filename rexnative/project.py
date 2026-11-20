@@ -115,6 +115,12 @@ if(REXNATIVE)
         DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
         DLSS_NR         "${{REXNATIVE_DLSS_NR}}"
         DXVK_NATIVE_INCLUDE "${{REXNATIVE_DXVK_NATIVE_INCLUDE}}")
+    # The XDK's spin waits (db16cyc) sleep once they go on (renderer/src/spin_pause.h): after
+    # ReXGlue's own precompiled header, in the generated code only. (rexnative.cmake has set
+    # REXNATIVE_DIR to its own folder, renderer/.)
+    if(TARGET {name}_recompiled)
+        target_precompile_headers({name}_recompiled PRIVATE "${{REXNATIVE_DIR}}/src/spin_pause.h")
+    endif()
 else()
     target_compile_definitions({name}_common PRIVATE REXNATIVE_OFF=1)
 endif()

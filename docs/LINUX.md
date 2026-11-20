@@ -162,10 +162,8 @@ Every run: 30 FPS (both games' own cap), the same frame times, the same GPU time
   Set Radio natively): on average the two come out about even (6.9 W native, 7.5-7.6 W under Proton).
   With the GPU clock fixed at 1600 MHz, Jet Set Radio's earlier runs gave 5.3-6.6 W natively
   against 9.2-9.6 W.
-- So the battery's biggest lever is that loop, on Linux and under Proton alike: a game's wait
-  for the GPU or the next frame done as a real wait (a hook of the XDK's D3D wait, which
-  ReXNative already finds in every game, or a short sleep after a few spins in ReXGlue's yield),
-  not by spinning a core at full clock.
+- So the battery's biggest lever is that loop, on Linux and under Proton alike: the next
+  section makes it a real wait.
 - Recording a draw costs about the same (Jet Set Radio 0.95-1.25 µs natively against
   0.94-1.09 under Proton, Overlord II 1.65-1.81 against 1.35-1.75), with a plain meson release
   build of vkd3d-proton; LTO and `-march=znver2` (the Deck's CPU) are left to try.
@@ -175,6 +173,41 @@ FidelityFX SDK's DX12 runtime; FSR 3.1 has a Vulkan backend, FSR 4 does not), th
 renderer switch (the Xenos driver presents with Vulkan, not into ReXNative's D3D12 swap chain),
 HDR (not tried), the hardware memory watch, and a Steam shortcut of its own (the test starts it
 through an installed game's, `proton-shim`).
+
+## Battery: the XDK's spin waits sleep
+
+Where Jet Set Radio's main thread spends its time, from the Linux build's own sampling profiler
+([renderer/src/linux/profiler.cpp](../renderer/src/linux/profiler.cpp):
+`REXNATIVE_PROFILE=<thread name>,<seconds>,<delay>` sends that thread `SIGPROF` every
+millisecond and writes `logs/profile.txt`; its offsets map to the link map's `sub_<address>`):
+about 80 % of it in one small loop, the XDK's D3D waiting inside the game's `Swap` (ReXNative's
+`kHookSwap`) for the GPU and the next frame: 32 `db16cyc`, Xenon's spin wait hint, then a look
+at the device's state, over and over. ReXGlue's codegen writes `db16cyc` as `simde_mm_pause()`,
+an x86 `PAUSE`: the loop keeps a core at full clock until the next frame.
+
+[spin_pause.h](../renderer/src/spin_pause.h), which the project adds to the generated code's
+precompiled header after ReXGlue's own (rexnative/project.py), makes `simde_mm_pause()` call
+[rexnative_spin_pause](../renderer/src/native/spin_pause.cpp): a `PAUSE`, and once a thread's run
+of pauses has gone on for 200 µs (a wait, not a short spin lock), a 100 µs sleep every 32 of
+them (`nanosleep`; a high resolution waitable timer on Windows). Nothing else changes; the
+generated code is compiled again (its precompiled header changed), not generated again.
+`REXNATIVE_SPIN_SLEEP=0` in the environment keeps the plain pause, so one build compares both.
+
+Jet Set Radio's heavy start, the GPU clock on auto, the sleep off and on alternated in the same
+build:
+
+| Build | Spin wait | SoC power | Game's CPU | Main thread | Frame time 99th pct / max |
+| --- | --- | --- | --- | --- | --- |
+| Native Linux | spins (1 / 2) | 8.2 / 8.4 W | 130 % | 101 % | 34.5 / 35.4 ms |
+| Native Linux | sleeps (1 / 2) | **3.8 / 4.0 W** | 55-57 % | 22-23 % | 34.4 / 34.9 ms |
+| Windows, Proton | spins (1 / 2) | 9.1 / 8.2 W | 150-159 % | 89-99 % | 35.3 / 67.7 ms |
+| Windows, Proton | sleeps (1 / 2) | **4.4 / 4.5 W** | 100 % | 31 % | 34.9 / 36.8 ms |
+
+The same 30 FPS and frame times for half the power, under Proton as natively: a change for every
+game ReXNative draws, on the Steam Deck as it runs them today. Natively it ends 0.5 W lower than
+under Proton (the Xenos command thread's 5 % against 23 % of a core). The Windows build was tried
+under Proton only, from a test folder (`proton-shim`'s `REXNATIVE_WIN_BUILD`): not yet on the
+PC, nor on other games.
 
 ## Next: ReXNative on Vulkan (not started)
 

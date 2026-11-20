@@ -52,7 +52,7 @@ function(rexnative_add target)
             "${src}/native/pgo_counters.cpp")
         list(APPEND native_sources "${src}/linux/win32.cpp" "${src}/linux/d3d12_loader.cpp"
             "${src}/linux/d3dcompile_vkd3d.cpp" "${src}/linux/dlss_none.cpp"
-            "${src}/linux/watch_none.cpp")
+            "${src}/linux/watch_none.cpp" "${src}/linux/profiler.cpp")
         # Every renderer source gets the Win32 stand-ins first.
         set_source_files_properties(${native_sources} "${src}/rexnative_d3d_hooks.cpp"
             "${src}/hud/hud.cpp" "${src}/host.cpp" "${src}/glue_defaults.cpp" PROPERTIES
