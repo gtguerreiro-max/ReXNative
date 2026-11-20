@@ -12,7 +12,9 @@
   0039 answers only for the running one).
 - Fable II on the Steam Deck past its title screen, and Diablo III's replayed command buffers
   with the shader tracking of 2026-11-18 (neither tried yet).
-- Midnight Club's races on the Steam Deck at frame latency 2: they fell to 22-29 FPS at 1.
+- Every installed game built again with the spin waits asleep (spin_pause.h), and reinstalled at
+  frame latency 1; Midnight Club's races at 1 (its city drive holds 30 FPS); Overlord II's intro
+  videos under Proton, which still spin in ReXGlue's Windows SleepFor (its 250 µs spin tail).
 - Find the HDR pass before the game's tone mapping, for DLSS 5.
 - The open problems in [GAMES.md](GAMES.md#open-problems): Perfect Dark's broken levels,
   Spelunky's missing text.
@@ -54,4 +56,6 @@
 - 2026-11-20: frame generation's optical flow (left at zero by FSR 3.1.6 with a separate HUD-less
   input: the HUD now composited by ReXNative), motion vectors for terrain tiles and for the first
   draws of a shader, the HUD kept out of the generated frames in Overlord, Dark Souls II,
-  Minecraft and Orcs Must Die!; frame generation tried in nine games.
+  Minecraft and Orcs Must Die!; frame generation tried in nine games. The XDK's spin waits
+  sleep once they go on (spin_pause.h): half the power on the Steam Deck, and frame latency 1
+  for every game installed there.

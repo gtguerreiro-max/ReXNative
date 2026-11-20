@@ -103,6 +103,12 @@ rexnative_add({name}_common
     FIDELITYFX_SDK  "${{REXNATIVE_FIDELITYFX_SDK}}"
     DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
     DLSS_NR         "${{REXNATIVE_DLSS_NR}}")
+# The XDK's spin waits (db16cyc) sleep once they go on (renderer/src/spin_pause.h): after
+# ReXGlue's own precompiled header, in the generated code only. (rexnative.cmake has set
+# REXNATIVE_DIR to its own folder, renderer/.)
+if(TARGET {name}_recompiled)
+    target_precompile_headers({name}_recompiled PRIVATE "${{REXNATIVE_DIR}}/src/spin_pause.h")
+endif()
 
 # The link map (build/{name}.map) names the recompiled guest functions of a crash's offsets.
 target_link_options({name} PRIVATE "LINKER:/MAP")
@@ -381,6 +387,19 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
         w=work, b=bdir, sdk=sdk_install, rx=HERE.replace('\\', '/'), src=sdk_src, ffx=fidelityfx,
         pkg=os.path.join(sdk_install, 'lib', 'cmake', 'rexglue').replace('\\', '/'),
         dlss=dlss_sdk, nr=dlss_nr, common=common_dir(work).replace(os.sep, '/'))
+    # A precompiled header of the generated code made before spin_pause.h joined it: CMake writes
+    # the new header list, but Ninja does not compile the generated code again by itself, so the
+    # old one goes (and with it every object built on it).
+    pch_dir = os.path.join(bdir, 'CMakeFiles', '%s_recompiled.dir' % name)
+    pch_list = os.path.join(pch_dir, 'cmake_pch.hxx')
+    if os.path.exists(pch_list):
+        with open(pch_list, encoding='utf-8', errors='replace') as f:
+            has_spin = 'spin_pause.h' in f.read()
+        if not has_spin:
+            for old in glob.glob(os.path.join(pch_dir, 'cmake_pch.hxx*')):
+                os.remove(old)
+            log('%s: the generated code is compiled again (spin_pause.h joins its precompiled '
+                'header)' % name)
     steps = [('configure', configure), ('build', 'cmake --build "%s" -j %d' % (bdir, jobs))]
     os.makedirs(bdir, exist_ok=True)
     for what, cmd in steps:

@@ -61,11 +61,13 @@ DECK_SETTINGS = [
     ('rexnative', 'anisotropy', '8'),
     ('rexnative', 'upscaler', 'true'),
     ('rexnative', 'upscaler_mode', '"native"'),
-    # Two frames begun ahead of the display. At 1 the CPU's frame and the GPU's no longer overlap:
-    # Midnight Club with FSR 4 showed a frame 33 ms after it began (51 ms at 2, 54 ms at 3) where
-    # it held 30 FPS, but its races fell to 22-29 FPS (frames of 40-46 ms, 2026-11-18). The
-    # settings HUD's Frame latency changes it, live.
-    ('rexnative', 'frame_latency', '2'),
+    # One frame begun ahead of the display: the picture 8-22 ms sooner after the pad than at 2.
+    # Before the XDK's spin waits slept (renderer/src/spin_pause.h), the CPU spinning between frames
+    # took the power the GPU needed and Midnight Club's races fell to 22-29 FPS at 1 (2026-11-18);
+    # with them asleep, driving its city held 30 FPS at 1 (29.6 against 29.1 at 2, begin to shown
+    # 33 ms against 46 ms, 0.2 W more), as did Jet Set Radio (2026-11-20). The settings HUD's Frame
+    # latency changes it, live; 2 where a game's frames need the overlap.
+    ('rexnative', 'frame_latency', '1'),
 ]
 
 

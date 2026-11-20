@@ -842,3 +842,35 @@ match. From Dust read PGR4's default clear colour address. From Dust's scene sur
 PGR4's, so the upscaler never saw its scene. The `slice` and the clear colour are fixed in the
 ports' sources. The one hook the tool did not find in From Dust was inlined by the game; the one
 it added to Iron Brigade is its CreateDevice.
+
+## Spin waits
+
+The XDK's D3D waits for the GPU and for the next frame in loops of `db16cyc`, Xenon's spin wait
+hint, and a look at the device's state (Jet Set Radio's main thread spent about 80 % of its time
+in one, inside `Swap`). ReXGlue's codegen writes `db16cyc` as `simde_mm_pause()`, an x86 `PAUSE`,
+so a 30 FPS game kept a core at full clock between its frames, and on the Steam Deck, whose CPU
+and GPU share one power budget, the GPU paid for it too.
+
+[spin_pause.h](../renderer/src/spin_pause.h), which the project adds to the generated code's
+precompiled header after ReXGlue's own (rexnative/project.py), makes `simde_mm_pause()` call
+[rexnative_spin_pause](../renderer/src/native/spin_pause.cpp): the `PAUSE`, and once a thread's
+pauses have gone on for 200 µs with no gap (a wait, not a short spin lock), a 100 µs sleep every
+32 of them (a high resolution waitable timer; `nanosleep` on Linux). The loop still checks its
+condition often and wakes within about 100 µs of it. `REXNATIVE_SPIN_SLEEP=0` in the environment
+keeps the plain pause, to compare. A game gets it when built again: its generated code compiles
+again (not generated again); `rexnative project --build` removes a build folder's older
+precompiled header first, which Ninja would otherwise keep.
+
+On the Steam Deck under Proton, the sleep off and on alternated: Jet Set Radio's heavy start
+8.2-9.1 W -> 4.4-4.5 W (main thread 89-99 % -> 31 % of a core), Overlord II's 3D menu
+10.7-11.3 W -> 5.6 W, the same 30 FPS and frame times; Tetris Splash's 60 FPS title unchanged
+(it does not spin there). On the PC, Jet Set Radio's process 112-114 % of a core -> 32-34 %.
+
+With the CPU no longer taking the power, frame latency 1 holds where it did not:
+Midnight Club driving its city 29.6 FPS at 1 against 29.1 at 2, the picture 33 ms after the frame
+began against 46 ms (it fell to 22-29 FPS at 1 in its races before); Jet Set Radio 23-33 ms
+against 40-45 ms, the same frames. The Deck's installs now use 1 (rexnative/deck.py).
+
+Not reached: Overlord II's intro videos under Proton keep its main thread at 76-80 %: the game
+waits there in many short KeDelayExecutionThread calls, and ReXGlue's Windows `SleepFor` spins
+the last 250 µs of every wait (`kSpinTail`).
