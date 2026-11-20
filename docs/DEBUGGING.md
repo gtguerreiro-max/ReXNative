@@ -32,6 +32,11 @@ window and drives it to the problem; then each experiment takes seconds on the r
   alone (vertex constants c28-c87 here), each draw that differs logged; the first one traces the
   next two frames (`rexnative-d3d-rangediff-f*.txt` in the trace folder, `# range_diff` lines).
   A mesh broken by one bone's vertices: its constants missed, this finds where.
+- Sound: every `rexnative.d3d_stats_frames` frames the log has a `ReXNative audio:` line, the
+  SDK's mix over those frames: streams open, frames queued, underruns (periods a stream had
+  nothing queued: gaps and clicks), the latency from the game's Submit to the device and the
+  output channels (a stereo device gets the 5.1 mix folded, LFE left out). The PC's Sega Rally race:
+  0 underruns, 42 ms.
 - `--rexnative_coherency_check`: each vertex and index range a draw reads is compared with guest
   memory, and a stale page is logged (slow). A mesh broken in whole 4 KB pages of its vertex
   buffer is a stale page; one broken by the vertices of one bone is a constant (NOTES.md,

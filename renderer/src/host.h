@@ -52,6 +52,15 @@ void NoteGuestThread();
 // Whether an XAM dialog is on screen (the SDK's presenter draws it).
 bool XamUIActive();
 
+// The SDK's audio mix: its open streams, frames queued, periods a stream had nothing queued
+// (underruns, since the start: gaps and clicks) and the latency from Submit to the device; false
+// before Attach.
+struct AudioStats {
+  uint32_t streams = 0, queued = 0, latency_us = 0, channels = 0;
+  uint64_t underruns = 0;
+};
+bool GetAudioStats(AudioStats* out);
+
 // Input from the game window, on the UI thread. A handler returns true when it consumed the event
 // (the game does not see it). Higher `order` handlers see an event first.
 using InputHandler = std::function<bool(rex::InputEvent&)>;

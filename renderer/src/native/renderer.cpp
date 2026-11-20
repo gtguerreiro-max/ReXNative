@@ -1823,6 +1823,16 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
           ? std::format(", frame generation: {} of {} frames ({} reset)", w.generated, w.frames,
                         frame_generation_ ? frame_generation_->TakeResets() : 0)
           : std::string());
+  // The audio mix over the same frames: underruns are periods a stream had nothing queued (a
+  // gap, a click), the sound the Steam Deck's players heard as missing or odd.
+  if (host::AudioStats a; host::GetAudioStats(&a)) {
+    static uint64_t last_underruns = 0;
+    REXLOG_INFO("ReXNative audio: {} streams, {} frames queued, {} underruns in these frames, "
+                "latency {:.1f} ms, {} output channels",
+                a.streams, a.queued, a.underruns - last_underruns, a.latency_us / 1000.0,
+                a.channels);
+    last_underruns = a.underruns;
+  }
   if (profile::On() && w.draws) {
     // ns per draw for each stage (the hook-side ones are per draw too, for comparison).
     std::string line;

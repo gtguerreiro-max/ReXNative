@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <rex/app/app.h>
+#include <rex/apu/audio_system.h>
 #include <rex/cvar.h>
 #include <rex/kernel/heap.h>
 #include <rex/kernel/thread_state.h>
@@ -125,6 +126,19 @@ void State::OnInputEvent(rex::InputEvent& event) {
 }  // namespace
 
 void Configure() { settings::Register(); }
+
+bool GetAudioStats(AudioStats* out) {
+  rex::app::App* app = GetState().app;
+  if (!app) return false;
+  const rex::apu::IAudioSystem& audio = app->GetAudio();
+  const rex::apu::AudioStats s = audio.GetStats();
+  out->streams = s.open_streams;
+  out->queued = s.queued_frames;
+  out->latency_us = s.latency_us;
+  out->underruns = s.underruns;
+  out->channels = audio.GetOutputChannels();
+  return true;
+}
 
 void Attach(rex::app::App& app) {
   // ReXNative presents from the first frame: the Xenos driver's present thread then never puts
