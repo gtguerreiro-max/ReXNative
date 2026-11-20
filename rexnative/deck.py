@@ -472,6 +472,8 @@ if pgrep -x steam >/dev/null; then
   if systemctl --user is-active --quiet gamescope-session.target 2>/dev/null; then
     systemctl --user mask --runtime steam-launcher.service >/dev/null && masked=1
   fi
+  # A game started while this waited (the 70 s above, or the copy before it): Steam stays.
+  if pgrep -f "[S]teamLaunch AppId=" >/dev/null; then echo "a game started on the Deck: Steam not closed"; exit 3; fi
   echo "closing Steam to add the shortcuts"
   steam -shutdown >/dev/null 2>&1
   for i in $(seq 1 120); do pgrep -x steam >/dev/null || break; sleep 0.5; done
@@ -483,6 +485,9 @@ fi
     r = deck.call('bash -s <<"REXNATIVE_EOF"\n%s\nREXNATIVE_EOF' % script, timeout=300)
     for line in (r.stdout.strip() + '\n' + r.stderr.strip()).strip().splitlines():
         log('  ' + line)
+    if r.returncode == 3:
+        log('a game started on the Deck: the shortcuts are not added (Steam was not closed)')
+        return None
     ok = r.returncode == 0
     if not ok:
         log('the shortcuts were not all added (exit %d)' % r.returncode)
@@ -536,6 +541,10 @@ def try_game(deck, g, seconds, log=print):
              'XAUTHORITY=$XA; xdotool key shift; (for i in $(seq 1 %d); do sleep 30; '
              'xdotool key shift; done) >/dev/null 2>&1 < /dev/null & disown' % (seconds // 30 + 2),
              check=False)
+    if playing(deck):  # a game started while this got ready: the try would end it
+        deck.run('rm -f %s/try.flags' % dest, check=False)
+        log('%s: not tried, a game started on the Deck' % g['title'])
+        return None
     try:
         deck.run('DISPLAY=:0 nohup steam steam://rungameid/%d >/dev/null 2>&1 &' % gameid,
                  check=False)
