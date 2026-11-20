@@ -7,7 +7,8 @@ power. At the end: its frame and upscaler lines, and the captures copied to <wor
 
 Items: a key for xdotool (Return, space, Escape, a, ...); cap (a capture, f<frame>-native.png);
 dbg<mask> (draw-debug.txt, see scripts/live.ps1); pwr (the APU's average power, amdgpu hwmon, 10
-readings a second apart). Example, two captures and the power in a level:
+readings a second apart); gshot (gamescope's screenshot, g<seconds>.png: what reaches the display,
+beside the renderer's own capture). Example, two captures and the power in a level:
   python scripts/deck_drive.py D:/work/my-game try1 "20:Return,40:Return,90:cap,95:pwr,120:cap" 130 \
       --rexnative_upscaler=true --rexnative_upscaler_mode=native
 The game must be installed and in Steam (python -m rexnative deck <work>/<game> --steam). The Deck
@@ -73,6 +74,13 @@ def main():
                         max(vals) / 1e6, len(vals)), flush=True)
                 else:
                     print('%5.1f s power: no reading' % (time.time() - t0), flush=True)
+            elif key == 'gshot':
+                # What reaches the display: gamescope's screenshot of the composited frame, to
+                # set beside the renderer's own capture (its colours after gamescope).
+                name = 'g%d.png' % int(time.time() - t0)
+                d.run('XDG_RUNTIME_DIR=/run/user/1000 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 '
+                      'gamescopectl screenshot %s/%s' % (q(cap), name), check=False)
+                print('%5.1f s gamescope screenshot %s' % (time.time() - t0, name), flush=True)
             elif key.startswith('dbg'):
                 d.run('printf "%%s\\n" %s > %s/draw-debug.txt' % (q(key[3:]), q(cap)), check=False)
                 print('%5.1f s draw-debug %s' % (time.time() - t0, key[3:]), flush=True)
