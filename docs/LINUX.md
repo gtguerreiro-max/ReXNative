@@ -136,13 +136,47 @@ same games as on D3D12 (MSAA, EDRAM aliasing, memexport, tessellation, the per-g
 to three months more. It can be built and checked on the PC first: the same code runs on
 Windows' Vulkan, with RenderDoc.
 
-What it would gain, going by the table above: ReXNative's GPU work on the Deck is already small
-(1-2 % on this game), and dropping Proton saved 8 % of the game's CPU. The gain is CPU time per
-draw: ReXNative's stats show about 4 µs of CPU per draw call on the Deck (its own code and
-vkd3d-proton's under it), which matters in games with thousands of draws a frame and little in
-simple ones. Measuring one
-such game on the Deck (CPU time per frame, and how much of it is in vkd3d-proton) would say
-whether it is worth that much work.
+### What it would gain: a heavy game measured
+
+Jet Set Radio's start, with no input, is the same 3D sequence of 1,100 to 1,450 draws a frame
+every time (four sessions on the Deck agree): a heavy draw path, and repeatable.
+
+**On the Deck** (under Proton, 30 seconds after 40, `deck-measure.sh` with `HEAVY=800`):
+
+| | FPS | Draw CPU per frame | per draw | GPU busy | SoC power |
+| --- | --- | --- | --- | --- | --- |
+| Upscaler off | 30.0 (the game's cap) | 1.23 ms | 0.97 µs | 3-9 % | 9.6-10.6 W |
+| Upscaler on (FSR native AA, the Deck's default) | 29.9 | 2.62 ms | 2.08 µs | 16-20 % | 12.0 W |
+
+The game's busiest threads over the window: its main thread at 100 % of a core (the game's own
+code: at a steady 30 FPS, waiting in a loop), the Xenos command thread 21 %, ReXNative's render
+thread 4-8 %, its list thread 4 %, vkd3d-proton's queue thread 4 %. Neither the GPU nor
+ReXNative's threads are anywhere near their limit.
+
+**On the PC, the same executable with Windows' D3D12 and with vkd3d-proton**
+([pc-vkd3d-ab.ps1](../scripts/linux/pc-vkd3d-ab.ps1); vkd3d-proton 3.1 and DXVK's `dxgi.dll`
+taken from the Deck's GE-Proton 11-12, beside the executable of a copy of the game; Ryzen 5
+5600X, RTX 5060 Ti; runs alternated, another game running on the PC meanwhile):
+
+| Run | D3D12 | Draws a frame | Draw CPU per draw | Process CPU (% of a core) |
+| --- | --- | --- | --- | --- |
+| A1 | Windows' | 1,235 | 0.617 µs | 114 % |
+| B1 | vkd3d-proton | 1,212 | 0.579 µs | 121 % |
+| A2 | Windows' | 1,215 | 0.564 µs | 114 % |
+| B2 | vkd3d-proton | 1,229 | 0.569 µs | 122 % |
+
+vkd3d-proton records ReXNative's draws as fast as NVIDIA's own D3D12 driver: the same cost per
+draw within the noise (another vkd3d-proton run gave 0.72 µs). What it adds is its queue thread,
+up to about 7 % of one core in all.
+
+So, for the games measured, a Vulkan backend would not make them faster on the Deck. The draw
+path costs 1-3 ms of a 33 ms frame, vkd3d-proton's part of it is not measurable, and the GPU is
+mostly idle. The frames the Deck's logs show missing their target have fewer draws than the
+others; where the GPU is the limit (Overlord II's GPU time per frame: median 17 ms, 90th
+percentile 33 ms, with the upscaler), Vulkan would draw the same shaders. A Vulkan backend
+would be worth it to run without Proton or Wine at all, not for speed. For that alone,
+ReXNative's D3D12 code on a native `libvkd3d-proton.so` (below) would do it for much less work,
+since vkd3d-proton is no slower than a native driver.
 
 A shorter way to the Linux part alone: vkd3d-proton also builds as a native Linux library
 (`--native`, `libvkd3d-proton.so`, with a swap chain on native surfaces since 2.9), so ReXNative's

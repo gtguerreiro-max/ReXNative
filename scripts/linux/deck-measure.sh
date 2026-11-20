@@ -11,6 +11,9 @@
 #                 REXNATIVE_LINUX_BUILD=<the game's linux/ folder>: Steam then starts the native
 #                 Linux build in place of the Proton one (proton-shim).
 #   LOGDIR        the folder whose logs/ has the run's log (default: the game dir).
+#   HEAVY         prints the means of ReXNative's frame lines with at least this many draws
+#                 (pass --rexnative_d3d_stats_frames=60 among the flags for enough of them).
+# Also prints the game's busiest threads over the window (% of one core).
 # It refuses when a game runs, or when try.flags or deck.env is there already.
 dir=$1; exe_re=$2; appid=$3; label=$4; warm=$5; win=$6; shift 6
 export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
@@ -45,10 +48,18 @@ gameid=$(( (appid << 32) | 0x02000000 ))
 started=$(date +%s)
 DISPLAY=:0 nohup steam steam://rungameid/$gameid >/dev/null 2>&1 &
 sleep "$warm"
+
+threads() {  # prints "tid comm ticks" for every thread of the game's processes
+  for p in $pids; do for t in /proc/$p/task/*; do
+    s=$(cat $t/stat 2>/dev/null) || continue; rest=${s##*) }; read -r -a f <<< "$rest"
+    echo "${t##*/} $(tr ' ' '_' < $t/comm) $(( f[11] + f[12] ))"
+  done; done
+}
 dev=/sys/class/drm/card0/device; hw=$(ls -d $dev/hwmon/hwmon* | head -1)
 read -r _ a b c d e f g h _ < /proc/stat; t0=$((a+b+c+d+e+f+g+h)); i0=$((d+e))
 pids=$(pgrep -f "$exe_re" | tr '\n' ' ')
 pc0=0; for p in $pids; do read -r -a st < /proc/$p/stat 2>/dev/null && pc0=$((pc0 + st[13] + st[14])); done
+threads > /tmp/th0.txt
 busy=0; freq=0; pw=0; n=0
 for s in $(seq 1 "$win"); do
   sleep 1
@@ -59,6 +70,9 @@ done
 read -r _ a b c d e f g h _ < /proc/stat; t1=$((a+b+c+d+e+f+g+h)); i1=$((d+e))
 pc1=0; for p in $pids; do read -r -a st < /proc/$p/stat 2>/dev/null && pc1=$((pc1 + st[13] + st[14])); done
 hz=$(getconf CLK_TCK)
+threads > /tmp/th1.txt
+echo "THREADS (busiest, % of one core over the window):"
+awk -v hz=$hz -v win=$win 'NR==FNR{a[$1]=$3; next} {d=$3-a[$1]; if(d>0) printf "  %5.1f%%  %s %s\n", 100*d/hz/win, $2, $1}' /tmp/th0.txt /tmp/th1.txt | sort -rn | head -8
 echo "RESULT $label gpu_busy=$((busy/n))% sclk=$((freq/n))MHz soc_power=$((pw/n))mW cpu_total=$(( 100*((t1-t0)-(i1-i0))/(t1-t0) ))% game_cpu=$(( 100*(pc1-pc0)/hz/win ))%core pids=[$pids]"
 if [ -n "$MH" ]; then
   for k in $(seq 1 30); do ls /tmp/mh/*.csv >/dev/null 2>&1 && break; sleep 1; done
@@ -86,4 +100,6 @@ echo "RUNNING $running"
 cd "${LOGDIR:-$dir}"
 l=$(find logs -maxdepth 1 -name "*.log" -newermt "@$started" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d" " -f2-)
 echo "LOG $l"
-[ -n "$l" ] && grep -E "frames [0-9]+ \| per frame|classic|Xenos driver|vulkan|Vulkan|driver|error|FATAL|crash" "$l" | grep -v "^\s*$" | tail -40
+[ -n "$l" ] && grep -E "classic|Xenos driver|vulkan|Vulkan|driver|error|FATAL|crash" "$l" | grep -v "^\s*$" | tail -40
+# ReXNative's frame lines with at least $HEAVY draws (default 1): their means.
+[ -n "$l" ] && grep -E "ReXNative: frames [0-9]+ \| per frame: draws [0-9]" "$l" | sed -E 's/.*draws ([0-9.]+), draw CPU ([0-9.]+) us.*swap ([0-9.]+) us, frame ([0-9.]+) ms, game thread ([0-9.]+) us.*/\1 \2 \3 \4 \5/' | awk -v h="${HEAVY:-1}" '$1>=h{n++; d+=$1; c+=$2; s+=$3; f+=$4; g+=$5} END{if(n) printf "FRAMES lines %d (draws >= %s): draws %.0f, draw CPU %.0f us (%.3f us/draw), swap %.0f us, frame %.2f ms, game thread %.0f us\n", n, h, d/n, c/n, c/d, s/n, f/n, g/n; else print "FRAMES none"}'
