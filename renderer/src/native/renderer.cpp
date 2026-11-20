@@ -105,6 +105,14 @@ REXCVAR_DEFINE_BOOL(rexnative_render_thread, true, "ReXNative",
                     "Record the native frames on their own thread (\"ReXNative render\"): the "
                     "game thread only copies what each D3D call reads from guest memory and "
                     "queues it, at most one frame ahead of the render thread");
+REXCVAR_DEFINE_BOOL(rexnative_render_thread_lockstep, false, "ReXNative",
+                    "Debug: with the render thread, each Swap waits until the render thread has "
+                    "recorded that frame, so the game never writes the next frame's memory while "
+                    "the render thread still reads this one's (a race on guest memory read late)");
+REXCVAR_DEFINE_BOOL(rexnative_texture_reload, false, "ReXNative",
+                    "Debug (live): at the next frame every cached texture uploads again from guest "
+                    "memory, then the switch turns itself off (a texture whose memory was written "
+                    "without the cache noticing)");
 REXCVAR_DEFINE_INT32(rexnative_submit_draws, 256, "ReXNative",
                      "Submit the frame's commands every this many draws, so the GPU starts on them "
                      "while the rest of the frame is recorded (0: one submission per frame, at the "
@@ -935,7 +943,8 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   q.Publish();
   ++q.frame;
   // Handing over and a capture's wait count towards the next frame.
-  const uint64_t capture_wait = sync ? q.WaitFrames(q.frame) : 0;
+  const uint64_t capture_wait =
+      sync || REXCVAR_GET(rexnative_render_thread_lockstep) ? q.WaitFrames(q.frame) : 0;
   // The render thread has run this Swap: the capture is taken, or waits for a shown frame.
   if (sync) q.capture_armed = present_->capture_holding_guest();
   // The settings HUD's Frame latency, live.
@@ -1626,6 +1635,11 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     }
   }
   textures_->Retire(completed);
+  if (REXCVAR_GET(rexnative_texture_reload)) {
+    rex::cvar::SetFlagByName("rexnative_texture_reload", "false");
+    textures_->InvalidateWritten(0, 0x20000000u);
+    REXLOG_INFO("ReXNative textures: every texture uploads again (rexnative_texture_reload)");
+  }
   if (frame_generation_) frame_generation_->FinishCaptures(completed);
   if (occlusion_) occlusion_->Retire(completed);
   draw_->EndFrame(completed);

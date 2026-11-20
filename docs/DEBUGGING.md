@@ -37,6 +37,12 @@ window and drives it to the problem; then each experiment takes seconds on the r
   nothing queued: gaps and clicks), the latency from the game's Submit to the device and the
   output channels (a stereo device gets the 5.1 mix folded, LFE left out). The PC's Sega Rally race:
   0 underruns, 42 ms.
+- Timing races with the render thread (a bug that `--rexnative_render_thread=false` or
+  `--rexnative_gpu_serialize=true` hides): `--rexnative_render_thread_lockstep=true` makes each
+  Swap wait until the render thread recorded the frame (the guest never writes ahead), and
+  `live.ps1 control "set rexnative_texture_reload true"` uploads every cached texture again
+  from guest memory at the next frame (a texture whose memory changed unnoticed). Blur's black
+  patches (2026-11-20, unsolved) kept both: not the guest writing ahead, not stale textures.
 - `--rexnative_coherency_check`: each vertex and index range a draw reads is compared with guest
   memory, and a stale page is logged (slow). A mesh broken in whole 4 KB pages of its vertex
   buffer is a stale page; one broken by the vertices of one bone is a constant (NOTES.md,
