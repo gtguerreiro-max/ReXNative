@@ -252,9 +252,28 @@ it: deck-measure.sh's `SHOWN` line):
 
 The same 30 FPS and frame times, the picture 8 to 22 ms sooner after the pad (a fifth to a
 half less); 33.3 ms where the pacer had not yet learnt to begin the frame later in its slot, 23
-ms where it had. It costs 0.1-0.4 W. Not tried yet on a game whose GPU or CPU fills more of the
-frame (Overlord II's menu: 9.5 ms of GPU a frame), nor on Midnight Club's races, which fell to
-22-29 FPS at 1 before the sleep (docs/ROADMAP.md).
+ms where it had. It costs 0.1-0.4 W.
+
+Midnight Club: Los Angeles, whose races fell to 22-29 FPS at frame latency 1 before the sleep
+(docs/ROADMAP.md; the installed game's settings, FSR at native resolution), driven through the
+city by a person for six minutes, a Windows test build under Proton with the sleep and those
+settings, the latency switched live every minute, 2, 1, 2, 1, 2, 1, through the control file
+([deck-drive-latency.sh](../scripts/linux/deck-drive-latency.sh), then
+[deck-drive-report.py](../scripts/linux/deck-drive-report.py): every frame with 2,500 draws or
+more, from the per-frame CSV):
+
+| Frame latency | Frames | FPS | Frame time 99th pct | Frames >= 40 ms | Begin to shown | SoC power |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | 3,877 | 29.1 | 51.8 ms | 1.4 % | 45.6 ms | 7.0 W |
+| 1 | 4,115 | **29.6** | 41.4 ms | 1.1 % | **33.3 ms** | 7.2 W |
+| 2, no pipeline waits | 3,827 | 30.3 | 34.6 ms | 0.3 % | | |
+| 1, no pipeline waits | 4,099 | 29.9 | 38.1 ms | 0.8 % | | |
+
+At 1 it held 30 FPS through the drive, the picture 12 ms sooner, for 0.2 W. The longest frames,
+at either latency, waited for pipelines to compile (up to 0.5 s: the test folder had no pipeline
+cache yet); without them latency 1 has a few more late frames (0.8 % against 0.3 %), none in a
+row. Left: a race, with its rival cars, and the same drive with the sleep off
+(`REXNATIVE_SPIN_SLEEP=0`), to show the sleep is what changed it.
 
 ## Next: ReXNative on Vulkan (not started)
 
