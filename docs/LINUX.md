@@ -16,7 +16,10 @@ ReXNative would take.
 Tetris Splash on the Steam Deck (SteamOS 3.9, RADV, 1280x800, upscaler off), its title screen,
 30 seconds after 30 seconds of warm-up. Frame times from MangoHud (every frame), the GPU's busy
 share and the SoC's power from `/sys/class/drm/card0/device`, the game's CPU time from `/proc`
-(100 % = one core). Every setup started from the game's Steam shortcut.
+(100 % = one core). Every setup started from the game's Steam shortcut. The Deck's GPU clock was
+fixed at 1600 MHz then (its performance overlay's manual clock): the GPU's share compares, the
+absolute power does not stand for battery use; the measurements with the clock on auto are in
+"ReXNative on Linux, without Wine".
 
 | Setup | FPS | Frame time, mean / 99th pct | GPU busy | SoC power | Game's CPU |
 | --- | --- | --- | --- | --- | --- |
@@ -134,28 +137,38 @@ right. Tetris Splash's title screen (as in the first table):
 | ReXNative, native Linux | 60.0 | 16.67 / 17.17 ms | 2-4 % | 4.4 W | 24 % |
 
 Jet Set Radio's heavy start (1,100-1,450 draws a frame, the same every time; see "What it
-would gain" below), upscaler off, 30 seconds after 40, Proton and native runs alternated, from
-the same Steam shortcut:
+would gain" below), upscaler off, 30 seconds after 40, and Overlord II's 3D main menu (446 draws,
+reached by pressing START through ReXNative's control file, `deck-measure.sh` `WAIT_DRAWS` and
+`PRESS`; each build with a userdata folder of its own), 30 seconds 25 after the menu shows.
+Proton and native runs alternated, from the same Steam shortcut, the GPU clock on auto:
 
-| Jet Set Radio, start | FPS | Frame time 99th pct | SoC power | Game's CPU | Whole CPU | Draw CPU per draw |
+| Run | SoC power | Game's CPU | Whole CPU | Main thread | Xenos command thread | GPU per frame |
 | --- | --- | --- | --- | --- | --- | --- |
-| ReXNative under Proton, 1 | 30.0 | 34.45 ms | 9.2 W | 162 % | 23 % | 0.99 µs |
-| ReXNative, native Linux, 1 | 30.0 | 34.40 ms | 5.5 W | 113 % | 17 % | 1.25 µs |
-| ReXNative under Proton, 2 | 30.0 | 34.42 ms | 9.6 W | 153 % | 21 % | 0.98 µs |
-| ReXNative, native Linux, 2 | 30.0 | 34.36 ms | 6.6 W | 117 % | 17 % | 1.22 µs |
+| Jet Set Radio, Proton 1 / 2 / 3 / 4 | 5.4 / 7.1 / 8.8 / 9.2 W | 145-164 % | 22-26 % | 79-101 % | 22 % | |
+| Jet Set Radio, native 1 / 2 / 3 / 4 | 4.2 / 7.9 / 8.6 / 7.2 W | 107-130 % | 17-21 % | 74-101 % | 5 % | |
+| Overlord II, Proton 1 / 2 / 3 | 5.6 / 6.1 / 10.8 W | 136-176 % | 24-29 % | 49-94 % | 21 % | 9.6 ms |
+| Overlord II, native 1 / 2 / 3 | 6.8 / 9.0 / 5.0 W | 97-128 % | 17-19 % | 65-99 % | under 5 % | 9.4 ms |
 
-- **The same frames for about 40 % less power** (5.3-6.6 W against 9.2-9.6 W over three native
-  runs): on a game the GPU hardly works for (3-10 % busy), the CPU is most of the SoC's power,
-  and natively the game uses about a third less of it. Battery life, not frame rate, is what a
-  native build buys on games like these.
-- Most of it is in ReXGlue's own threads, not ReXNative's: the Xenos command thread (its waits
-  on the GPU) takes 21-22 % of a core under Wine and 5 % natively, and the game's main thread,
-  which waits in a loop, 92-100 % against 76-84 %: waiting through Wine's synchronization most
-  likely costs more than through Linux's futexes.
-- Recording a draw costs a quarter more natively (1.22-1.25 against 0.98-0.99 µs): this
-  vkd3d-proton is a plain meson release build, GE-Proton's may be built otherwise. 1.5 ms a frame,
-  not the bottleneck; an optimized build (LTO, `-march=znver2`, the Steam Deck's CPU) is the next
-  thing to try for it.
+Every run: 30 FPS (both games' own cap), the same frame times, the same GPU time.
+
+- **Natively the game takes less CPU, every time**: a fifth to a third less of it (the whole
+  system 17-21 % against 22-29 %). ReXGlue's Xenos command thread, waiting on the GPU, takes 5 %
+  of a core instead of 21-22 %, and Overlord II's network thread, 25 % under Wine, is not among
+  the busiest at all. Waiting through Wine's synchronization costs more than through Linux's.
+- **The power, though, follows the game's main thread**, which waits for the next frame in a
+  loop (on Jet Set Radio it runs 90-100 % of the time and blocks about once a frame: 32-34
+  voluntary context switches a second at 30 FPS, both ways). How much of a core it spins differs from run to run
+  (49-101 %) on both sides, and the SoC's power with it (4.2 W at 74 %, 7.9 W at 100 % on Jet
+  Set Radio natively): on average the two come out about even (6.9 W native, 7.5-7.6 W under Proton).
+  With the GPU clock fixed at 1600 MHz, Jet Set Radio's earlier runs gave 5.3-6.6 W natively
+  against 9.2-9.6 W.
+- So the battery's biggest lever is that loop, on Linux and under Proton alike: a game's wait
+  for the GPU or the next frame done as a real wait (a hook of the XDK's D3D wait, which
+  ReXNative already finds in every game, or a short sleep after a few spins in ReXGlue's yield),
+  not by spinning a core at full clock.
+- Recording a draw costs about the same (Jet Set Radio 0.95-1.25 µs natively against
+  0.94-1.09 under Proton, Overlord II 1.65-1.81 against 1.35-1.75), with a plain meson release
+  build of vkd3d-proton; LTO and `-march=znver2` (the Deck's CPU) are left to try.
 
 What is not there on Linux yet: DLSS (never on the Deck), FSR and frame generation (the
 FidelityFX SDK's DX12 runtime; FSR 3.1 has a Vulkan backend, FSR 4 does not), the classic

@@ -17,10 +17,11 @@
   results.
 - Build a game end to end from `scripts\build-sdk.ps1` on a clean machine.
 - Native Linux (experimental, `vulkan-experiment`): ReXNative runs on the Steam Deck without
-  Proton or Wine (vkd3d-proton and DXVK Native as Linux libraries), the same frames for about
-  40 % less power on Jet Set Radio. Next there: an optimized build (LTO, the Deck's CPU), FSR on
-  Vulkan, a Steam shortcut of its own. A Vulkan backend for ReXNative would not be faster; its
-  cost is in [LINUX.md](LINUX.md).
+  Proton or Wine (vkd3d-proton and DXVK Native as Linux libraries), the same frames for a fifth
+  to a third less CPU. The battery's biggest lever, there and under Proton: the games' main
+  threads spin a core waiting for the next frame; a real wait (a hook of the XDK's D3D wait).
+  Then: an optimized build (LTO, the Deck's CPU), FSR on Vulkan, a Steam shortcut of its own. A
+  Vulkan backend for ReXNative would not be faster; see [LINUX.md](LINUX.md).
 - Every new game becomes a reference and makes the next one easier.
 
 ## Done

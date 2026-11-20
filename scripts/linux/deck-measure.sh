@@ -11,8 +11,13 @@
 #                 REXNATIVE_LINUX_BUILD=<the game's linux/ folder>: Steam then starts the native
 #                 Linux build in place of the Proton one (proton-shim).
 #   LOGDIR        the folder whose logs/ has the run's log (default: the game dir).
-#   HEAVY         prints the means of ReXNative's frame lines with at least this many draws
-#                 (pass --rexnative_d3d_stats_frames=60 among the flags for enough of them).
+#   WAIT_DRAWS    instead of the fixed warm-up (then the longest wait): measure SETTLE s (default
+#                 10) after a frame line shows this many draws. PRESS=<buttons> (START, A+START)
+#                 with CONTROL_FILE=<the file the game's --rexnative_d3d_control names> presses
+#                 them every 2 s from PRESS_FROM s (default 8) until then.
+#   HEAVY         prints the means of ReXNative's frame lines inside the window with at least
+#                 this many draws (pass --rexnative_d3d_stats_frames=60 among the flags), and
+#                 its GPU time per frame (with --rexnative_gpu_timing=true).
 # Also prints the game's busiest threads over the window (% of one core).
 # It refuses when a game runs, or when try.flags or deck.env is there already.
 dir=$1; exe_re=$2; appid=$3; label=$4; warm=$5; win=$6; shift 6
@@ -47,7 +52,26 @@ waker=$!
 gameid=$(( (appid << 32) | 0x02000000 ))
 started=$(date +%s)
 DISPLAY=:0 nohup steam steam://rungameid/$gameid >/dev/null 2>&1 &
-sleep "$warm"
+if [ -n "$WAIT_DRAWS" ]; then
+  # Waits (up to the warm-up) for a frame line with WAIT_DRAWS draws or more (a scene reached,
+  # by hand or by a route), then SETTLE seconds (default 10), then measures.
+  ld="${LOGDIR:-$dir}/logs"; reached=
+  while [ $(( $(date +%s) - started )) -lt "$warm" ]; do
+    lf=$(find "$ld" -maxdepth 1 -name "*.log" -newermt "@$started" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d" " -f2-)
+    if [ -n "$lf" ] && tail -n 300 "$lf" | grep -E "ReXNative: frames [0-9]+ \| per frame: draws [0-9]" | tail -1 | sed -E 's/.*draws ([0-9.]+).*/\1/' | awk -v n="$WAIT_DRAWS" '{v = $1} END {exit !(v + 0 >= n)}'; then reached=1; break; fi
+    # PRESS (e.g. START) on the pad through ReXNative's control file (CONTROL_FILE, the file the
+    # game's --rexnative_d3d_control names) every 2 s from PRESS_FROM s, until the scene shows.
+    if [ -n "$PRESS" ] && [ -n "$CONTROL_FILE" ] && [ $(( $(date +%s) - started )) -ge "${PRESS_FROM:-8}" ]; then
+      echo "pad $PRESS 150" > "$CONTROL_FILE"
+    fi
+    sleep 2
+  done
+  if [ -n "$reached" ]; then echo "WAIT reached ${WAIT_DRAWS}+ draws after $(( $(date +%s) - started )) s"; else echo "WAIT ${WAIT_DRAWS}+ draws not reached in ${warm} s"; fi
+  sleep "${SETTLE:-10}"
+  warm=$(( $(date +%s) - started ))
+else
+  sleep "$warm"
+fi
 
 threads() {  # prints "tid comm ticks" for every thread of the game's processes
   for p in $pids; do for t in /proc/$p/task/*; do
@@ -101,5 +125,8 @@ cd "${LOGDIR:-$dir}"
 l=$(find logs -maxdepth 1 -name "*.log" -newermt "@$started" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d" " -f2-)
 echo "LOG $l"
 [ -n "$l" ] && grep -E "classic|Xenos driver|vulkan|Vulkan|driver|error|FATAL|crash" "$l" | grep -v "^\s*$" | tail -40
-# ReXNative's frame lines with at least $HEAVY draws (default 1): their means.
-[ -n "$l" ] && grep -E "ReXNative: frames [0-9]+ \| per frame: draws [0-9]" "$l" | sed -E 's/.*draws ([0-9.]+), draw CPU ([0-9.]+) us.*swap ([0-9.]+) us, frame ([0-9.]+) ms, game thread ([0-9.]+) us.*/\1 \2 \3 \4 \5/' | awk -v h="${HEAVY:-1}" '$1>=h{n++; d+=$1; c+=$2; s+=$3; f+=$4; g+=$5} END{if(n) printf "FRAMES lines %d (draws >= %s): draws %.0f, draw CPU %.0f us (%.3f us/draw), swap %.0f us, frame %.2f ms, game thread %.0f us\n", n, h, d/n, c/n, c/d, s/n, f/n, g/n; else print "FRAMES none"}'
+# ReXNative's frame lines inside the window with at least $HEAVY draws (default 1): their means;
+# and its GPU time per frame (--rexnative_gpu_timing=true), inside the window.
+from=$(date -d @$((started + warm)) "+%Y-%m-%d %H:%M:%S")
+[ -n "$l" ] && awk -v from="$from" 'substr($0,1,19) >= from' "$l" | grep -E "ReXNative: frames [0-9]+ \| per frame: draws [0-9]" | sed -E 's/.*draws ([0-9.]+), draw CPU ([0-9.]+) us.*swap ([0-9.]+) us, frame ([0-9.]+) ms, game thread ([0-9.]+) us.*/\1 \2 \3 \4 \5/' | awk -v h="${HEAVY:-1}" '$1>=h{n++; d+=$1; c+=$2; s+=$3; f+=$4; g+=$5} END{if(n) printf "FRAMES lines %d (draws >= %s): draws %.0f, draw CPU %.0f us (%.3f us/draw), swap %.0f us, frame %.2f ms, game thread %.0f us\n", n, h, d/n, c/n, c/d, s/n, f/n, g/n; else print "FRAMES none"}'
+[ -n "$l" ] && awk -v from="$from" 'substr($0,1,19) >= from' "$l" | grep -E "ReXNative GPU: frames [0-9]+ \| GPU" | sed -E 's/.*GPU ([0-9.]+) ms\/frame \(max ([0-9.]+)\).*/\1 \2/' | awk '{n++; g+=$1; if($2>m)m=$2} END{if(n) printf "GPU lines %d: GPU %.2f ms/frame (max %.1f)\n", n, g/n, m}'
