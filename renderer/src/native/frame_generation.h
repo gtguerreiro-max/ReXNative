@@ -37,10 +37,10 @@
 // waits for them, the first blended draw that is not the next of them being the HUD's. The
 // texture's size tells a HUD sprite from a full-screen overlay of the same pixel shader: Overlord
 // darkens its pause screen with its sprites' shader, and after a pause the copy waited for the
-// first HUD sprite as for a full-screen pass, its minion counter generated with the scene. The generation reads the scene's
-// part of both (Generate's rect). A frame without the scene's inputs (the upscaler off, a
-// loading screen) is presented alone, and the next one starts the generation over: a frame ID not
-// one more than the last resets it.
+// first HUD sprite as for a full-screen pass, its minion counter generated with the scene. The
+// generation reads the scene's part of both (Generate's rect). A frame without the scene's
+// inputs (the upscaler off, a loading screen) is presented alone, and the next one starts the
+// generation over: a frame ID not one more than the last resets it.
 //
 // Live: --rexnative_frame_generation is read at each frame's start (NativeRenderer::BeginFrame),
 // so the settings HUD turns it on and off in game. On, the next Prepare makes the context; off,
