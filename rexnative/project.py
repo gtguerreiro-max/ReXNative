@@ -90,22 +90,38 @@ endif()
 rexglue_setup_target({name})
 target_link_libraries({name} PRIVATE {name}_common)
 
-set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
-set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")
-set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
-set(REXNATIVE_DLSS_SDK "" CACHE PATH "NVIDIA DLSS SDK")
-set(REXNATIVE_DLSS_NR "" CACHE PATH "NVIDIA DLSS 5 headers")
-include("${{REXNATIVE_DIR}}/renderer/rexnative.cmake")
-rexnative_add({name}_common
-    EXECUTABLE      {name}
-    LAYER_DIR       "${{CMAKE_CURRENT_SOURCE_DIR}}/layer"
-    REXGLUE_SDK_SRC "${{REXNATIVE_REXGLUE_SDK_SRC}}"
-    FIDELITYFX_SDK  "${{REXNATIVE_FIDELITYFX_SDK}}"
-    DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
-    DLSS_NR         "${{REXNATIVE_DLSS_NR}}")
+# ReXNative draws with D3D12, so on Windows only (and under Proton). -DREXNATIVE=OFF, and any
+# other system (a native Linux build), builds the game without it: ReXGlue's own renderer, its
+# Xenos GPU emulation (gpu.driver: Vulkan, or D3D12 on Windows), draws it.
+if(WIN32)
+    option(REXNATIVE "Draw the game with ReXNative (D3D12)" ON)
+else()
+    set(REXNATIVE OFF)
+endif()
+if(REXNATIVE)
+    set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
+    set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")
+    set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
+    set(REXNATIVE_DLSS_SDK "" CACHE PATH "NVIDIA DLSS SDK")
+    set(REXNATIVE_DLSS_NR "" CACHE PATH "NVIDIA DLSS 5 headers")
+    include("${{REXNATIVE_DIR}}/renderer/rexnative.cmake")
+    rexnative_add({name}_common
+        EXECUTABLE      {name}
+        LAYER_DIR       "${{CMAKE_CURRENT_SOURCE_DIR}}/layer"
+        REXGLUE_SDK_SRC "${{REXNATIVE_REXGLUE_SDK_SRC}}"
+        FIDELITYFX_SDK  "${{REXNATIVE_FIDELITYFX_SDK}}"
+        DLSS_SDK        "${{REXNATIVE_DLSS_SDK}}"
+        DLSS_NR         "${{REXNATIVE_DLSS_NR}}")
+else()
+    target_compile_definitions({name}_common PRIVATE REXNATIVE_OFF=1)
+endif()
 
 # The link map (build/{name}.map) names the recompiled guest functions of a crash's offsets.
-target_link_options({name} PRIVATE "LINKER:/MAP")
+if(WIN32)
+    target_link_options({name} PRIVATE "LINKER:/MAP")
+else()
+    target_link_options({name} PRIVATE "LINKER:-Map=${{CMAKE_BINARY_DIR}}/{name}.map")
+endif()
 '''
 
 MAIN = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by `rexnative project`).
@@ -138,32 +154,45 @@ APP_CPP = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by 
 #include <filesystem>
 #include <string>
 
-#include <rex/cvar.h>
 #include <rex/kernel/guest_memory.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/logging/log_category.h>
 
 #include "generated/default/{name}_init.h"
+// REXNATIVE_OFF (CMakeLists: -DREXNATIVE=OFF, or not Windows): ReXGlue's renderer alone.
+#if !defined(REXNATIVE_OFF)
+#include <rex/cvar.h>  // ReXNative's (renderer/src/compat)
+
 #include "host.h"     // ReXNative's connection to the app
 #include "hud/hud.h"  // ReXNative's settings HUD
+#endif
 
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN  // the SDK's headers may define it
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#endif
 
+#if !defined(REXNATIVE_OFF)
 REXCVAR_DEFINE_STRING(rexnative_dump_image, "", "ReXNative",
                       "Write the loaded default.xex image to this file when it is loaded "
                       "(rexnative project --find-functions reads it)");
+#endif
 
 namespace {{
 
 // The folder of the executable: the game's files, its title update and the player's data are
 // beside it (game/, title-update/, userdata/).
 std::filesystem::path ExeDir() {{
+#if defined(_WIN32)
   wchar_t path[MAX_PATH];
   const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
   return std::filesystem::path(std::wstring(path, n)).parent_path();
+#else
+  std::error_code ec;
+  return std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();
+#endif
 }}
 
 }}  // namespace
@@ -171,7 +200,9 @@ std::filesystem::path ExeDir() {{
 {cls}::{cls}() : TitleApp("{name}", kPPCImageConfig) {{}}
 
 rex::Result<void> {cls}::OnConfigure(rex::SettingsRegistry& settings) {{
+#if !defined(REXNATIVE_OFF)
   rexnative::host::Configure();
+#endif
   const std::filesystem::path dir = ExeDir();
   std::error_code ec;
   if (std::filesystem::is_directory(dir / "game", ec))
@@ -185,14 +216,17 @@ rex::Result<void> {cls}::OnConfigure(rex::SettingsRegistry& settings) {{
 
 rex::Result<void> {cls}::OnInit() {{
   if (auto r = TitleApp::OnInit(); !r) return r;
+#if !defined(REXNATIVE_OFF)
   rexnative::host::Attach(*this);
   rexnative::hud::Initialize();
+#endif
   return {{}};
 }}
 
 // --rexnative_dump_image: the image as loaded (decrypted, decompressed), before any guest code
 // runs.
 rex::Result<void> {cls}::OnTitleLaunch(rex::kernel::TitleRuntime& title) {{
+#if !defined(REXNATIVE_OFF)
   if (const std::string path = REXCVAR_GET(rexnative_dump_image); !path.empty()) {{
     auto image = title.GetGuestMemory().GetReadOnlySpan(uint32_t(REX_IMAGE_BASE),
                                                         uint32_t(REX_IMAGE_SIZE));
@@ -203,12 +237,15 @@ rex::Result<void> {cls}::OnTitleLaunch(rex::kernel::TitleRuntime& title) {{
                   uint32_t(REX_IMAGE_SIZE), path);
     }}
   }}
+#endif
   return TitleApp::OnTitleLaunch(title);
 }}
 
 void {cls}::OnShutdown() {{
+#if !defined(REXNATIVE_OFF)
   rexnative::hud::Shutdown();
   rexnative::host::Detach();
+#endif
   TitleApp::OnShutdown();
 }}
 '''
