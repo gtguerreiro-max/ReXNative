@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stands in for Proton in an installed game's play.sh (REXNATIVE_PROTON, from a temporary
+# deck.env): runs the game's native Linux build instead, under Steam's launch of the shortcut,
+# so gamescope shows it. play.sh's arguments (waitforexitandrun, the .exe, its flags) are dropped.
+exec "${REXNATIVE_LINUX_BUILD:?}/run-linux.sh"
