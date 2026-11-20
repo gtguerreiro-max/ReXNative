@@ -370,7 +370,9 @@ struct Walker {
   Walker(const uint8_t* base_, const uint8_t* pm_, const RunContext& c_, State& s_)
       : base(base_), pm(pm_), c(c_), s(s_), f(s_.frame), gs(GuestState()) {
     modecontrol = gs.regs()[0x2208];
+    held_vertices = c_.held_vertices;
   }
+  uint32_t held_vertices = 0;  // RunContext::held_vertices, until that draw is seen
 
   const uint8_t* base;
   const uint8_t* pm;  // physical membase: the buffers, shaders and constants are physical
@@ -901,7 +903,11 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
         }));
       }
     }
-    const bool issue = drop < 0 && emit;
+    bool issue = drop < 0 && emit;
+    if (held_vertices && src == 2 && (init >> 16) == held_vertices) {
+      held_vertices = 0;  // the held BeginVertices draw: queued already
+      issue = false;
+    }
     if (issue) {
       HookArgs a{};
       a.fn = HookFn::kRunCommandBuffer;

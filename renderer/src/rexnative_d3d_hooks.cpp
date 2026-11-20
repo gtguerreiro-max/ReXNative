@@ -125,6 +125,10 @@ REXCVAR_DEFINE_INT32(rexnative_d3d_stats_frames, 150, "ReXNative",
 REXCVAR_DEFINE_BOOL(rexnative_d3d_tap_check, false, "ReXNative",
                     "With --rexnative_d3d_tap: compare the tracked state with the stream at every draw "
                     "of every frame and log the frames that differ (slow)");
+REXCVAR_DEFINE_STRING(rexnative_d3d_tap_check_range, "", "ReXNative",
+                      "With --rexnative_d3d_tap_check: \"first-last\" registers (hex) alone, each "
+                      "draw whose tracked values there differ from the stream's logged (4070-415F: "
+                      "vertex shader constants c28-c87)");
 
 namespace {
 
@@ -603,6 +607,38 @@ void CompareState(Tap& t, FnId id) {
   }
   ++t.state_draws;
   ++t.frame.checked;
+  static const auto range = [] {
+    const std::string r = REXCVAR_GET(rexnative_d3d_tap_check_range);
+    unsigned a = 0, b = 0;
+    return std::sscanf(r.c_str(), "%x-%x", &a, &b) == 2 ? std::pair<uint32_t, uint32_t>{a, b}
+                                                       : std::pair<uint32_t, uint32_t>{0, 0};
+  }();
+  if (range.second) {
+    const uint32_t* v = gs.regs();
+    std::string s;
+    uint32_t n = 0, first = 0;
+    for (uint32_t r = range.first; r <= range.second && r < kRegCount; ++r) {
+      if (t.written[r] != 1 || t.regs[r] == v[r]) continue;
+      if (!n++) first = r;
+      if (n <= 8) Append(s, " %04X tap=%08X state=%08X", r, t.regs[r], v[r]);
+    }
+    if (n) {
+      REXNATIVE_LOG_FIRST(400, WARN, "ReXNative D3D check: frame {} draw {} fn={} vs={:08X}: {} "
+                          "registers from {:04X} differ from the stream:{}",
+                          t.frame_index, t.draw_seq, kFns[id].name, gs.vs().ucode, n, first, s);
+      if (t.tracing)
+        Append(t.out, "# range_diff d=%llu fn=%s n=%u first=%04X%s\n",
+               (unsigned long long)t.draw_seq, kFns[id].name, n, first, s.c_str());
+      // The first difference traces the next two frames (rexnative-d3d-rangediff-f*.txt).
+      static bool traced = false;
+      if (!traced && !t.tracing && !t.trace_left) {
+        traced = true;
+        t.trace_tag = "rangediff";
+        t.trace_left = 2;
+      }
+    }
+    return;
+  }
   uint32_t bad = gs.CompareWithTap(t.regs, t.written, t.state_regs.data(), &t.state_per_tile);
   const auto& gvs = gs.vs();
   bool vs_bad = t.vs_addr && (gvs.ucode != t.vs_addr || gvs.dwords != t.vs_dwords || gvs.immediate);
@@ -1841,6 +1877,12 @@ thread_local uint32_t t_gap_depth = 0;
 thread_local uint32_t t_gap_cursor = 0;
 thread_local uint32_t t_gap_cursor_device = 0;  // the device t_gap_cursor is a push of
 thread_local bool t_gap_valid = false;
+// The outer BeginVertices before this gap: its vertices (GPU address, bytes) and count. When
+// they are not in the gap's stream (Sega Rally Revo's come from a ring of their own), the gap is
+// walked all the same: the game writes the rest of the call there, EndVertices inlined, and then
+// its next draw's constants (the skinned meshes' bones, c28 on: without them bone 0 kept another
+// draw's values and those vertices went thousands of units away).
+thread_local uint32_t t_begin_vertices = 0, t_begin_bytes = 0, t_begin_count = 0;
 // The walk's generation: rexnative.inline_draws_auto starts a trial with a new one, and a cursor
 // from an older one (before the walk was off) is not walked from.
 std::atomic<uint32_t> g_gap_epoch{0};
@@ -1891,6 +1933,15 @@ constexpr size_t kMaxForeign = 4096;
     g_gap_foreign.any.store(false, std::memory_order_relaxed);
   }
   const uint32_t cursor = t_gap_cursor;
+  uint32_t held_vertices = 0;
+  if (!t_gap_valid && t_begin_count && t_gap_cursor_device == device && push > cursor) {
+    const uint32_t v = t_begin_vertices, lo = rexnative::GpuAddress(cursor),
+                   hi = rexnative::GpuAddress(push);
+    if (v && (v + t_begin_bytes <= lo || v >= hi)) {
+      t_gap_valid = true;
+      held_vertices = t_begin_count;
+    }
+  }
   if (!t_gap_valid || t_gap_cursor_device != device ||
       t_gap_epoch != g_gap_epoch.load(std::memory_order_relaxed) || overflow || push <= cursor ||
       push - cursor > (4u << 20))
@@ -1905,6 +1956,7 @@ constexpr size_t kMaxForeign = 4096;
   rc.follow_swap_device_only = true;
   rc.in_native_call = t_native_depth != 0;
   rc.probe = g_gap_probe.load(std::memory_order_relaxed);
+  rc.held_vertices = held_vertices;
   // (cursor, push] without the other threads' calls in it: dword addresses [first, end).
   std::sort(foreign.begin(), foreign.end());
   uint32_t from = cursor;
@@ -2114,6 +2166,7 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
              [&] { QueuePendingVertices(rexnative::NativeRenderer::Live(), base); });
     Native(kFns[kId].name, [&] { GapEntry(base, device); });
   }
+  const uint32_t begin_count = ctx.r5.u32, begin_stride = ctx.r6.u32;
   ++t_gap_depth;
   OnHookInner<kId, kOriginal>(ctx, base);
   --t_gap_depth;
@@ -2122,6 +2175,14 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     t_gap_cursor_device = device;
     t_gap_epoch = g_gap_epoch.load(std::memory_order_relaxed);
     t_gap_valid = kId != kFnBeginVertices && kId != kFnBeginIndexedVertices;
+    if constexpr (kId == kFnBeginVertices) {
+      // r3: the vertices' address, 0 when there was no space (nothing written).
+      t_begin_vertices = ctx.r3.u32 ? rexnative::GpuAddress(ctx.r3.u32) : 0;
+      t_begin_bytes = begin_count * begin_stride;
+      t_begin_count = begin_count;
+    } else {
+      t_begin_count = 0;
+    }
     if constexpr (kId == kFnSwap)
       rexnative::cmdbuf::OnSwapGaps(REXCVAR_GET(rexnative_d3d_stats_frames));
   } else if (foreign) {

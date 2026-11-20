@@ -51,6 +51,10 @@ struct RunContext {
   // ReplayGap: validate only, counting the shader constants the stream changes from the
   // tracker's values (rexnative.inline_draws_auto's probe).
   bool probe = false;
+  // ReplayGap after a BeginVertices whose draw the renderer queued itself (the game wrote the
+  // end of the call, EndVertices inlined): the first auto-index draw of this many vertices is
+  // that one, not emitted again; 0: none.
+  uint32_t held_vertices = 0;
   std::string* trace = nullptr;  // the tap's frame trace while it traces this device
   void (*tap_write)(uint32_t reg, uint32_t value) = nullptr;  // tap register mirror (tap on)
   uint64_t frame = 0;                                          // for dump names

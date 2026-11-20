@@ -27,6 +27,11 @@ window and drives it to the problem; then each experiment takes seconds on the r
   writes eight presented frames in a row, each from its own readback: one slot took every other
   frame, which hid a flicker that alternates frame by frame. A still scene shows a flicker best:
   any pixel that changes there is one (at a race start without throttle, only the crowd moves).
+- `--rexnative_d3d_tap --rexnative_d3d_tap_check --rexnative_d3d_tap_check_range=4070-415F`: the
+  push buffer decoded on its own and compared with the tracker at every draw, for those registers
+  alone (vertex constants c28-c87 here), each draw that differs logged; the first one traces the
+  next two frames (`rexnative-d3d-rangediff-f*.txt` in the trace folder, `# range_diff` lines).
+  A mesh broken by one bone's vertices: its constants missed, this finds where.
 - `--rexnative_coherency_check`: each vertex and index range a draw reads is compared with guest
   memory, and a stale page is logged (slow). A mesh broken in whole 4 KB pages of its vertex
   buffer is a stale page; one broken by the vertices of one bone is a constant (NOTES.md,

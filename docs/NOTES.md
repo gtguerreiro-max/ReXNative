@@ -459,6 +459,17 @@ the walk too (Sega Rally's menus: 5 a probe), and a kept walk is learned per gam
 without a cache root) turns it on from the first Swap of the next runs. Delete the file to have
 the game probed again.
 
+The walk on from the start, the wall still came back now and then, in the menus and the race's
+opening flyby. `--rexnative_d3d_tap_check_range=4070-415F` (the tap's decode of the push buffer
+against the tracker, vertex constants c28-c87 alone; the first difference traces the next two
+frames) caught it: the stream held bone matrices where the tracker held an older draw's values.
+Sega Rally inlines EndVertices: after a BeginVertices its own code writes the rest of that call
+(the draw packet) and then, before the next hooked call, the next draw's bones. The walk skipped
+every gap after a BeginVertices as vertex data, but this game's vertices come from a ring of
+their own (fetch 31 points outside the push buffer): such a gap is now walked, all but the
+BeginVertices draw itself (the renderer queued it already; the first auto-index draw of its
+vertex count). Before, 67 frames of a run had wrong bones; after, none.
+
 ## Resolves from the registers
 
 SSX drew black on the native renderer with its intro running at 30 FPS: the presenter found no
