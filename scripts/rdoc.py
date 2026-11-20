@@ -16,7 +16,9 @@
 #       its vertex shader's output positions, its shaders disassembled, its constant buffers,
 #       its depth, stencil, depth bias and viewport; "buffer" ("offset", "size" in hex): bytes
 #       of a buffer; "pick" (with "event", "texture", "x", "x1", "y"): float texel values;
-#       "debug" (with "event", "x", "y"): the pixel shader run in RenderDoc's debugger
+#       "debug" (with "event", "x", "y"): the pixel shader run in RenderDoc's debugger;
+#       "dump" (with "event", "texture"): the texture's mip 0 as raw texels after that event
+#       (dump-e<event>-<texture>.raw, its size and format in dump.txt), for float data
 # Writes <out>/<cmd>*.txt / .png and <out>/rdoc.log ("ok" or the traceback).
 import json
 import os
@@ -136,6 +138,15 @@ def main():
                         v = controller.PickPixel(rid, x, y, rd.Subresource(0, 0, 0),
                                                  rd.CompType.Float)
                         f.write("(%d,%d) %s\n" % (x, y, " ".join("%.4g" % c for c in v.floatValue)))
+        elif cmd == "dump":
+            controller.SetFrameEvent(job["event"], True)
+            rid = next(r for r in textures if int(r) == job["texture"])
+            data = controller.GetTextureData(rid, rd.Subresource(0, 0, 0))
+            path = os.path.join(out, "dump-e%d-%d.raw" % (job["event"], job["texture"]))
+            with open(path, "wb") as f:
+                f.write(bytes(data))
+            with open(os.path.join(out, "dump.txt"), "w") as f:
+                f.write("%s %s %d bytes\n" % (path, describe(rid), len(data)))
         elif cmd == "debug":
             # The pixel shader of the draw at `event` run at (x, y) in RenderDoc's debugger: its
             # inputs, then each instruction's changed registers, into debug-e<event>-x-y.txt.

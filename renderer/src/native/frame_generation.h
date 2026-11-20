@@ -127,9 +127,11 @@ class FrameGeneration {
   // f<frame>-fg-hudless.png, when `hudless`) by FinishCaptures once the GPU
   // finished them (HDR: the PQ image's top 8 bits, washed out). With --rexnative_capture_burst,
   // consecutive frames: each generated
-  // frame lies between the real ones before and after it.
+  // frame lies between the real ones before and after it. `motion` (the scene's motion vectors,
+  // NON_PIXEL_SHADER_RESOURCE, R16G16_FLOAT) is written too, as f<frame>-fg-motion.raw: "RXMV",
+  // width and height (uint32), then the rows of half-float pairs (UV, current to previous).
   void Capture(CommandStream* list, uint64_t frame, uint64_t fence, std::filesystem::path dir,
-               bool hudless);
+               bool hudless, ID3D12Resource* motion = nullptr);
   void FinishCaptures(uint64_t completed_fence);
 
   // After the Presenter drew frame `frame` into image() and hudless(): every 15th such frame,
@@ -151,6 +153,8 @@ class FrameGeneration {
     std::filesystem::path dir;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     ComPtr<ID3D12Resource> real, generated, hudless;  // readback buffers (hudless: null)
+    ComPtr<ID3D12Resource> motion;                     // readback buffer, or null
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT motion_footprint{};
   };
   std::vector<PendingCapture> captures_;
   bool CopyAtHud(CommandStream* list, uint64_t frame, const uint32_t* regs, uint64_t pixel_shader);

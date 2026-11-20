@@ -13,13 +13,14 @@
 #   scripts\rdoc.ps1 disasm <capture.rdc> -Event 1234       # its shaders, disassembled
 #   scripts\rdoc.ps1 cbuffers <capture.rdc> -Event 1234     # its shaders' constant buffers
 #   scripts\rdoc.ps1 state <capture.rdc> -Event 1234        # its depth, stencil, bias, viewport
+#   scripts\rdoc.ps1 dump <capture.rdc> -Event 1234 -Texture 56   # its mip 0 as raw texels
 #   scripts\rdoc.ps1 buffer <capture.rdc> -Offset 15494000 -Size 1000 [-Event 0] [-Texture 0]
 #                    bytes (hex offset and size) of a buffer; 0: the largest, the renderer's
 #                    copy of guest physical memory
 # RenderDoc's folder: -RenderDoc, else $env:REXNATIVE_RENDERDOC (the one with qrenderdoc.exe).
 # Output: <capture>.rdoc\ (actions.txt, history-X-Y.txt, tex-*.png), printed when done.
 param(
-    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'reads', 'pick', 'debug', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state')][string]$Cmd,
+    [Parameter(Position = 0, Mandatory)][ValidateSet('actions', 'history', 'save', 'inputs', 'reads', 'pick', 'debug', 'buffer', 'mesh', 'disasm', 'cbuffers', 'state', 'dump')][string]$Cmd,
     [Parameter(Position = 1, Mandatory)][string]$Capture,
     [int]$X = 0, [int]$X1 = 0, [int]$Y = 0, [int]$Event = 0, [int]$Texture = 0, [string]$Offset = '0', [string]$Size = '0',
     [string]$RenderDoc = $env:REXNATIVE_RENDERDOC
@@ -61,4 +62,5 @@ switch ($Cmd) {
     'disasm' { Join-Path $out "disasm-e$Event-ps.txt" }
     'cbuffers' { Join-Path $out "cbuffers-e$Event.txt" }
     'state' { Get-Content (Join-Path $out "state-e$Event.txt") }
+    'dump' { Get-Content (Join-Path $out 'dump.txt') }
 }

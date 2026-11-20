@@ -1575,8 +1575,11 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     if (present_->capturing(frame_index_) && !fg_captures_left_) fg_captures_left_ = 8;
     if (fg_captures_left_) {
       --fg_captures_left_;
+      // With the scene's motion vectors (the frame generation's input), still this frame's.
+      ID3D12Resource* motion = nullptr;
+      if (Upscaler* up = upscaler()) motion = up->ReadSceneInputs(d.command_list()).motion;
       fg->Capture(d.command_list(), frame_index_, d.frame_fence(),
-                  REXCVAR_GET(rexnative_capture_dir), hudless.image != nullptr);
+                  REXCVAR_GET(rexnative_capture_dir), hudless.image != nullptr, motion);
     }
   }
   // The frame's texture copies read upload memory the untile workers fill.

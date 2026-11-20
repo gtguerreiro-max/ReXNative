@@ -35,6 +35,24 @@
 // from this draw's (OtherCopies), it holds other objects: the draw moves with the camera instead,
 // its own registers kept and the frame's at their previous values, as static copies do.
 //
+// Draws of one identity are also the tiles of a terrain: Sega Rally Revo draws its track's ground
+// in tiles of a few index counts (its levels of detail), all of one index buffer and the same
+// constants (the tiles' vertices are in world space), each tile's vertices in a buffer of its
+// own. When two draws earlier in the frame came or went, each tile took the one two places
+// before it in the previous frame, its neighbour: motion vectors read from another tile's
+// vertices, tens to hundreds of pixels off in bands across the road (2026-11-20 motion logs:
+// 33 of 1500 draws a frame), which frame generation drew as smears below the car. So a
+// previous draw with this one's vertex buffer (its first binding's base and first vertex) comes
+// first among those of its identity. Without one, in a game whose matches nearly all keep their
+// buffer (stable_), the draw found is another mesh (a tile in another's place: one that came
+// into view or changed its level of detail, its vertices in a buffer of each level's), and this
+// draw moves with the camera (Camera) instead of taking that mesh's vertices. Told apart by
+// nothing else from a draw that writes its vertices anew each frame (the ground beside a
+// building in the same race), which the camera also moves exactly while it stands still; a
+// moving one of those loses its own motion, where another tile's vertices put motion vectors
+// hundreds of pixels off. Where most draws write their vertices anew (Jet Set Radio's ring of
+// vertices), the draw found stays.
+//
 // The frames' draws are kept in order, in arrays read and written front to back, which a
 // hash table probed at random spots for every draw is not (td-499 perf: three cache misses a
 // draw, 6 % of the render thread). The constants stay in the upload memory they were committed
@@ -100,6 +118,8 @@ class MotionHistory {
   void BeginFrame(uint64_t frame) {
     std::swap(current_, previous_);
     std::swap(current_floats_, previous_floats_);
+    stable_ = buffer_matches_ >= 64 && same_buffer_matches_ * 10 >= buffer_matches_ * 9;
+    buffer_matches_ = same_buffer_matches_ = 0;
     current_.clear();
     current_floats_.clear();
     if (frame != frame_ + 1) {
@@ -155,17 +175,30 @@ class MotionHistory {
     bool use_loose = false;
     bool nearest = false;  // best taken over an equal one for its anchor
     size_t other = n;      // another candidate than the first (OtherCopies)
+    bool best_buffer = false;  // best has this draw's vertex buffer
     auto consider = [&](size_t i) {
       const Draw& p = previous_[i];
       if ((use_loose ? p.loose != loose : p.identity != identity) || p.matched) return;
+      const bool buffer = buffers_ && SameBuffer(p.constants, now);
       if (best == n) {
         best = first = i;
+        best_buffer = buffer;
         return;
       }
       if (other == n) other = i;
       if (!several) {
         several = true;
         best_same = SameRegisters(previous_[best], floats, size);
+      }
+      // This draw's own vertices first (the header: a terrain's tiles).
+      if (buffer != best_buffer) {
+        if (buffer) {
+          best = i;
+          best_buffer = true;
+          best_same = SameRegisters(p, floats, size);
+          nearest = false;
+        }
+        return;
       }
       const uint32_t same = SameRegisters(p, floats, size);
       if (same > best_same) {
@@ -199,7 +232,24 @@ class MotionHistory {
         for (uint32_t i : it->second) consider(i);
     }
     far_ = compared_ = false;
+    last_refusal_ = 0;
+    if (buffers_ && best != n && !best_buffer && now.vertex_base[0] && stable_) {
+      // Another buffer's vertices, in a game whose meshes keep their buffers: another mesh (a
+      // tile in another's place).
+      Camera(now, floats, size);
+      if (found_ == Found::kCamera) {
+        ++other_buffers_;
+        last_refusal_ = 1;
+        return nullptr;
+      }
+      found_ = Found::kNone;  // no camera without a matched draw of the shader: that draw
+      last_refusal_ = 2;
+    }
     if (best == n) return Camera(now, floats, size);
+    if (now.vertex_base[0]) {
+      ++buffer_matches_;
+      same_buffer_matches_ += best_buffer;
+    }
     // Copies batched into draws whose slots are filled anew each frame (the header): the draw
     // matched holds other objects; the camera's motion instead.
     if (several && other != n && OtherCopies(floats, size, best, other)) {
@@ -237,6 +287,14 @@ class MotionHistory {
   size_t last_index() const { return last_index_; }
   size_t previous_count() const { return previous_.size(); }
   bool global() const { return global_; }
+  bool stable() const { return stable_; }
+  // Debugging (kDebugLogMotion): the last Match's refusal of another mesh's vertex buffer (0
+  // none, 1 the camera instead, 2 no camera: that draw kept).
+  uint32_t last_refusal() const { return last_refusal_; }
+  // Whether matches are told apart by their vertex buffers (the header; on unless debugging).
+  void set_buffers(bool on) { buffers_ = on; }
+  // Draws this frame sent to the camera instead of another mesh's vertex buffer, and resets it.
+  uint32_t TakeOtherBuffers() { return std::exchange(other_buffers_, 0); }
   bool refused() const { return far_; }  // the last Match refused the nearest draw: too far
   bool compared() const { return compared_; }
   float anchor_limit() const { return anchor_limit_; }
@@ -266,6 +324,13 @@ class MotionHistory {
     for (size_t i = cursor_, end = cursor_ > kWindow ? cursor_ - kWindow : 0; i-- > end;) f(i);
   }
 
+  // A draw's vertices: its first binding's buffer and its first vertex.
+  static uint64_t BufferKey(const Constants& c) {
+    return (uint64_t(c.vertex_base[0]) << 32) | c.vertex_index_offset;
+  }
+  static bool SameBuffer(const Constants& a, const Constants& b) {
+    return a.vertex_base[0] == b.vertex_base[0] && a.vertex_index_offset == b.vertex_index_offset;
+  }
   static float Distance2(const Constants& a, const Constants& b) {
     float d = 0;
     for (int k = 0; k < Constants::kAnchor; ++k)
@@ -324,6 +389,10 @@ class MotionHistory {
   // new draws are; a moving object's own motion is missing for its first frame. nullptr, with
   // Found::kCamera, or Found::kNone without such a draw or if that draw changed every register
   // (a moving object's, nothing of the frame's told apart from its own).
+  // The frame's first draw of its shader has no such draw: Sega Rally Revo's ground tiles that
+  // came into view or changed their level of detail, the first of their shader, kept their own
+  // constants, no motion at all, on up to a sixth of the screen (the ground around the car,
+  // 2026-11-20). Those take the previous frame's draws of the shader instead (PreviousFrame).
   const Constants* Camera(const Constants& now, const uint8_t* floats, uint32_t size) {
     found_ = Found::kNone;
     const Draw* ref = nullptr;
@@ -334,7 +403,7 @@ class MotionHistory {
         break;
       }
     }
-    if (!ref) return nullptr;
+    if (!ref) return PreviousFrame(now, floats, size);
     const uint8_t* ref_now = current_floats_.data() + ref->offset;
     const uint8_t* ref_then = previous_floats_.data() + previous_[ref->previous].offset;
     camera_floats_.assign(floats, floats + size);
@@ -348,6 +417,33 @@ class MotionHistory {
         std::memcpy(camera_floats_.data() + r, ref_then + r, 16);
     }
     if (kept) found_ = Found::kCamera;
+    return nullptr;
+  }
+  // Camera without a matched draw of the shader this frame: the registers that three draws of
+  // the shader in the previous frame (two if it had only two) had alike are the frame's, at their
+  // previous values there; where this draw's differ (the camera moved), camera_floats() takes
+  // those. A draw's own registers (its transform) differ between those draws and stay its own.
+  const Constants* PreviousFrame(const Constants& now, const uint8_t* floats, uint32_t size) {
+    const Draw* like[3] = {};
+    uint32_t found = 0;
+    for (size_t i = previous_.size(); i-- > 0 && found < 3;) {
+      const Draw& p = previous_[i];
+      if (p.constants.vs == now.vs && p.size == size) like[found++] = &p;
+    }
+    if (found < 2) return nullptr;
+    camera_floats_.assign(floats, floats + size);
+    const uint8_t* first = previous_floats_.data() + like[0]->offset;
+    bool moved = false;
+    for (uint32_t r = 0; r < size; r += 16) {
+      bool frame = true;
+      for (uint32_t k = 1; k < found && frame; ++k)
+        frame = !std::memcmp(first + r, previous_floats_.data() + like[k]->offset + r, 16);
+      if (frame && std::memcmp(first + r, floats + r, 16)) {
+        std::memcpy(camera_floats_.data() + r, first + r, 16);
+        moved = true;
+      }
+    }
+    if (moved) found_ = Found::kCamera;
     return nullptr;
   }
   std::vector<Draw> current_, previous_;
@@ -369,6 +465,12 @@ class MotionHistory {
   bool by_loose_built_ = false;
   uint32_t draws_ = 0, misses_ = 0;  // this frame's draws, those the window did not find
   bool global_ = false;              // search the whole previous frame (BeginFrame)
+  // The vertex buffers (the header): whether the last frame's matches nearly all kept their
+  // buffer, and this frame's counts.
+  bool stable_ = false;
+  bool buffers_ = true;
+  uint32_t last_refusal_ = 0;
+  uint32_t buffer_matches_ = 0, same_buffer_matches_ = 0, other_buffers_ = 0;
 };
 
 }  // namespace rexnative

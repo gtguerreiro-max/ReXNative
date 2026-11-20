@@ -366,6 +366,31 @@ previous values. The trees' motion is then the ground's (0.1 to 0.2 pixels in a 
 the camera fallback for a draw with no match copies only the registers it shares with the draw
 it is taken from, not that draw's own transform.
 
+With frame generation's optical flow back (above), Sega Rally Revo's generated frames still
+smeared the road around the car: a copy of the bumper's lettering below the bumper, the ground
+in blocks. The frame generation captures now write the scene's motion vectors as well
+(`f<N>-fg-motion.raw`, DEBUGGING.md); warping the frame before by them and comparing with the
+frame showed the road in bands, rows of tens of pixels whose motion was another's: (-56, -27)
+pixels, then (+41, 0), then (-60, -30) down one column, and up to 2000 pixels in places. The motion
+log (`draw-debug.txt` 262144) gave the reason: the ground is drawn in tiles, a few index counts
+(its levels of detail) all of one index buffer and of the same constants (the tiles' vertices are
+in world space), each tile's vertices in a buffer of its own. Draws of one identity, they were
+told apart by order alone, and once two draws earlier in the frame came or went every tile took
+the one two places before it, its neighbour, and read that tile's vertices for its previous
+position: 33 of 1500 draws a frame. A tile that came into view or changed its level of detail took
+another tile's vertices too. Now among draws of one identity the one with this draw's vertex
+buffer (its first binding's base and first vertex) comes first; and in a game whose matches
+nearly all keep their buffer (90 %, Sega Rally 98 %), a draw whose match has another buffer moves
+with the camera instead: exact for the tiles, and for a draw that writes its vertices anew every
+frame while it stands still. Matched draws with another buffer went from 32.5 a frame to none.
+
+A RenderDoc capture showed what was left: the ground around the car, a sixth of the screen, with
+no motion at all. Its tile was a new one, the first of its shader in the frame, and the camera
+fallback had no matched draw of the shader before it to take the camera's registers from, so it
+kept its own constants. Such a draw now takes the registers that the previous frame's draws of
+its shader (three of them) had alike, at their values there, where its own differ: the frame's,
+the camera's. Pixels without motion went from 3 to 7 % of those frames to none.
+
 ## Inline draws, found at run time
 
 `rexnative.inline_draws_auto` (on by default) watches each Swap: 30 frames in a row with at most

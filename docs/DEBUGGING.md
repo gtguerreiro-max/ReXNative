@@ -38,7 +38,11 @@ window and drives it to the problem; then each experiment takes seconds on the r
   both frames, red: only in the previous one, green: only in this one, black: in neither), the
   frame interpolated from and the HUD-less frame. A flat grey optical flow while the view moves is
   the fault NOTES.md's "Frame generation's optical flow" tells of. `--rexnative_frame_generation_check`
-  turns on FidelityFX's checks of its inputs, its messages in the log.
+  turns on FidelityFX's checks of its inputs, its messages in the log. The captures also write
+  the scene's motion vectors, the frame generation's input (`f<N>-fg-motion.raw`: "RXMV", width
+  and height as uint32, then rows of half-float pairs in UV, current to previous): warping the
+  HUD-less frame before by them gives this one where they are right, and the error map shows
+  where they are not (a band of the road whose draw read another mesh's vertices, NOTES.md).
 
 ## RenderDoc
 

@@ -1273,6 +1273,7 @@ struct DrawRenderer::Impl {
     uint64_t motion_moved = 0;    // previous vertices read at the previous first vertex
     uint64_t motion_nearest = 0;  // told apart from draws as alike by their first vertex
     uint64_t motion_far = 0;      // refused the nearest previous draw: its first vertex too far
+    uint64_t motion_other_buffers = 0;  // moved with the camera: another mesh's buffer found
   } diag;
   // Where Prepare's counters go: with the render thread, which owns diag, the guest thread's own.
   PrepareDiag& PrepDiag() { return threaded ? prep_diag : diag.prep; }
@@ -1328,6 +1329,7 @@ struct DrawRenderer::Impl {
                              // draws only, none skipped)
     kDebugNoAnchor = 65536,  // motion: no first vertex tie-break (MotionHistory::Nearer)
     kDebugLogMotion = 262144,  // log every motion draw's match while set (MotionHistory)
+    kDebugNoBufferMatch = 524288,  // motion: matches not told apart by their vertex buffers
   };
   uint32_t debug_mask = 0, debug_max_draws = 0, frame_draws = 0, debug_poll = 0;
   std::atomic<bool> upload_every_draw{false};  // kDebugUploadEveryDraw, for RequestRange's thread
@@ -2662,6 +2664,7 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
     }
     now.anchor_valid = finite && (have_position || have_pair);
   }
+  motion_history.set_buffers(!(debug_mask & kDebugNoBufferMatch));
   const MotionHistory::Constants* previous =
       motion_history.Match(identity, loose, now, cb_float_vs.last, cb_float_vs.size);
   const MotionHistory::Found found = motion_history.found();
@@ -2680,6 +2683,7 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
   diag.motion_copies += found == MotionHistory::Found::kCopy;
   diag.motion_nearest += found == MotionHistory::Found::kNearest;
   diag.motion_far += motion_history.refused();
+  diag.motion_other_buffers += motion_history.TakeOtherBuffers();
   if (Upscaler* u = r.upscaler())
     u->NoteMotionMatch(motion_history.compared(), motion_history.refused());
   diag.motion_camera += previous == &camera;
@@ -2703,13 +2707,15 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
         previous != &now && previous != &camera ? previous : nullptr;
     REXLOG_INFO(
         "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
+        "buffers {} refusal {} | "
         "prev off {} base {:08X} | anchor {} ({:.4g} {:.4g} {:.4g} {:.4g} {:.4g}) prev {} "
         "({:.4g} {:.4g} {:.4g} {:.4g} {:.4g})",
         list_frame, motion_ordinal, frame_draws, s.count, uint32_t(s.primitive),
         uint32_t(found), motion_history.global() ? " global" : "", motion_history.refused() ? " far" : "",
         double(motion_history.anchor_limit()),
         p ? int64_t(motion_history.last_index()) : -1, motion_history.previous_count(),
-        vertex_index_offset, now.vertex_base[0], p ? p->vertex_index_offset : 0u,
+        vertex_index_offset, now.vertex_base[0], motion_history.stable() ? "kept" : "-",
+        motion_history.last_refusal(), p ? p->vertex_index_offset : 0u,
         p ? p->vertex_base[0] : 0u, now.anchor_valid ? 1 : 0, now.anchor[0], now.anchor[1],
         now.anchor[2], now.anchor[3], now.anchor[4], p && p->anchor_valid ? 1 : 0,
         p ? p->anchor[0] : 0.f, p ? p->anchor[1] : 0.f, p ? p->anchor[2] : 0.f,
@@ -5640,12 +5646,15 @@ void DrawRenderer::EndFrame(uint64_t completed_fence) {
           "ReXNative draw diag: motion vector draws {:.1f}/frame, {:.2f} % with previous "
           "constants: {:.1f}/frame told apart from copies of their mesh, {:.1f}/frame moved with "
           "the camera, {:.1f}/frame from their previous vertex buffer, {:.1f}/frame told apart "
-          "by their first vertex, {:.1f}/frame refused theirs for its distance",
+          "by their first vertex, {:.1f}/frame refused theirs for its distance, {:.1f}/frame "
+          "refused another mesh's vertex buffer{}",
           double(d.motion_draws) / double(d.frames),
           100.0 * double(d.motion_matched) / double(d.motion_draws),
           double(d.motion_copies) / double(d.frames), double(d.motion_camera) / double(d.frames),
           double(d.motion_moved) / double(d.frames), double(d.motion_nearest) / double(d.frames),
-          double(d.motion_far) / double(d.frames));
+          double(d.motion_far) / double(d.frames),
+          double(d.motion_other_buffers) / double(d.frames),
+          impl_->motion_history.stable() ? " (vertex buffers kept)" : "");
     d = Impl::Diag{};
   }
   if (!impl_->debug_path.empty() && ++impl_->debug_poll >= 15) {

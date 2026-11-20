@@ -13,6 +13,8 @@
 #include <rex/logging.h>
 
 #include <array>
+#include <cstdio>
+#include <cstring>
 #include <thread>
 #include <utility>
 
@@ -392,7 +394,7 @@ void FrameGeneration::Prepare(uint64_t frame, CommandStream* list, const FfxApiR
 }
 
 void FrameGeneration::Capture(CommandStream* list, uint64_t frame, uint64_t fence,
-                              std::filesystem::path dir, bool hudless) {
+                              std::filesystem::path dir, bool hudless, ID3D12Resource* motion) {
   if (!context_ || captures_.size() >= 16) return;
   ID3D12Device* device = device_.device();
   PendingCapture c;
@@ -435,6 +437,31 @@ void FrameGeneration::Capture(CommandStream* list, uint64_t frame, uint64_t fenc
       std::swap(b[i].Transition.StateBefore, b[i].Transition.StateAfter);
     l->ResourceBarrier(n, b);
   });
+  if (motion) {
+    const D3D12_RESOURCE_DESC md = motion->GetDesc();
+    UINT64 bytes = 0;
+    device->GetCopyableFootprints(&md, 0, 1, 0, &c.motion_footprint, nullptr, nullptr, &bytes);
+    if (CreateBuffer(device, D3D12_HEAP_TYPE_READBACK, bytes, D3D12_RESOURCE_STATE_COPY_DEST,
+                     "frame generation motion capture", &c.motion))
+      list->Call([motion, dest = c.motion.Get(), fp = c.motion_footprint](CommandStream::List* l) {
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = motion;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        l->ResourceBarrier(1, &b);
+        D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+        dst.pResource = dest;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = fp;
+        src.pResource = motion;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        l->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        l->ResourceBarrier(1, &b);
+      });
+  }
   captures_.push_back(std::move(c));
 }
 
@@ -573,8 +600,32 @@ void FrameGeneration::FinishCaptures(uint64_t completed_fence) {
       const D3D12_RANGE none = {0, 0};
       readback->Unmap(0, &none);
     }
+    // The motion vectors: "RXMV", width, height, then the rows without their padding.
+    std::vector<uint8_t> motion;
+    std::filesystem::path motion_path;
+    if (c.motion) {
+      const D3D12_SUBRESOURCE_FOOTPRINT& mf = c.motion_footprint.Footprint;
+      void* p = nullptr;
+      const D3D12_RANGE range = {0, SIZE_T(mf.RowPitch) * mf.Height};
+      if (SUCCEEDED(c.motion->Map(0, &range, &p))) {
+        const uint32_t row = mf.Width * 4, header[3] = {0x564D5852u, mf.Width, mf.Height};
+        motion.resize(sizeof(header) + size_t(row) * mf.Height);
+        std::memcpy(motion.data(), header, sizeof(header));
+        for (uint32_t y = 0; y < mf.Height; ++y)
+          std::memcpy(motion.data() + sizeof(header) + size_t(row) * y,
+                      static_cast<const uint8_t*>(p) + size_t(mf.RowPitch) * y, row);
+        const D3D12_RANGE none = {0, 0};
+        c.motion->Unmap(0, &none);
+        motion_path = c.dir / ("f" + std::to_string(c.frame) + "-fg-motion.raw");
+      }
+    }
     std::thread([images = std::move(images), pitch = f.RowPitch, w = f.Width, h = f.Height,
-                 hdr = c.hdr] {
+                 hdr = c.hdr, motion = std::move(motion), motion_path] {
+      if (!motion.empty())
+        if (std::FILE* file = _wfopen(motion_path.c_str(), L"wb")) {
+          std::fwrite(motion.data(), 1, motion.size(), file);
+          std::fclose(file);
+        }
       for (const Image& im : images) {
         std::vector<uint8_t> rgb;
         present_debug::ToRgb(im.texels.data(), pitch, w, h,
