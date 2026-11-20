@@ -448,6 +448,17 @@ they set to another value than the tracker holds, and stays on at 16 or more (De
 and draws as it did without it; Brothers' title and menu find nothing (Fable II has the walk on
 already, for its inline draws).
 
+Not before the probe, though. Sega Rally's attract demo once drew a wall of stretched texture
+across the sky for its first seconds. In a RenderDoc capture the wall was one skinned mesh (a
+giraffe): its indices and its vertices were right, but every vertex weighted to bone 0 went
+thousands of units away. Bone 0's first row is c28, which held a value from earlier draws: the
+game's own code writes its bone palettes into the push buffer, and the probe that turned the walk
+on came 7 s after the demo began. Two probes in a row that each find changed constants now keep
+the walk too (Sega Rally's menus: 5 a probe), and a kept walk is learned per game:
+`<cache>/rexnative/inline_draws.txt` (beside the pipeline cache, `userdata/cache/rexnative`
+without a cache root) turns it on from the first Swap of the next runs. Delete the file to have
+the game probed again.
+
 ## Resolves from the registers
 
 SSX drew black on the native renderer with its intro running at 30 FPS: the presenter found no

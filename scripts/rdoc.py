@@ -322,8 +322,9 @@ def main():
                                        d.rasterizer.scissors[0].height))
             open(os.path.join(out, "state-e%d.txt" % event), "w").write(chr(10).join(lines) + chr(10))
         elif cmd == "cbuffers":
-            # The constant buffers bound to the draw at `event`'s shaders, as float4s (up to 64
-            # each), into cbuffers-e<event>.txt.
+            # The constant buffers bound to the draw at `event`'s shaders, as float4s (up to 256
+            # each: the float constants' 256 registers), into cbuffers-e<event>.txt; a root CBV
+            # has no size, so its 4 KB are what the draw may read.
             import struct
             event = job["event"]
             controller.SetFrameEvent(event, True)
@@ -336,7 +337,7 @@ def main():
                         continue
                     for i, cb in enumerate(refl.constantBlocks):
                         bind = state.GetConstantBlock(stage, i, 0).descriptor
-                        size = min(bind.byteSize or 1024, 1024)
+                        size = min(bind.byteSize or 4096, 4096)
                         if bind.resource == null:
                             f.write("%s cb%d %s: unbound\n" % (tag, i, cb.name))
                             continue

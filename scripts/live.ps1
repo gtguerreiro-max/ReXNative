@@ -18,7 +18,8 @@
 #   scripts\live.ps1 status | stop      # stop -Dir <folder>: only if the live game is that one
 # With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir,
 # $env:REXNATIVE_RENDERDOC or the newest Tools\RenderDoc* beside the repository's folder):
-# `capture` then takes the next frame into <Dir>\live\rdoc through
+# `capture` then takes the next frame (`capture 2`: the next two, a capture each, to see what
+# changes between them) into <Dir>\live\rdoc through
 # RenderDoc's target control (scripts\rdoc_trigger.py; the window need not be in front), for
 # scripts\rdoc.ps1 (draw list, pixel history, textures) with the game closed or still running.
 #
@@ -358,15 +359,19 @@ switch ($Command) {
         $log = Join-Path $dir 'trigger.log'
         Remove-Item $log -ErrorAction SilentlyContinue
         $env:REXNATIVE_RDOC_TRIGGER_OUT = $log
+        # `capture N`: N consecutive frames, a capture each (a flicker: what changes between them).
+        $env:REXNATIVE_RDOC_FRAMES = if ($Arg -match '^\d+$') { $Arg } else { '1' }
         $q = Start-Process $qrd -ArgumentList @('--python', "`"$PSScriptRoot\rdoc_trigger.py`"") -PassThru -WindowStyle Minimized
         if (-not $q.WaitForExit(90000)) { Stop-Process $q -Force; throw 'RenderDoc did not answer in 90 s' }
         $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
-        $m = [regex]::Match($text, '(?m)^capture (.+?)\s*$')
-        if (-not $m.Success) { throw "no capture: $($text.Trim())" }
-        $new = Get-Item $m.Groups[1].Value
-        # Written once its size stops changing.
-        do { $len = $new.Length; Start-Sleep -Milliseconds 700; $new.Refresh() } while ($new.Length -ne $len)
-        if ($Arg) { $dest = Join-Path $dir "$Arg.rdc"; Move-Item -Force $new.FullName $dest; $dest } else { $new.FullName }
+        $ms = [regex]::Matches($text, '(?m)^capture (.+?)\s*$')
+        if ($ms.Count -eq 0) { throw "no capture: $($text.Trim())" }
+        foreach ($m in $ms) {
+            $new = Get-Item $m.Groups[1].Value
+            # Written once its size stops changing.
+            do { $len = $new.Length; Start-Sleep -Milliseconds 700; $new.Refresh() } while ($new.Length -ne $len)
+            $new.FullName
+        }
     }
     'log' {
         if (-not $s) { throw 'no live game' }

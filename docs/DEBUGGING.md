@@ -23,6 +23,14 @@ window and drives it to the problem; then each experiment takes seconds on the r
   functions that read or write a physical address through its three CPU views (hardware
   breakpoints; `watch off`); `scripts\rdoc.ps1 save <capture> -Event N -Texture T -X 4` saves
   a texture's mip 4.
+- Without the Xenos copy (`--rexnative_capture_xenos=false`), `--rexnative_capture_burst=8`
+  writes eight presented frames in a row, each from its own readback: one slot took every other
+  frame, which hid a flicker that alternates frame by frame. A still scene shows a flicker best:
+  any pixel that changes there is one (at a race start without throttle, only the crowd moves).
+- `--rexnative_coherency_check`: each vertex and index range a draw reads is compared with guest
+  memory, and a stale page is logged (slow). A mesh broken in whole 4 KB pages of its vertex
+  buffer is a stale page; one broken by the vertices of one bone is a constant (NOTES.md,
+  "Inline draws, found at run time").
 - Frame generation: with it on, each capture (`touch <live>\cap\capture.request`) also writes,
   for eight frames in a row, the frame as presented, the frame generated before it and the
   HUD-less copy (`f<N>-fg-real.png`, `-fg-generated.png`, `-fg-hudless.png`), off the render
@@ -58,7 +66,8 @@ holding the focus does not stop it), and `scripts\rdoc.ps1` queries it with the 
 - `history -X -Y`: which draws touched a pixel and what failed;
 - `inputs -Event`: a draw's textures as PNG;
 - `buffer -Offset -Size`: the renderer's copy of guest memory;
-- `mesh`, `disasm`, `cbuffers -Event`, `save`.
+- `mesh`, `disasm`, `cbuffers -Event` (all 256 float constants), `save`;
+- `capture 2` takes two frames in a row, a capture each (a flicker between them).
 
 Only a rebuild needs a new start. [NOTES.md](NOTES.md#recorded-command-buffers) shows how Iron
 Brigade's missing scenery was found this way.

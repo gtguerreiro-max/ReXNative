@@ -101,7 +101,9 @@ REXCVAR_DEFINE_BOOL(rexnative_inline_draws_auto, true, "ReXNative",
                     "its screens with code inlined past the hooks), off again otherwise; and "
                     "every 150 frames probes the push buffer between hooked calls for 3 frames, "
                     "keeping it on if the game's own code loads shader constants there (XDK "
-                    "GPU-owned constants: Deus Ex: Human Revolution)");
+                    "GPU-owned constants: Deus Ex: Human Revolution); once kept, the game's "
+                    "<cache>/rexnative/inline_draws.txt turns it on from the start of the next "
+                    "runs (delete the file to learn again)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_control, "", "ReXNative",
                       "Command file polled once per frame (trace/skip/tap commands)");
 REXCVAR_DEFINE_STRING(rexnative_d3d_trace_dir, "", "ReXNative", "Directory for frame traces");
@@ -1938,17 +1940,57 @@ uint32_t g_auto_draws = 0;
 // resolve a frame in its gaps (rexnative.inline_resolves): no hooked Resolve makes them, and the
 // textures (or the front buffer: a black screen) they fill would stay empty. (A first probe at
 // frame 30 caught SSX's start-up writing 234 constants and kept the walk for good: at 150, 6.)
+// Two probes in a row that each find a few keep it as well: a game that goes on writing
+// constants past the hooks, not a start-up burst (Sega Rally Revo's menus, 5 a probe, then its
+// attract demo, hundreds: the probe after the demo began found them 6 s late, and until then
+// the giraffes' skinned meshes, their bones those constants, came out as walls across the sky).
+// The decision is kept per game (LearnedInlineDraws): the next runs walk from their first frame.
 constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
+
+// <cache root>/rexnative/inline_draws.txt (the pipeline cache's folder): written when the walk is
+// kept, with why; read at the first Swap.
+std::filesystem::path LearnedInlineDrawsPath() {
+  std::filesystem::path dir = rexnative::settings::Path("app.cache_root");
+  if (dir.empty()) {
+    const std::filesystem::path user = rexnative::settings::Path("app.user_root");
+    if (!user.empty()) dir = user / "cache";
+  }
+  return dir.empty() ? dir : dir / "rexnative" / "inline_draws.txt";
+}
+
+void LearnInlineDraws(const std::string& why) {
+  const std::filesystem::path path = LearnedInlineDrawsPath();
+  if (path.empty()) return;
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream(path) << why << '\n';
+}
 
 [[gnu::noinline]] void InlineDrawsAuto(const uint8_t* base, uint32_t device) {
   static uint32_t last_push = 0, quiet = 0, trial = 0, wait = 0, backoff = 600;
   static uint32_t probe = 0, probe_clock = 0;
   static uint64_t trial_draws = 0, probe_constants = 0, probe_resolves = 0;
-  static bool kept = false;
+  static uint32_t probes_with_constants = 0;
+  static bool kept = false, learned_read = false;
   const uint32_t draws = std::exchange(g_auto_draws, 0);
   if (kept || !device || !REXCVAR_GET(rexnative_inline_draws_auto) ||
       REXCVAR_GET(rexnative_inline_draws) || rexnative::game::kStreamOnly)
     return;
+  if (!learned_read) {
+    learned_read = true;
+    const std::filesystem::path path = LearnedInlineDrawsPath();
+    std::error_code ec;
+    if (!path.empty() && std::filesystem::exists(path, ec)) {
+      kept = true;
+      g_gap_epoch.fetch_add(1, std::memory_order_relaxed);
+      g_inline_draws.store(true, std::memory_order_relaxed);
+      g_hook_all.store(true, std::memory_order_relaxed);
+      REXLOG_INFO("ReXNative: inline draws on from the start, as an earlier run of this game "
+                  "found them needed ({}; rexnative.inline_draws_auto)",
+                  path.string());
+      return;
+    }
+  }
   if (probe) {
     if (--probe) return;
     g_gap_probe.store(false, std::memory_order_relaxed);
@@ -1959,20 +2001,26 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
       REXLOG_INFO("ReXNative: the game's own code resolves between hooked calls ({} resolves "
                   "in {} frames): inline draws on (rexnative.inline_draws_auto)",
                   resolves, kProbeFrames - 1);
+      LearnInlineDraws(std::format("resolves between hooked calls: {} in {} frames", resolves,
+                                   kProbeFrames - 1));
       return;
     }
-    if (found >= kProbeMinConstants) {
+    probes_with_constants = found ? probes_with_constants + 1 : 0;
+    if (found >= kProbeMinConstants || probes_with_constants >= 2) {
       kept = true;  // the walk goes on from this Swap's gap
       REXLOG_INFO("ReXNative: the game's own code loads shader constants between hooked calls "
-                  "({} constant registers changed in {} frames): inline draws on "
-                  "(rexnative.inline_draws_auto)",
-                  found, kProbeFrames - 1);
+                  "({} constant registers changed in {} frames, {} probes in a row): inline "
+                  "draws on (rexnative.inline_draws_auto)",
+                  found, kProbeFrames - 1, probes_with_constants);
+      LearnInlineDraws(std::format("shader constants between hooked calls: {} in {} frames",
+                                   found, kProbeFrames - 1));
       return;
     }
     if (found)
       REXNATIVE_LOG_FIRST(4, INFO, "ReXNative: the push buffer between hooked calls changed {} "
                                    "shader constant registers in {} frames: too few, inline "
-                                   "draws stay off (rexnative.inline_draws_auto)",
+                                   "draws stay off until the next probe finds some too "
+                                   "(rexnative.inline_draws_auto)",
                           found, kProbeFrames - 1);
     g_inline_draws.store(false, std::memory_order_relaxed);
     g_hook_all.store(g_tap.enabled || REXCVAR_GET(rexnative_profile), std::memory_order_relaxed);
@@ -1983,6 +2031,7 @@ constexpr uint32_t kProbeEvery = 150, kProbeFrames = 3, kProbeMinConstants = 16;
       kept = true;
       REXLOG_INFO("ReXNative: the push buffer between hooked calls holds draws: inline draws "
                   "on (rexnative.inline_draws_auto)");
+      LearnInlineDraws("draws between hooked calls");
       return;
     }
     if (--trial) return;

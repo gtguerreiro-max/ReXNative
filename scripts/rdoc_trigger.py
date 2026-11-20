@@ -3,7 +3,9 @@
 # Run inside RenderDoc's Python; scripts\live.ps1 capture does it:
 #   qrenderdoc.exe --python scripts/rdoc_trigger.py
 # The game must run under RenderDoc (renderdoccmd capture, scripts\live.ps1 start -RenderDoc).
-# Writes to the file named by REXNATIVE_RDOC_TRIGGER_OUT: "capture <path>", or what went wrong.
+# Writes to the file named by REXNATIVE_RDOC_TRIGGER_OUT: "capture <path>" for each capture, or
+# what went wrong. REXNATIVE_RDOC_FRAMES (default 1): consecutive frames, a capture each (what
+# changes from one frame to the next: a flicker).
 import os
 import sys
 import time
@@ -25,14 +27,15 @@ try:
     if not tc or not tc.Connected():
         lines.append('no target: is the game running under RenderDoc?')
     else:
-        tc.TriggerCapture(1)
-        deadline = time.time() + 30
-        got = False
-        while time.time() < deadline and not got:
+        frames = max(1, int(os.environ.get('REXNATIVE_RDOC_FRAMES', '1')))
+        tc.TriggerCapture(frames)
+        deadline = time.time() + 30 + 10 * frames
+        got = 0
+        while time.time() < deadline and got < frames:
             msg = tc.ReceiveMessage(None)
             if msg.type == rd.TargetControlMessageType.NewCapture:
                 lines.append('capture %s' % msg.newCapture.path)
-                got = True
+                got += 1
             elif msg.type == rd.TargetControlMessageType.Disconnected:
                 lines.append('disconnected')
                 break

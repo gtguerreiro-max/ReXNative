@@ -233,8 +233,19 @@ struct Presenter::Impl {
     bool rgb10a2 = false;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     ComPtr<ID3D12Resource> readback;
-    std::thread writer;  // the PNG of a capture without the Xenos copy
   } capture;
+  // Captures without the Xenos copy: each frame of a burst its own readback, its PNG written once
+  // the frame has completed. One slot took every other frame, which hid a flicker that alternates
+  // frame by frame.
+  struct Shot {
+    ComPtr<ID3D12Resource> readback;
+    uint32_t pitch = 0, width = 0, height = 0, mapping = 0;
+    bool rgb10a2 = false;
+    uint64_t frame = 0, fence = 0;
+  };
+  std::vector<Shot> shots;
+  std::vector<std::thread> shot_writers;
+  uint64_t last_shot_frame = ~0ull;
   // capture_holding_guest: set by the render thread, read by the guest thread.
   std::atomic<bool> capture_holding{false};
   bool log_fmt = false, log_missing = false;
@@ -253,7 +264,7 @@ struct Presenter::Impl {
 
   explicit Impl(NativeRenderer& renderer) : r(renderer) {}
   ~Impl() {
-    if (capture.writer.joinable()) capture.writer.join();
+    for (std::thread& t : shot_writers) t.join();
   }
 
   bool Initialize();
@@ -270,8 +281,8 @@ struct Presenter::Impl {
   // With the Xenos copy: waits for the frame, holds the guest thread while the plugin finishes
   // it, reads both images and writes the PNGs and their PSNR.
   void FinishCapture();
-  // Without it, once the frame has completed: the native PNG, on capture.writer.
-  void WriteCapture();
+  // Without it: the PNGs of the shots whose frames have completed, on a thread of their own.
+  void WriteShots();
 
   // The mark key, F12 (a Steam Input binding can send it from a back grip). True on the press.
   bool MarkPressed();
@@ -428,19 +439,32 @@ bool Presenter::Impl::MarkPressed() {
   return pressed;
 }
 
-void Presenter::Impl::WriteCapture() {
-  Capture& c = capture;
-  c.pending = false;
-  if (c.writer.joinable()) c.writer.join();
-  c.writer = std::thread([readback = std::move(c.readback), pitch = c.footprint.Footprint.RowPitch,
-                          w = c.width, h = c.height, mapping = c.mapping, rgb10a2 = c.rgb10a2,
-                          frame = c.frame, dir = capture_dir] {
-    std::vector<uint8_t> rgb;
-    if (!ReadbackRgb(readback.Get(), pitch, w, h, mapping, rgb10a2, &rgb)) return;
-    const std::string name = "f" + std::to_string(frame) + "-native.png";
-    const bool ok = WritePng((dir / name).c_str(), rgb, w, h);
-    REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", frame, w, h, dir.string(), name,
-                ok ? "" : ", write failed");
+void Presenter::Impl::WriteShots() {
+  const uint64_t done = r.device().completed_fence();
+  std::vector<Shot> ready;
+  for (size_t i = 0; i < shots.size();) {
+    if (shots[i].fence <= done) {
+      ready.push_back(std::move(shots[i]));
+      shots.erase(shots.begin() + ptrdiff_t(i));
+    } else {
+      ++i;
+    }
+  }
+  if (ready.empty()) return;
+  if (shot_writers.size() >= 16) {
+    shot_writers.front().join();
+    shot_writers.erase(shot_writers.begin());
+  }
+  shot_writers.emplace_back([ready = std::move(ready), dir = capture_dir] {
+    for (const Shot& s : ready) {
+      std::vector<uint8_t> rgb;
+      if (!ReadbackRgb(s.readback.Get(), s.pitch, s.width, s.height, s.mapping, s.rgb10a2, &rgb))
+        continue;
+      const std::string name = "f" + std::to_string(s.frame) + "-native.png";
+      const bool ok = WritePng((dir / name).c_str(), rgb, s.width, s.height);
+      REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", s.frame, s.width, s.height,
+                  dir.string(), name, ok ? "" : ", write failed");
+    }
   });
 }
 
@@ -719,7 +743,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       return;
     }
   }
-  if (c.armed && shown && !c.pending) {
+  if (c.armed && shown && (!c.pending || !c.xenos)) {
     c.armed = false;
     if (!found) {
       ReleaseCapture();
@@ -742,6 +766,19 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src.SubresourceIndex = 0;
     list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    if (!c.xenos) {
+      Shot shot;
+      shot.readback = std::move(c.readback);
+      shot.pitch = c.footprint.Footprint.RowPitch;
+      shot.width = extent.width;
+      shot.height = extent.height;
+      shot.mapping = mapping;
+      shot.rgb10a2 = rgb10a2;
+      shot.frame = last_shot_frame = r.frame_index();
+      shot.fence = r.frame_fence();
+      shots.push_back(std::move(shot));
+      return;
+    }
     c.pending = true;
     c.frame = r.frame_index();
     c.fence = r.frame_fence();
@@ -777,7 +814,8 @@ void Presenter::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* copy,
 bool Presenter::front_buffer_found() const { return impl_->front_buffer_found; }
 uint32_t Presenter::front_buffer_base() const { return impl_->front_buffer_base; }
 bool Presenter::capturing(uint64_t frame) const {
-  return impl_->capture.pending && impl_->capture.frame == frame;
+  return (impl_->capture.pending && impl_->capture.frame == frame) ||
+         impl_->last_shot_frame == frame;
 }
 const ImageRect& Presenter::image_rect() const { return impl_->image_rect; }
 
@@ -791,11 +829,8 @@ bool Presenter::capture_holding_guest() const {
 
 void Presenter::AfterEndFrame() {
   Impl& m = *impl_;
-  if (!m.capture.pending) return;
-  if (m.capture.xenos)
-    m.FinishCapture();
-  else if (m.r.device().completed_fence() >= m.capture.fence)
-    m.WriteCapture();
+  if (!m.shots.empty()) m.WriteShots();
+  if (m.capture.pending) m.FinishCapture();
 }
 
 }  // namespace rexnative
