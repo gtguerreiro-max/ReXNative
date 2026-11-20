@@ -529,9 +529,20 @@ needs the hooks in that module's DLL.
 
 ## Renders the CPU reads
 
-Resolves of at most 16 texels are written back by default (`rexnative.resolve_writeback_tiny`,
+Resolves of at most 256 texels are written back by default (`rexnative.resolve_writeback_tiny`,
 one to three frames late as the experimental writeback): Blur averages its scene's luminance
 down to 1x1 targets the GPU never samples, and with zeros there its races came out white.
+
+Halo: Anniversary lights its remastered scenes in 64x64 tiles (18 by 11 at 1152x648): each tile
+is a quad whose pixel shader adds the lights its constants list. The CPU picks those lights from
+the scene's depth halved down to 18x11, one texel per tile, a resolve it reads back. Without the
+writeback every tile got "no light" (c8 = 0,0,0,1 in the push buffer itself, so the renderer drew
+exactly what it was given) and the hangar's floor was dark where Xenia Canary's is lit and
+shadowed. With the limit at 256 texels the floor is lit; the frames right after a camera cut
+still use the previous shot's tiles, one to three frames, until the writeback catches up. (Xenia's
+report, game-compatibility#552, needs `readback_resolve = "full"` for the same reason. The
+experimental writeback by size or unused destination also lit it, but its late writes of large
+resolves scrambled textures that had reused the memory.)
 
 The native renderer never writes a resolve into guest memory (the Xenos plugin skips its own
 copies with `gpu.xenos.skip_draws`), so a game that reads a render on the CPU reads zeros:

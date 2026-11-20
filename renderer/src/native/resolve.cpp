@@ -44,12 +44,13 @@ REXCVAR_DEFINE_INT32(rexnative_resolve_writeback, 0, "ReXNative",
                      "three frames late, so a game that reads them at once (Minecraft's 64x64 save "
                      "thumbnail) still reads zeros, and one that reuses the memory meanwhile has "
                      "it overwritten; 0 off");
-REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_tiny, 16, "ReXNative",
+REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_tiny, 256, "ReXNative",
                      "Resolves of at most this many texels are written into guest memory once "
                      "the GPU has done them, for a game that reads them on the CPU (Blur's "
                      "exposure, a 1x1 average of the scene's luminance; zeros made its races "
-                     "white), one to three frames late, as rexnative.resolve_writeback does; 0 "
-                     "off");
+                     "white. Halo: Anniversary's 18x11 depth, one texel per 64-pixel light "
+                     "tile: without it no tile got a light and its scenes were dark), one to "
+                     "three frames late, as rexnative.resolve_writeback does; 0 off");
 REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_unused, 1310720, "ReXNative",
                      "With rexnative.resolve_writeback: the largest resolve (texels) written back "
                      "because no texture has used its destination yet; 0 none");

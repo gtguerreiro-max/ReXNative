@@ -165,15 +165,22 @@ def main():
                 else:
                     for v in trace.inputs:
                         f.write("in %s\n" % show(v))
+                    # REXNATIVE_RDOC_STEPS: the step limit (20000); REXNATIVE_RDOC_ONLY: the
+                    # registers to log, comma separated (a long loop's outputs alone).
+                    limit = int(os.environ.get("REXNATIVE_RDOC_STEPS", "20000"))
+                    only = [n for n in os.environ.get("REXNATIVE_RDOC_ONLY", "").split(",") if n]
                     steps = 0
-                    while steps < 20000:
+                    while steps < limit:
                         states = controller.ContinueDebug(trace.debugger)
                         if not states:
                             break
                         for s in states:
                             steps += 1
                             for c in s.changes:
+                                if only and c.after.name not in only:
+                                    continue
                                 f.write("%d: %s\n" % (s.nextInstruction, show(c.after)))
+                    f.write("steps %d%s\n" % (steps, " (limit)" if steps >= limit else ""))
                     controller.FreeTrace(trace)
         elif cmd == "reads":
             # Every draw from `event` on (0: all): what its pixel shader reads and where it
