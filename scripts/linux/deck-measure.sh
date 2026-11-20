@@ -18,6 +18,9 @@
 #   HEAVY         prints the means of ReXNative's frame lines inside the window with at least
 #                 this many draws (pass --rexnative_d3d_stats_frames=60 among the flags), and
 #                 its GPU time per frame (with --rexnative_gpu_timing=true).
+#   SAMPLE_COMM   samples the thread whose name starts so, 50 times a second over the window: how
+#                 often it runs or sleeps, and its context switches a second (/proc/.../syscall
+#                 needs ptrace rights under the Deck's Yama).
 # Also prints the game's busiest threads over the window (% of one core).
 # It refuses when a game runs, or when try.flags or deck.env is there already.
 dir=$1; exe_re=$2; appid=$3; label=$4; warm=$5; win=$6; shift 6
@@ -84,6 +87,24 @@ read -r _ a b c d e f g h _ < /proc/stat; t0=$((a+b+c+d+e+f+g+h)); i0=$((d+e))
 pids=$(pgrep -f "$exe_re" | tr '\n' ' ')
 pc0=0; for p in $pids; do read -r -a st < /proc/$p/stat 2>/dev/null && pc0=$((pc0 + st[13] + st[14])); done
 threads > /tmp/th0.txt
+if [ -n "$SAMPLE_COMM" ]; then
+  # Samples what one thread (its name starts with SAMPLE_COMM) is doing, 50 times a second over the
+  # window: the syscall it is in (/proc/.../syscall: its number, "running", or -1 blocked).
+  sample_task=
+  for p in $pids; do for t in /proc/$p/task/*; do
+    case "$(cat $t/comm 2>/dev/null)" in "$SAMPLE_COMM"*) sample_task=$t; break 2;; esac
+  done; done
+  if [ -n "$sample_task" ]; then
+    # Its state 50 times a second (R running, S sleeping; /proc/.../syscall needs ptrace rights
+    # under Yama), and its voluntary / involuntary context switches over the window.
+    ( v0=$(awk '/^voluntary_ctxt/{print $2}' "$sample_task/status"); n0=$(awk '/^nonvoluntary_ctxt/{print $2}' "$sample_task/status")
+      for i in $(seq 1 $(( win * 50 ))); do s=$(cat "$sample_task/stat" 2>/dev/null); s=${s##*) }; echo "${s%% *}"; sleep 0.02; done |
+        sort | uniq -c | sort -rn | awk '{printf "%s:%s ", $2, $1}' > /tmp/sample-$label.txt
+      v1=$(awk '/^voluntary_ctxt/{print $2}' "$sample_task/status"); n1=$(awk '/^nonvoluntary_ctxt/{print $2}' "$sample_task/status")
+      echo "voluntary switches/s $(( (v1 - v0) / win )), involuntary/s $(( (n1 - n0) / win ))" >> /tmp/sample-$label.txt ) &
+    sampler=$!
+  fi
+fi
 busy=0; freq=0; pw=0; n=0
 for s in $(seq 1 "$win"); do
   sleep 1
@@ -95,6 +116,11 @@ read -r _ a b c d e f g h _ < /proc/stat; t1=$((a+b+c+d+e+f+g+h)); i1=$((d+e))
 pc1=0; for p in $pids; do read -r -a st < /proc/$p/stat 2>/dev/null && pc1=$((pc1 + st[13] + st[14])); done
 hz=$(getconf CLK_TCK)
 threads > /tmp/th1.txt
+if [ -n "$SAMPLE_COMM" ]; then
+  [ -n "$sampler" ] && wait "$sampler" 2>/dev/null
+  echo "SAMPLE ${SAMPLE_COMM}: $(cat /tmp/sample-$label.txt 2>/dev/null | tr '
+' ' ')"
+fi
 echo "THREADS (busiest, % of one core over the window):"
 awk -v hz=$hz -v win=$win 'NR==FNR{a[$1]=$3; next} {d=$3-a[$1]; if(d>0) printf "  %5.1f%%  %s %s\n", 100*d/hz/win, $2, $1}' /tmp/th0.txt /tmp/th1.txt | sort -rn | head -8
 echo "RESULT $label gpu_busy=$((busy/n))% sclk=$((freq/n))MHz soc_power=$((pw/n))mW cpu_total=$(( 100*((t1-t0)-(i1-i0))/(t1-t0) ))% game_cpu=$(( 100*(pc1-pc0)/hz/win ))%core pids=[$pids]"
