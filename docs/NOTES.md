@@ -595,6 +595,26 @@ upscaled resolve those draws go into the upscaler's full-size target, which an e
 copies as it is, so from there their draws are watched as another game's into its front buffer;
 Minecraft's flicker measure fell from 2.3 to 0.6 % and both HUDs stay sharp.
 
+Sega Rally Revo's scenery still flickered while driving, which the captures hardly showed: the
+generated frames were right where they were (warped by the game's motion vectors the frames
+before and after them, they matched within 2 levels), but softer. FidelityFX samples both
+frames between their pixels and blends the two, and its frames had 0.76 of the real frames'
+detail (the luma Laplacian; 0.79 in Minecraft, Overlord, Midnight Club and Perfect Dark), half of
+their local detail energy: leaves, grass, tyre walls and stone pulsed between sharp and soft at
+30 Hz as the view moved. The HUD pass (CompositeHud) now runs for every generated frame, from
+FidelityFX's into the presented one, and sharpens it with FSR 1's RCAS by
+--rexnative_frame_generation_sharpness times the pixel's motion in pixels (up to 1: a still
+pixel is the real one's, as sharp). Captures alternating the strength in one race: 0.4 gave 0.90
+of the detail, 0.5 0.96, 0.6 1.08, 0.7 1.25 with halos; the local detail energy's mismatch
+(|log2 E_G / E_R|) fell from 1.04 without to 0.64 at 0.5, the default.
+
+What is left are the motions no vector holds. The car's shadow is no draw of its own: the ground
+shader darkens the ground from a 912x912 shadow map, so the shadow's pixels carry the ground's
+motion while the shadow moves with the car, and FidelityFX, which judges the game's vectors by
+the direction of the colours it samples (NormalizedDot3, blind to brightness), takes them; behind
+the car, where the ground comes out from under it, the generated frame shows lit ground in the
+shadow. The dust, blended without motion vectors, moves by the optical flow's 8-pixel blocks.
+
 ## Frame generation's optical flow
 
 With the HUD-less copy right, the generated frames still smeared what moved without motion

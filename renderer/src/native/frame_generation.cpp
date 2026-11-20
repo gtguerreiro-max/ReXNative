@@ -12,6 +12,7 @@
 #include "native/sdk.h"
 #include <rex/logging.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -55,6 +56,12 @@ REXCVAR_DEFINE_BOOL(rexnative_frame_generation_indicators, false, "ReXNative",
 REXCVAR_DEFINE_BOOL(rexnative_frame_generation_debug, false, "ReXNative",
                     "FidelityFX's debug view in the generated frames (live): its inputs and "
                     "internal surfaces (motion vectors, optical flow, disocclusion) in a grid");
+
+REXCVAR_DEFINE_DOUBLE(rexnative_frame_generation_sharpness, 0.5, "ReXNative",
+                      "Sharpening of the generated frames where the scene moves (FSR 1's RCAS, "
+                      "0 to 1; 0 off; live): FidelityFX samples both frames between their pixels "
+                      "and blends them, so its frames are softer than the real ones, and fine "
+                      "detail (leaves, grass, tyres) pulsed between sharp and soft at 30 Hz");
 
 REXCVAR_DEFINE_BOOL(rexnative_frame_generation_check, false, "ReXNative",
                     "FidelityFX checks the frame generation's inputs and logs what it finds "
@@ -144,28 +151,62 @@ bool FrameGeneration::CopyAtHud(CommandStream* list, uint64_t frame, const uint3
 }
 
 namespace {
-// CompositeHud: where the frame (t0) and its HUD-less copy (t1) differ in a 3x3 neighbourhood by
-// more than the copy's rounding (3 steps of 8 bits, 12 of 10), the frame's pixel replaces the
-// generated one (u0). `origin` and `size`: the generation rect.
+// CompositeHud, from FidelityFX's frame (t2) into the generated frame (u0). With `hud`: where the
+// frame (t0) and its HUD-less copy (t1) differ in a 3x3 neighbourhood by more than the copy's
+// rounding (3 steps of 8 bits, 12 of 10), the frame's pixel. Elsewhere FidelityFX's, sharpened by
+// FSR 1's RCAS (its lobe and limits, without the noise detection) by `sharpness` times the
+// pixel's motion in pixels, up to 1 (the scene's motion vectors, t3, UV, at their own size): a
+// still pixel is the real one's, as sharp. `origin` and `size`: the generation rect.
 constexpr char kHudHlsl[] = R"(
 Texture2D<float4> frame : register(t0);
 Texture2D<float4> hudless : register(t1);
+Texture2D<float4> raw : register(t2);
+Texture2D<float2> motion : register(t3);
 RWTexture2D<float4> generated : register(u0);
-cbuffer Constants : register(b0) { uint2 origin; uint2 size; };
+cbuffer Constants : register(b0) {
+  uint2 origin; uint2 size; uint2 motion_size; uint hud; float sharpness;
+};
 [numthreads(8, 8, 1)]
 void main(uint2 id : SV_DispatchThreadID) {
   if (any(id >= size)) return;
   const int2 p = int2(origin + id);
   const int2 lo = int2(origin), hi = int2(origin + size) - 1;
-  float d = 0.0;
-  [unroll] for (int y = -1; y <= 1; ++y) {
-    [unroll] for (int x = -1; x <= 1; ++x) {
-      const int3 q = int3(clamp(p + int2(x, y), lo, hi), 0);
-      const float3 e = abs(frame.Load(q).rgb - hudless.Load(q).rgb);
-      d = max(d, max(e.r, max(e.g, e.b)));
+  if (hud != 0) {
+    float d = 0.0;
+    [unroll] for (int y = -1; y <= 1; ++y) {
+      [unroll] for (int x = -1; x <= 1; ++x) {
+        const int3 q = int3(clamp(p + int2(x, y), lo, hi), 0);
+        const float3 e = abs(frame.Load(q).rgb - hudless.Load(q).rgb);
+        d = max(d, max(e.r, max(e.g, e.b)));
+      }
+    }
+    if (d > 0.0125) {
+      generated[p] = frame.Load(int3(p, 0));
+      return;
     }
   }
-  if (d > 0.0125) generated[p] = frame.Load(int3(p, 0));
+  const float4 e = raw.Load(int3(p, 0));
+  float s = 0.0;
+  if (sharpness > 0.0 && motion_size.x != 0) {
+    const int2 m = min(int2((float2(id) + 0.5) * float2(motion_size) / float2(size)),
+                       int2(motion_size) - 1);
+    s = sharpness * saturate(length(motion.Load(int3(m, 0)) * float2(size)));
+  }
+  if (s <= 0.0) {
+    generated[p] = e;
+    return;
+  }
+  const float3 b = raw.Load(int3(clamp(p + int2(0, -1), lo, hi), 0)).rgb;
+  const float3 h = raw.Load(int3(clamp(p + int2(0, 1), lo, hi), 0)).rgb;
+  const float3 l = raw.Load(int3(clamp(p + int2(-1, 0), lo, hi), 0)).rgb;
+  const float3 r = raw.Load(int3(clamp(p + int2(1, 0), lo, hi), 0)).rgb;
+  const float3 mn = min(min(min(b, h), min(l, r)), e.rgb);
+  const float3 mx = max(max(max(b, h), max(l, r)), e.rgb);
+  const float3 hit_min = mn / (4.0 * mx + 1e-6);
+  const float3 hit_max = (1.0 - mx) / (4.0 * mn - 4.0 - 1e-6);
+  const float3 lobes = max(-hit_min, hit_max);
+  const float lobe = max(-0.1875, min(max(lobes.r, max(lobes.g, lobes.b)), 0.0)) * s;
+  generated[p] = float4(saturate((lobe * (b + h + l + r) + e.rgb) / (4.0 * lobe + 1.0)), e.a);
 }
 )";
 }  // namespace
@@ -175,17 +216,17 @@ bool FrameGeneration::CreateHudPass() {
   hud_tried_ = true;
   ID3D12Device* device = device_.device();
   const D3D12_DESCRIPTOR_RANGE ranges[2] = {
-      {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0},
-      {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 2},
+      {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0},
+      {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 4},
   };
   D3D12_ROOT_PARAMETER params[2] = {};
   params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[0].DescriptorTable = {2, ranges};
   params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-  params[1].Constants = {0, 0, 4};
+  params[1].Constants = {0, 0, 8};
   const D3D12_ROOT_SIGNATURE_DESC rs = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   ComPtr<ID3DBlob> blob, err;
-  const D3D12_DESCRIPTOR_HEAP_DESC hd = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3,
+  const D3D12_DESCRIPTOR_HEAP_DESC hd = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 5,
                                          D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
   if (Failed(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err),
              "frame generation HUD root signature serialize") ||
@@ -226,39 +267,69 @@ void FrameGeneration::WriteHudViews() {
   cpu.ptr += hud_stride_;
   device->CreateShaderResourceView(hudless_.Get(), &sd, cpu);
   cpu.ptr += hud_stride_;
+  device->CreateShaderResourceView(raw_.Get(), &sd, cpu);
+  cpu.ptr += hud_stride_;
+  WriteMotionView(nullptr);
+  cpu.ptr += hud_stride_;
   D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
   ud.Format = format;
   ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
   device->CreateUnorderedAccessView(output_.Get(), nullptr, &ud, cpu);
 }
 
-void FrameGeneration::CompositeHud(CommandStream* list, FfxApiRect2D rect) {
-  list->Call([this, rect](CommandStream::List* l) {
-    D3D12_RESOURCE_BARRIER b[3] = {};
-    ID3D12Resource* const res[3] = {image_.Get(), hudless_.Get(), output_.Get()};
-    const D3D12_RESOURCE_STATES to[3] = {D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+void FrameGeneration::WriteMotionView(ID3D12Resource* motion) {
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = hud_heap_->GetCPUDescriptorHandleForHeapStart();
+  cpu.ptr += 3 * hud_stride_;
+  D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+  sd.Format = DXGI_FORMAT_R16G16_FLOAT;
+  sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  sd.Texture2D.MipLevels = 1;
+  device_.device()->CreateShaderResourceView(motion, &sd, cpu);
+  motion_view_ = motion;
+}
+
+void FrameGeneration::CompositeHud(CommandStream* list, FfxApiRect2D rect, bool hud,
+                                   ID3D12Resource* motion, uint32_t motion_width,
+                                   uint32_t motion_height) {
+  // The motion vectors' view: written again only for another resource (the upscaler made its
+  // targets again), with the GPU idle, as frames in flight read the one there.
+  if (motion != motion_view_) {
+    if (motion_view_) device_.WaitIdle();
+    WriteMotionView(motion);
+  }
+  const float sharpness =
+      motion ? float(std::clamp(REXCVAR_GET(rexnative_frame_generation_sharpness), 0.0, 1.0))
+             : 0.0f;
+  uint32_t c[8] = {uint32_t(rect.left), uint32_t(rect.top), uint32_t(rect.width),
+                   uint32_t(rect.height), motion ? motion_width : 0u, motion ? motion_height : 0u,
+                   hud ? 1u : 0u, 0};
+  std::memcpy(&c[7], &sharpness, 4);
+  list->Call([this, c](CommandStream::List* l) {
+    D3D12_RESOURCE_BARRIER b[4] = {};
+    ID3D12Resource* const res[4] = {image_.Get(), hudless_.Get(), raw_.Get(), output_.Get()};
+    const D3D12_RESOURCE_STATES to[4] = {D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
       b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       b[i].Transition.pResource = res[i];
       b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       b[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
       b[i].Transition.StateAfter = to[i];
     }
-    l->ResourceBarrier(3, b);
+    l->ResourceBarrier(4, b);
     ID3D12DescriptorHeap* heaps[] = {hud_heap_.Get()};
     l->SetDescriptorHeaps(1, heaps);
     l->SetComputeRootSignature(hud_signature_.Get());
     l->SetPipelineState(hud_pso_.Get());
     l->SetComputeRootDescriptorTable(0, hud_heap_->GetGPUDescriptorHandleForHeapStart());
-    const uint32_t c[4] = {uint32_t(rect.left), uint32_t(rect.top), uint32_t(rect.width),
-                           uint32_t(rect.height)};
-    l->SetComputeRoot32BitConstants(1, 4, c, 0);
+    l->SetComputeRoot32BitConstants(1, 8, c, 0);
     l->Dispatch((c[2] + 7) / 8, (c[3] + 7) / 8, 1);
     for (D3D12_RESOURCE_BARRIER& x : b)
       std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
-    l->ResourceBarrier(3, b);
+    l->ResourceBarrier(4, b);
   });
 }
 
@@ -276,6 +347,7 @@ void FrameGeneration::Destroy() {
   image_.Reset();
   hudless_.Reset();
   output_.Reset();
+  raw_.Reset();
   width_ = height_ = 0;
 }
 
@@ -306,7 +378,11 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool dep
   if (Failed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd,
                                              D3D12_RESOURCE_STATE_PRESENT, nullptr,
                                              IID_PPV_ARGS(&output_)),
-             "CreateCommittedResource(generated frame)"))
+             "CreateCommittedResource(generated frame)") ||
+      Failed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd,
+                                             D3D12_RESOURCE_STATE_PRESENT, nullptr,
+                                             IID_PPV_ARGS(&raw_)),
+             "CreateCommittedResource(FidelityFX's generated frame)"))
     return false;
   device->CreateRenderTargetView(image_.Get(), nullptr, image_rtv());
   device->CreateRenderTargetView(hudless_.Get(), nullptr, hudless_rtv());
@@ -648,7 +724,8 @@ void FrameGeneration::FinishCaptures(uint64_t completed_fence) {
 }
 
 ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, FfxApiRect2D rect,
-                                          bool hudless) {
+                                          bool hudless, ID3D12Resource* motion,
+                                          uint32_t motion_width, uint32_t motion_height) {
   ffxConfigureDescFrameGeneration c = {};
   c.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
   c.frameGenerationEnabled = true;
@@ -663,13 +740,15 @@ ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, F
   REXNATIVE_LOG_FIRST(2, INFO, "ReXNative frame generation: generation rect {},{} {}x{} of {}x{}",
                       rect.left, rect.top, rect.width, rect.height, width_, height_);
   // With the HUD-less copy: FidelityFX generates between the HUD-less copies, and CompositeHud
-  // puts the frame's HUD over the result (see frame_generation.h).
+  // puts the frame's HUD over the result (see frame_generation.h). It also sharpens the result,
+  // with or without the copy: FidelityFX's frame goes into raw_ for it.
   const bool own_hud = hudless && hud_ok_;
   ffxDispatchDescFrameGeneration d = {};
   d.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
   d.presentColor = ffxApiGetResourceDX12(own_hud ? hudless_.Get() : image_.Get(),
                                          FFX_API_RESOURCE_STATE_PRESENT);
-  d.outputs[0] = ffxApiGetResourceDX12(output_.Get(), FFX_API_RESOURCE_STATE_PRESENT);
+  d.outputs[0] = ffxApiGetResourceDX12(hud_ok_ ? raw_.Get() : output_.Get(),
+                                       FFX_API_RESOURCE_STATE_PRESENT);
   d.numGeneratedFrames = 1;
   d.backbufferTransferFunction =
       hdr_ ? FFX_API_BACKBUFFER_TRANSFER_FUNCTION_PQ : FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
@@ -685,7 +764,7 @@ ID3D12Resource* FrameGeneration::Generate(CommandStream* list, uint64_t frame, F
     if (rc != FFX_API_RETURN_OK)
       REXNATIVE_WARN_ONCE("ReXNative frame generation: ffxDispatch failed ({})", rc);
   });
-  if (own_hud) CompositeHud(list, rect);
+  if (hud_ok_) CompositeHud(list, rect, own_hud, motion, motion_width, motion_height);
   return output_.Get();
 }
 

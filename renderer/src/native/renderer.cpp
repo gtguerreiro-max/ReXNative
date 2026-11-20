@@ -1575,8 +1575,11 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   if (generate) {
     stats_.generated = 1;
     const ImageRect& r = present_->image_rect();
+    Upscaler::SceneInputs scene;
+    if (Upscaler* up = upscaler()) scene = up->ReadSceneInputs(d.command_list());
     d.SetGeneratedFrame(fg->Generate(d.command_list(), frame_index_,
-                                     {r.left, r.top, r.width, r.height}, hudless.image));
+                                     {r.left, r.top, r.width, r.height}, hudless.image,
+                                     scene.motion, scene.width, scene.height));
     if (hudless.image) fg->MeasureHudless(d.command_list(), frame_index_, d.frame_fence());
     // A capture takes this frame's and the next 7 frames' images, one after the other (the
     // presenter's own captures skip a frame while one is written).

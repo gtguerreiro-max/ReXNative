@@ -129,7 +129,11 @@ class FrameGeneration {
   // After frame `frame` was drawn into image() and, with `hudless`, into hudless(), `rect` the
   // scene's part of it: records the generation of the frame before it into `list`. Returns that
   // frame (image()'s size, format and state); a failure, on the stream's thread, is logged once.
-  ID3D12Resource* Generate(CommandStream* list, uint64_t frame, FfxApiRect2D rect, bool hudless);
+  // `motion`: the scene's motion vectors (NON_PIXEL_SHADER_RESOURCE, R16G16_FLOAT, UV, of
+  // motion_width x motion_height), for the sharpening (CompositeHud); null: none.
+  ID3D12Resource* Generate(CommandStream* list, uint64_t frame, FfxApiRect2D rect, bool hudless,
+                           ID3D12Resource* motion = nullptr, uint32_t motion_width = 0,
+                           uint32_t motion_height = 0);
 
   // A capture of frame `frame` (the presenter's, --rexnative_capture_dir), after Generate:
   // records copies of the frame as presented and of the frame generated before it, written to
@@ -178,12 +182,22 @@ class FrameGeneration {
   // FidelityFX's own HUD-less input (HUDLessColor) left its optical flow at zero whenever the
   // copy was another resource than presentColor (3.1.6, 2026-11-20): the generated frames moved
   // by the game's motion vectors alone, and whatever had none (mud, dust, thin posts) smeared.
+  // Elsewhere (and without the copy, `hud` false) it sharpens FidelityFX's frame where the scene
+  // moves (--rexnative_frame_generation_sharpness): FidelityFX samples both frames between their
+  // pixels and blends them, and its frames had three quarters of the real ones' detail (Sega
+  // Rally Revo, Minecraft, Overlord: the luma Laplacian), so leaves, grass and tyre walls pulsed
+  // between sharp and soft at 30 Hz as the view moved. RCAS by 0.5 brought them to 0.96 of the
+  // real frames' detail (0.7 overshot); a still pixel, the real one's, is left as it is.
   bool CreateHudPass();
   void WriteHudViews();
-  void CompositeHud(CommandStream* list, FfxApiRect2D rect);
+  void WriteMotionView(ID3D12Resource* motion);
+  void CompositeHud(CommandStream* list, FfxApiRect2D rect, bool hud, ID3D12Resource* motion,
+                    uint32_t motion_width, uint32_t motion_height);
   ComPtr<ID3D12RootSignature> hud_signature_;
   ComPtr<ID3D12PipelineState> hud_pso_;
-  ComPtr<ID3D12DescriptorHeap> hud_heap_;  // image_'s SRV, hudless_'s, output_'s UAV
+  // image_'s SRV, hudless_'s, raw_'s, the motion vectors', output_'s UAV
+  ComPtr<ID3D12DescriptorHeap> hud_heap_;
+  ID3D12Resource* motion_view_ = nullptr;  // the motion vectors the heap's view is of
   uint32_t hud_stride_ = 0;
   bool hud_tried_ = false, hud_ok_ = false;
 
@@ -193,6 +207,7 @@ class FrameGeneration {
   void* context_ = nullptr;  // ffxContext
   ComPtr<ID3D12Resource> image_, hudless_;
   ComPtr<ID3D12Resource> output_;          // the generated frame
+  ComPtr<ID3D12Resource> raw_;             // FidelityFX's, before CompositeHud
   ComPtr<ID3D12DescriptorHeap> rtv_heap_;  // image_'s RTV, hudless_'s
   uint32_t rtv_stride_ = 0;
   uint32_t width_ = 0, height_ = 0;
