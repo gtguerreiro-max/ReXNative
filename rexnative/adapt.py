@@ -144,6 +144,18 @@ def apply_stream_only(result, T, why):
                        address=None, how='not found', confidence=None)
 
 
+def _sure(row):
+    """Whether a found function is sure enough to act on: high confidence, or medium where every
+    reference port that has the function found it at this same address (the same D3D build)."""
+    if not row.get('address'):
+        return False
+    if row.get('confidence') == 'high':
+        return True
+    cross = row.get('cross') or {}
+    return (row.get('confidence') == 'medium' and bool(cross) and
+            all(a == row['address'] for a, _how, _conf in cross.values()))
+
+
 def adapt(target, refs, overrides=None, log=print):
     info = xex.read(target['xex']) if target.get('xex') else None
     lib, ver = xex.d3d_library(info) if info else (None, None)
@@ -377,16 +389,16 @@ def adapt(target, refs, overrides=None, log=print):
         # query hooks are often not found), the console's 16:9.
         # Recorded command buffers are replayed (cmdbuf 2) where RunCommandBuffer is found with
         # high confidence (a wrong function's arguments read as a command buffer would be worse
-        # than none): the draws inside them reach no other hook (Iron Brigade's static scenery,
-        # 121 draws a frame of Halo: Combat Evolved Anniversary's cutscenes); overrides.json may
-        # say 0.
+        # than none), or with medium confidence at the address every reference port that has it
+        # also found it at (the same D3D library): the draws inside them reach no other hook
+        # (Iron Brigade's static scenery, 121 draws a frame of Halo: Combat Evolved
+        # Anniversary's cutscenes, all of Blur's cars and track: a race of headlights alone);
+        # overrides.json may say 0.
         'defaults': {'enabled': True,
                      'render_height': p['scene'].get('height', 720),
                      'occlusion': False,
                      'display_aspect': '16.0 / 9.0',
-                     'cmdbuf': 2 if (funcs.get('RunCommandBuffer', {}).get('address') and
-                                     funcs['RunCommandBuffer'].get('confidence') == 'high')
-                               else 0,
+                     'cmdbuf': 2 if _sure(funcs.get('RunCommandBuffer', {})) else 0,
                      # Where the replay reads the bin mask a buffer starts from: it moves with
                      # the XDK (constants.bin_mask_offset); None keeps hook_args.h's 12956.
                      'cmdbuf_bin_mask': constants.bin_mask_offset(T)},

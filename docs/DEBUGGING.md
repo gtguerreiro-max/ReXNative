@@ -18,7 +18,11 @@ window and drives it to the problem; then each experiment takes seconds on the r
   or Back needs about half a second: the settings HUD holds a short one back (its View + Menu).
 - `live.ps1 control "peek 03FD1000 131072"`: how many bytes of guest physical memory there are
   not zero, and the first 32, in the log (whether the CPU wrote something or only the GPU did);
-  `scripts\rdoc.ps1 save <capture> -Event N -Texture T -X 4` saves a texture's mip 4.
+  `control "poke 0C93A000 3F800000"` writes dwords there (big-endian, as the guest's CPU), to
+  see what the game makes of a value; `control "watch 0C93A000 read 8"` logs the guest
+  functions that read or write a physical address through its three CPU views (hardware
+  breakpoints; `watch off`); `scripts\rdoc.ps1 save <capture> -Event N -Texture T -X 4` saves
+  a texture's mip 4.
 - Frame generation: with it on, each capture (`touch <live>\cap\capture.request`) also writes,
   for eight frames in a row, the frame as presented, the frame generated before it and the
   HUD-less copy (`f<N>-fg-real.png`, `-fg-generated.png`, `-fg-hudless.png`), off the render

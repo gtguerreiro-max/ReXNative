@@ -916,6 +916,8 @@ constexpr char kAliasColorHlsl[] = R"(
 cbuffer AliasColor : register(b0) {
   float2 dst_to_guest;  // host pixel of the target -> its guest pixel
   float2 src_scale;     // guest pixel of the source -> host pixel
+  // Source pixels per target pixel: (1, 1) across formats; across MSAA (a 1x source under an
+  // MSAA target) (2, 2) for 4x, (1, 2) for 2x, each sample of the target a pixel of the source.
   uint2 step;
   uint2 pad;
 };
@@ -947,7 +949,12 @@ float F7e3To32(uint v) {
 }
 uint Unorm(float v, float m) { return uint(round(saturate(v) * m)); }
 float4 ps(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
-  uint2 h = uint2((float2(uint2(pos.xy * dst_to_guest)) + 0.5) * src_scale);
+  uint2 g = uint2(pos.xy * dst_to_guest);
+  if (step.y > 1) {
+    uint2 sub = step.x > 1 ? uint2(s & 1, s >> 1) : uint2(0, s);
+    g = g * step + min(sub, step - 1);
+  }
+  uint2 h = uint2((float2(g) + 0.5) * src_scale);
 #ifdef SOURCE_MS
   float4 c = source.Load(h, s);
 #else
@@ -1143,7 +1150,6 @@ bool RenderTargets::InitAliasColor() {
   static const char* const kKinds[3] = {"0", "1", "2"};
   for (int from = 0; from < 3; ++from) {
     for (int to = 0; to < 3; ++to) {
-      if (from == to) continue;
       for (int ms = 0; ms < 2; ++ms) {
         D3D_SHADER_MACRO m[4] = {{"SRC_KIND", kKinds[from]}, {"DST_KIND", kKinds[to]}};
         if (ms) m[2] = {"SOURCE_MS", "1"};
@@ -1163,25 +1169,50 @@ bool RenderTargets::InitAliasColor() {
 }
 
 bool RenderTargets::AliasColor(CommandStream* list, RenderTarget* rt) {
-  const auto owner = color_owner_.find(OwnerKey(*rt));
-  if (owner == color_owner_.end()) return false;
-  RenderTarget* src = owner->second;
-  if (src == rt || src->color_seq <= rt->color_seq || src->samples != rt->samples) return false;
+  // Across formats: the target last written at rt's base, pitch and MSAA.
+  RenderTarget* src = nullptr;
+  if (const auto owner = color_owner_.find(OwnerKey(*rt)); owner != color_owner_.end()) {
+    RenderTarget* o = owner->second;
+    if (o != rt && o->color_seq > rt->color_seq && o->samples == rt->samples &&
+        AliasKind(o->guest_format) >= 0 && AliasKind(rt->guest_format) >= 0 &&
+        AliasKind(o->guest_format) != AliasKind(rt->guest_format))
+      src = o;
+  }
+  // Across MSAA: an MSAA target over a 1x one at its base, whose pixels are its samples (the 1x
+  // surface twice as wide for 4x), written since rt and since the other.
+  uint32_t step_x = 1, step_y = 1;
+  if (rt->edram_samples > 1) {
+    const uint32_t sx = rt->edram_samples >= 4 ? 2 : 1;
+    const uint64_t key = uint64_t(rt->edram_base) | uint64_t(rt->pitch * sx) << 20 | 1ull << 40;
+    if (const auto owner = color_owner_.find(key); owner != color_owner_.end()) {
+      RenderTarget* o = owner->second;
+      if (o != rt && o->color_seq > rt->color_seq && (!src || o->color_seq > src->color_seq) &&
+          o->samples == 1 && AliasKind(o->guest_format) >= 0 &&
+          AliasKind(rt->guest_format) >= 0) {
+        src = o;
+        step_x = sx;
+        step_y = 2;
+      }
+    }
+  }
+  if (!src) return false;
   const int from = AliasKind(src->guest_format), to = AliasKind(rt->guest_format);
-  // A format pair not handled (64-bit formats, float targets): separate targets, as before.
-  if (from < 0 || to < 0 || from == to) return false;
   if (src->pending_count) Flush(list, src);
-  if (!ColorPass(list, src, rt, from, to)) return false;
+  if (!ColorPass(list, src, rt, from, to, step_x, step_y)) return false;
   NoteColorWrite(rt);
-  rt->converted_from = src;
-  rt->converted_seq = rt->color_seq;
+  if (step_y == 1) {
+    rt->converted_from = src;
+    rt->converted_seq = rt->color_seq;
+  }
   REXNATIVE_LOG_FIRST(4, INFO,
-                      "ReXNative RT: color at base {} pitch {} read as guest format {} after "
-                      "format {}: EDRAM bits converted",
-                      rt->edram_base, rt->pitch, rt->guest_format, src->guest_format);
+                      "ReXNative RT: color at base {} pitch {} x{} read as guest format {} after "
+                      "format {} at pitch {} x{}: EDRAM bits converted",
+                      rt->edram_base, rt->pitch, rt->edram_samples, rt->guest_format,
+                      src->guest_format, src->pitch, src->edram_samples);
   if (log_)
-    std::fprintf(log_, "rt color alias: base %u pitch %u format %u -> %u\n", rt->edram_base,
-                 rt->pitch, src->guest_format, rt->guest_format);
+    std::fprintf(log_, "rt color alias: base %u pitch %u x%u format %u -> pitch %u x%u format %u\n",
+                 rt->edram_base, src->pitch, src->edram_samples, src->guest_format, rt->pitch,
+                 rt->edram_samples, rt->guest_format);
   return true;
 }
 
@@ -1189,13 +1220,13 @@ bool RenderTargets::ConvertColor(CommandStream* list, RenderTarget* src, uint32_
                                  RenderTarget* dst, uint32_t dst_format) {
   const int from = AliasKind(src_format), to = AliasKind(dst_format);
   if (from < 0 || to < 0 || from == to || src->samples != 1 || dst->samples != 1) return false;
-  if (!ColorPass(list, src, dst, from, to)) return false;
+  if (!ColorPass(list, src, dst, from, to, 1, 1)) return false;
   state_lost_ = true;
   return true;
 }
 
 bool RenderTargets::ColorPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, int from,
-                              int to) {
+                              int to, uint32_t step_x, uint32_t step_y) {
   if (!InitAliasColor()) return false;
   const bool source_ms = src->samples > 1;
   const uint32_t pso_key = uint32_t(rt->view_format) << 16 | rt->samples << 8 | from << 4 |
@@ -1242,11 +1273,11 @@ bool RenderTargets::ColorPass(CommandStream* list, RenderTarget* src, RenderTarg
   };
   const Constants k = {{1.0f / rt->scale.factor(0), 1.0f / rt->scale.factor(1)},
                        {src->scale.factor(0), src->scale.factor(1)},
-                       {1, 1},
+                       {step_x, step_y},
                        {0, 0}};
   // The rows both hold, at rt's scale.
-  const uint32_t w = rt->scale.Extent(std::min(rt->width, src->width), 0);
-  const uint32_t hgt = rt->scale.Extent(std::min(rt->height, src->height), 1);
+  const uint32_t w = rt->scale.Extent(std::min(rt->width, src->width / step_x), 0);
+  const uint32_t hgt = rt->scale.Extent(std::min(rt->height, src->height / step_y), 1);
   ID3D12DescriptorHeap* heap = alias_heap_.Get();
   list->SetDescriptorHeaps(1, &heap);
   list->SetGraphicsRootSignature(alias_rs_.Get());

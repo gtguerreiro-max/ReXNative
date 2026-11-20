@@ -371,12 +371,19 @@ class RenderTargets {
   // processing: the targets it got were others, empty, and the screen black. When color target
   // `rt` is bound or read and the last target written at its base is another of the 32-bit
   // formats handled here (8_8_8_8, 2_10_10_10, 2_10_10_10_FLOAT and their variants), that one's
-  // pixels are converted into `rt` through the 32-bit word the EDRAM holds. Returns whether it
-  // recorded calls.
+  // pixels are converted into `rt` through the 32-bit word the EDRAM holds. Across MSAA as well:
+  // an MSAA target over a 1x one at its base (pitch twice its own for 4x) takes the 1x
+  // surface's pixels as its samples, as AliasDepth does with depth. Blur draws its HDR scene
+  // into a 1280x720 1x 7e3 surface and resolves the same EDRAM as 640x360 4x MSAA, the resolve's
+  // sample average a half-size copy for its exposure and depth of field: the 4x target was
+  // another, empty, so its exposure was measured on black (the race overexposed to white) and
+  // its depth of field blended black into the scene. Returns whether it recorded calls.
   bool AliasColor(CommandStream* list, RenderTarget* rt);
   bool InitAliasColor();
-  // AliasColor's and ConvertColor's pass: `src` (alias kind `from`) into `rt` (kind `to`).
-  bool ColorPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, int from, int to);
+  // AliasColor's and ConvertColor's pass: `src` (alias kind `from`) into `rt` (kind `to`),
+  // `step` source pixels a target pixel's samples ((1, 1) for the same MSAA).
+  bool ColorPass(CommandStream* list, RenderTarget* src, RenderTarget* rt, int from, int to,
+                 uint32_t step_x, uint32_t step_y);
   // The color target last written at each EDRAM base, pitch and MSAA (AliasColor).
   std::unordered_map<uint64_t, RenderTarget*> color_owner_;
   static uint64_t OwnerKey(const RenderTarget& rt) {

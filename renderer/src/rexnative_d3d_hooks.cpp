@@ -1085,6 +1085,29 @@ void PollControl(Tap& t, uint8_t* base) {
       std::string head;
       for (uint32_t i = 0; i < std::min<uint32_t>(bytes, 32); ++i) head += std::format("{:02X}", p[i]);
       REXLOG_INFO("ReXNative peek: {:08X}+{:X}: {} bytes not zero; {}", addr, bytes, nonzero, head);
+      // peek <address> <bytes> <file>: all of them into the file too (a CPU-written texture).
+      std::string file;
+      if (ss >> file) {
+        if (std::FILE* out = std::fopen(file.c_str(), "wb")) {
+          std::fwrite(p, 1, bytes, out);
+          std::fclose(out);
+        }
+      }
+    } else if (cmd == "poke") {
+      // poke <guest physical address hex> <dword hex>...: writes the dwords there as the guest's
+      // CPU would (big-endian), to test what the game makes of a value (a read-back resolve's).
+      const uint32_t addr = uint32_t(std::strtoul(arg.c_str(), nullptr, 16)) & 0x1FFFFFFCu;
+      auto* mem = rexnative::host::Memory();
+      std::string word;
+      uint32_t written = 0;
+      while (mem && ss >> word && addr + 4 * (written + 1) <= 0x20000000u) {
+        const uint32_t v = uint32_t(std::strtoul(word.c_str(), nullptr, 16));
+        uint8_t* p = mem->TranslatePhysical<uint8_t*>(addr + 4 * written);
+        const uint8_t be[4] = {uint8_t(v >> 24), uint8_t(v >> 16), uint8_t(v >> 8), uint8_t(v)};
+        std::memcpy(p, be, 4);
+        ++written;
+      }
+      REXLOG_INFO("ReXNative poke: {:08X}: {} dwords written", addr, written);
     } else if (cmd == "set") {
       std::string value;
       std::getline(ss >> std::ws, value);

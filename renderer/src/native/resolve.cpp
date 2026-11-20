@@ -44,6 +44,12 @@ REXCVAR_DEFINE_INT32(rexnative_resolve_writeback, 0, "ReXNative",
                      "three frames late, so a game that reads them at once (Minecraft's 64x64 save "
                      "thumbnail) still reads zeros, and one that reuses the memory meanwhile has "
                      "it overwritten; 0 off");
+REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_tiny, 16, "ReXNative",
+                     "Resolves of at most this many texels are written into guest memory once "
+                     "the GPU has done them, for a game that reads them on the CPU (Blur's "
+                     "exposure, a 1x1 average of the scene's luminance; zeros made its races "
+                     "white), one to three frames late, as rexnative.resolve_writeback does; 0 "
+                     "off");
 REXCVAR_DEFINE_INT32(rexnative_resolve_writeback_unused, 1310720, "ReXNative",
                      "With rexnative.resolve_writeback: the largest resolve (texels) written back "
                      "because no texture has used its destination yet; 0 none");
@@ -1764,13 +1770,19 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   if (&dest == &own_) return true;
   if (changed_) changed_(p.dest_base);
   // Written back for the CPU (rexnative.resolve_writeback): a small resolve, and one into a
-  // destination the GPU has not used (no texture, no front buffer looked it up).
+  // destination the GPU has not used (no texture, no front buffer looked it up); and by
+  // default a tiny one (rexnative.resolve_writeback_tiny), which a game may read back on the
+  // CPU (Blur's exposure; its 1x1 targets rotate, the GPU sampling an address in one frame and
+  // the CPU reading it in another).
   const int32_t writeback = REXCVAR_GET(rexnative_resolve_writeback);
+  const int32_t tiny = REXCVAR_GET(rexnative_resolve_writeback_tiny);
   const uint64_t texels = uint64_t(w) * h;
-  if (writeback > 0 && scale == 1 && !p.dest_3d &&
-      (texels <= uint64_t(writeback) ||
-       (!dest.sampled &&
-        texels <= uint64_t(std::max(0, REXCVAR_GET(rexnative_resolve_writeback_unused))))))
+  if (scale == 1 && !p.dest_3d &&
+      ((writeback > 0 &&
+        (texels <= uint64_t(writeback) ||
+         (!dest.sampled &&
+          texels <= uint64_t(std::max(0, REXCVAR_GET(rexnative_resolve_writeback_unused)))))) ||
+       (tiny > 0 && texels <= uint64_t(tiny))))
     WritebackRecord(list, p, img->texture.Get(), dx, dy, w, h);
 
   if (dump_ && scale == 1 && !p.dest_3d) DumpRecord(list, p, img->view, uint32_t(dx) + w, uint32_t(dy) + h);

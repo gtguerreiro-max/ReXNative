@@ -267,6 +267,12 @@ the replay first refused and then drew 512 rows up:
 
 `cmdbuf dump tag:N` dumps the next N calls (a whole frame of Midnight Club's is 67).
 
+Blur draws its cars, its track and its scenery from about 20 recorded buffers a frame (1500 to
+2000 draws): without the replay its races showed the HUD and the tail lights on black. `adapt`
+turns the replay on only for a RunCommandBuffer found with high confidence; Blur's was medium
+(found next to a matched function) at the address Iron Brigade's port has it, the same D3D
+build. A medium one that every reference port that has the function agrees with now counts.
+
 Darwinia+ records its frame's Clear in a buffer it replays each frame. The D3D's Clear is a
 quad (DRAW_INDX_2, RB_MODECONTROL kColorDepth) that the replay dropped with the other internal
 draws: nothing cleared the scene, each frame was drawn over the last (trails, then a white
@@ -512,6 +518,10 @@ needs the hooks in that module's DLL.
 
 ## Renders the CPU reads
 
+Resolves of at most 16 texels are written back by default (`rexnative.resolve_writeback_tiny`,
+one to three frames late as the experimental writeback): Blur averages its scene's luminance
+down to 1x1 targets the GPU never samples, and with zeros there its races came out white.
+
 The native renderer never writes a resolve into guest memory (the Xenos plugin skips its own
 copies with `gpu.xenos.skip_draws`), so a game that reads a render on the CPU reads zeros:
 Minecraft's save thumbnails are black. `rexnative.resolve_writeback` (experimental, off) reads a
@@ -752,6 +762,13 @@ cutscene is the same from run to run since, with no readback left to wait for.
   clears, on any pitch when it covers whole tile rows (`RenderTargets::ClearDepthAliases`).
 - **Across formats:** Brothers' post processing reads the 7e3 scene's EDRAM as 10:10:10:2 and
   8:8:8:8 bits (`RenderTargets::AliasColor` converts them between targets).
+- **Color across MSAA:** Blur draws its HDR scene into a 1280x720 1x 7e3 surface and resolves
+  the same EDRAM as 640x360 4x MSAA: the resolve's average of each pixel's four samples is a
+  half-size copy, for its exposure and its depth of field. The 4x target was another, empty:
+  the exposure was measured on black and the depth of field blended black into the scene (the
+  race white, then dark smudges once it showed). An MSAA color target over a 1x one at its base
+  (twice its pitch for 4x) now takes the 1x pixels as its samples (`RenderTargets::AliasColor`,
+  as `AliasDepth` does for depth); the half-size copies match the Xenos plugin's (47 dB).
 - **Inside a resolved image:** Brothers' colour grading table is a stacked texture of 16 slices
   that one 16x512 resolve wrote, a slice every 32 rows (`Resolver::FindContaining`: a slice or
   level inside a resolved image is copied from its rows; only the first slice was).
