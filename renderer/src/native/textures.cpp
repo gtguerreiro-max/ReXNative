@@ -1,5 +1,7 @@
 // ReXNative renderer: texture cache (see textures.h).
 #include "textures.h"
+#include "trace.h"
+#include "debug_tools.h"
 #include "memexport.h"
 
 #include "clock.h"
@@ -68,6 +70,7 @@ struct TextureCache::Texture {
   uint32_t uploads = 0;  // Upload calls so far (the slow-upload log)
   uint32_t slot = 0;
   uint64_t placed = kCommitted, bytes = 0;  // CreateTextureResource's placement and size
+  uint32_t trace_id = 0;  // the frame trace that has its guest memory (trace.h)
   uint64_t used_fence = 0, used_ms = 0;     // the last frame that bound it (MarkUsed)
   Texture* lru_prev = nullptr;
   Texture* lru_next = nullptr;
@@ -412,6 +415,12 @@ void TextureCache::Touch(TextureHandle entry, uint64_t frame_fence) {
 void TextureCache::MarkUsed(Texture& t, uint64_t frame_fence) {
   if (t.used_fence == frame_fence) return;
   t.used_fence = frame_fence;
+  if (const uint32_t id = trace::Recording(); id && t.trace_id != id) [[unlikely]] {
+    // A texture's first use in a frame trace: its guest memory, for the player to load.
+    t.trace_id = id;
+    if (t.key.base_page) trace::TextureMem(t.key.base_page << 12, t.base_bytes);
+    if (t.key.mip_page) trace::TextureMem(t.key.mip_page << 12, t.mips_bytes);
+  }
   t.used_ms = now_ms_;
   if (lru_last_ == &t) return;
   if (t.lru_prev || lru_first_ == &t) {
@@ -487,6 +496,9 @@ TextureCache::Texture* TextureCache::Create(const TextureKey& key, const HostFor
             (bw * bh) <=
         D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     HRESULT hr = CreateTextureResource(desc, small_placement, &t.resource, &t.placed, &t.bytes);
+    dbg::Name(t.resource.Get(), "tex {:08X} {} {}x{}x{} mips {}{}", key.base_page << 12, info->name,
+              key.width, key.height, key.depth_or_array_size, key.mip_levels(),
+              key.tiled ? " tiled" : "");
     if (FAILED(hr)) {
       REXNATIVE_LOG_FIRST(1, ERROR,
                      "ReXNative textures: texture resource {}x{}x{} {} failed: {:08X} (logged "
@@ -744,6 +756,11 @@ bool TextureCache::Upload(Texture& t, CommandStream* list, uint64_t frame_fence,
   }
   job.key = key;
   job.layout = t.layout;
+  if (const uint32_t id = trace::Recording()) [[unlikely]] {
+    t.trace_id = id;
+    if (key.base_page) trace::TextureMem(key.base_page << 12, t.base_bytes);
+    if (key.mip_page) trace::TextureMem(key.mip_page << 12, t.mips_bytes);
+  }
   if (key.base_page) {
     job.guest.base = membase_ + (key.base_page << 12);
     job.guest.base_size = t.base_bytes;

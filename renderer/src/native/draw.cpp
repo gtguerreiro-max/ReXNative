@@ -10,6 +10,8 @@
 // PrimitiveProcessor::Process. Copyright Ben Vanik and Xenia developers; adapted by Tom Clay
 // for ReXGlue; adapted here for the native renderer.
 #include "draw.h"
+#include "trace.h"
+#include "debug_tools.h"
 #include "memexport.h"
 
 #include "cmd_replay.h"
@@ -1827,6 +1829,7 @@ bool DrawRenderer::Impl::Initialize() {
                                                IID_PPV_ARGS(&shared)),
                "shared memory buffer (512 MB)"))
       return false;
+    dbg::Name(shared.Get(), "guest physical memory (shared memory)");
   }
   shared_gpu = shared->GetGPUVirtualAddress();
   // Zeroed: make_unique value-initializes, and std::atomic's default constructor value-initializes
@@ -2037,6 +2040,8 @@ bool DrawRenderer::Impl::RequestRange(uint32_t start, uint32_t length, bool watc
   if (!InSharedMemory(start, length)) return false;
   const bool exact = !watch || upload_every_draw.load(std::memory_order_relaxed);
   if (preparing) draw_reads.emplace_back(start, start + length, exact);
+  if (preparing && trace::Recording()) [[unlikely]]
+    trace::Mem(start, length);
   const uint64_t fence = upload_fence;
   PrepareDiag& pd = PrepDiag();
   auto copy = [&](uint32_t from, uint32_t size) {
@@ -3905,6 +3910,14 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
                                  std::vector<uint8_t>* memexport_guest) {
   prep->captured = r.textures().MarkCapture();
   if (!s.vs.ucode || !s.vs.dwords) return;
+  if (trace::Recording()) [[unlikely]] {
+    // What the player's draw reads besides the vertex ranges: the shaders' ucode (an immediate
+    // one is in the draw's record) and a triangle fan's guest indices.
+    if (!s.vs.immediate) trace::Mem(s.vs.ucode, s.vs.dwords * 4);
+    if (s.ps.ucode && !s.ps.immediate) trace::Mem(s.ps.ucode, s.ps.dwords * 4);
+    if (s.indexed && s.index_address)
+      trace::Mem(s.index_address, s.count * (s.index_32bit ? 4 : 2));
+  }
   prep->vs = LoadShader(vs_memo, vs_last, s.vs, xenos::ShaderType::kVertex);
   prep->ps = LoadShader(ps_memo, ps_last, s.ps, xenos::ShaderType::kPixel);
   profile::Mark(profile::kCapShaders);
@@ -5036,6 +5049,10 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     }
   }
   const uint32_t draw_index = frame_draws++;
+  dbg::Event event(list, "d{} prim {} n {} vs {:016X} ps {:016X}{}", draw_index,
+                   uint32_t(s.primitive), s.count, vs_generic->GetUcodeDataHash(),
+                   ps_generic ? ps_generic->GetUcodeDataHash() : 0,
+                   s.fn == HookFn::kRunCommandBuffer ? " (command buffer)" : "");
   bool debug_skip = (debug_max_draws && draw_index >= debug_max_draws) ||
                     (!(debug_mask & kDebugNoMotion) && draw_index >= debug_skip_from &&
                      draw_index < debug_skip_to);
@@ -5500,6 +5517,10 @@ void DrawRenderer::Prepare(const DrawState& state, uint64_t upload_tag, DrawPrep
                            std::vector<VertexCopy>* copies, std::vector<AuditRange>* audit,
                            std::vector<uint8_t>* memexport_guest) {
   impl_->Prepare(state, upload_tag, prep, copies, audit, memexport_guest);
+}
+
+void DrawRenderer::GuestWritten(uint32_t start, uint32_t length) {
+  Impl::InvalidationThunk(impl_.get(), start, length, true);
 }
 
 void DrawRenderer::StartAudit(uint32_t frames) { impl_->audit_left = frames; }

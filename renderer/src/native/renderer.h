@@ -266,6 +266,12 @@ class NativeRenderer {
   void QueueClear(const uint8_t* base, const HookArgs& args);
   void QueueResolve(const uint8_t* base, const HookArgs& args);
   void QueueSwap(uint8_t* base, const HookArgs& args);
+  // While a frame trace is recorded (trace.h): the command's record; its number + 1, else 0.
+  uint32_t TraceClear(const ClearCall& c);
+  uint32_t TraceResolve(const ResolveParams& p);
+  // --rexnative_trace_play, at the game's first Swap: draws the trace's frames on this thread
+  // from then on; never returns.
+  [[noreturn]] void PlayTrace(uint8_t* base);
   void RenderThreadMain();
   // Renderer switch. The key bind_renderer_switch (F9; a Steam Input binding can send it from a
   // back grip) requests it on the UI thread; the guest thread takes the request at its next

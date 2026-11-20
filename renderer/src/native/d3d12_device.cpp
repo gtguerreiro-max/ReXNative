@@ -1,6 +1,7 @@
 // ReXNative renderer: D3D12 device, frame command lists, swapchain and the debug
 // window.
 #include "d3d12_device.h"
+#include "debug_tools.h"
 
 #include "clock.h"
 #include "gpu_timer.h"
@@ -284,6 +285,8 @@ bool D3D12Device::Initialize(uint32_t width, uint32_t height, const wchar_t* tit
   width_ = width;
   height_ = height;
   game_window_ = game_window;
+  // RenderDoc, when asked for, before the factory and the device it is to capture.
+  dbg::Initialize();
   if (Failed(CreateDXGIFactory2(0, IID_PPV_ARGS(factory_.ReleaseAndGetAddressOf())),
              "CreateDXGIFactory2"))
     return false;
@@ -674,6 +677,7 @@ bool D3D12Device::ExecuteLists(List* list, std::span<ID3D12CommandList* const> f
 bool D3D12Device::Submit(std::span<ID3D12CommandList* const> first) {
   if (stream_failed_.load(std::memory_order_acquire)) return false;
   if (gpu_timer_) gpu_timer_->Pass(&stream_, GpuTimer::KeySubmit());
+  dbg::CloseEvents(&stream_);  // a list is submitted with no event open
   // Room for this submission's end, the next one's start and the frame's end.
   const bool timed = busy_stamps_[slot_] + 3 <= kBusySpans * 2;
   if (timed) StampBusy();
@@ -733,6 +737,7 @@ void D3D12Device::FinishFrame(List* list, const FrameEnd& f) {
   }
   submit_ns_.store(t1 - t0, std::memory_order_relaxed);
   present_ns_.store(NowNs() - t1, std::memory_order_relaxed);
+  if (f.capture_end) dbg::EndCapture(device_.Get(), f.capture_frame);
   ok = ok && !Failed(queue_->Signal(fence_.Get(), f.fence), "CommandQueue::Signal");
   // The next frame's list, on its slot's allocator once the GPU finished the slot's last frame.
   if (ok && fence_->GetCompletedValue() < f.next_slot_fence) {
@@ -758,6 +763,9 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   // back buffer for each: after the generated frame, or present_interval_ times.
   f.presents = !shown ? 0 : f.generated ? 2 : f.image && !frame_image ? present_interval_ : 1;
   f.drawn = back_index_;
+  dbg::CloseEvents(&stream_);
+  f.capture_end = std::exchange(capturing_, false);
+  f.capture_frame = capturing_frame_;
   if (gpu_timer_) gpu_timer_->EndFrame(&stream_);
   StampBusy();
   stream_.ResolveQueryData(busy_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * kBusySpans * 2,
@@ -774,6 +782,13 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   end_frame_times_.frame_presents = f.presents;
   end_frame_times_.presents += f.presents;
   stream_.Call([this, f = std::move(f)](List* list) { FinishFrame(list, f); });
+  if (capture_next_) {
+    // The frame after this one, whole: from here to its last Present (FinishFrame).
+    capture_next_ = false;
+    capturing_ = true;
+    capturing_frame_ = capture_frame_;
+    stream_.Call([this, frame = capture_frame_](List*) { dbg::StartCapture(device_.Get(), frame); });
+  }
   stream_.Flush();
   end_frame_times_.submit_ns = submit_ns_.load(std::memory_order_relaxed);
   end_frame_times_.present_ns = present_ns_.load(std::memory_order_relaxed);

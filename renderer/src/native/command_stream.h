@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -185,6 +186,15 @@ class CommandStream {
   }
   void Dispatch(UINT x, UINT y, UINT z) {
     Call([=](List* l) { l->Dispatch(x, y, z); });
+  }
+
+  // Events for a graphics debugger (debug_tools.h): PIX's ANSI strings, which RenderDoc reads.
+  void BeginEvent(std::string_view name) {
+    const UINT n = UINT(name.size());
+    CallWith(name.data(), n, [n](List* l, const char* text) { l->BeginEvent(1, text, n); });
+  }
+  void EndEvent() {
+    Call([](List* l) { l->EndEvent(); });
   }
 
   void BeginQuery(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {

@@ -1,8 +1,10 @@
 # Takes one RenderDoc capture of a running game through RenderDoc's target control, so the
 # game's window need not be in front (F12 needs it, and a Windows prompt can hold the focus).
-# Run inside RenderDoc's Python; scripts\live.ps1 capture does it:
+# Run inside RenderDoc's Python; scripts\xenia.ps1 capture does it:
 #   qrenderdoc.exe --python scripts/rdoc_trigger.py
-# The game must run under RenderDoc (renderdoccmd capture, scripts\live.ps1 start -RenderDoc).
+# The target must run under RenderDoc (renderdoccmd capture): Xenia Canary, the reference. A
+# ReXNative game needs none of this: its renderer takes the captures itself (scripts\live.ps1
+# start -RenderDoc, capture).
 # Writes to the file named by REXNATIVE_RDOC_TRIGGER_OUT: "capture <path>" for each capture, or
 # what went wrong. REXNATIVE_RDOC_FRAMES (default 1): consecutive frames, a capture each (what
 # changes from one frame to the next: a flicker).

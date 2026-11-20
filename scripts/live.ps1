@@ -16,12 +16,18 @@
 #   scripts\live.ps1 control "renderer stock"   # control-file commands (rexnative_d3d_hooks.cpp),
 #                                               # ; between several: here the Xenos plugin draws
 #   scripts\live.ps1 status | stop      # stop -Dir <folder>: only if the live game is that one
-# With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir,
-# $env:REXNATIVE_RENDERDOC or the newest Tools\RenderDoc* beside the repository's folder):
-# `capture` then takes the next frame (`capture 2`: the next two, a capture each, to see what
-# changes between them) into <Dir>\live\rdoc through
-# RenderDoc's target control (scripts\rdoc_trigger.py; the window need not be in front), for
-# scripts\rdoc.ps1 (draw list, pixel history, textures) with the game closed or still running.
+# With -RenderDoc at start the renderer loads RenderDoc itself (--rexnative_renderdoc=auto: no
+# launcher, see renderer/src/native/debug_tools.h), and `capture [N]` takes the next N whole
+# guest frames, a capture each, into <Dir>\live\rdoc\<game>-f<frame>.rdc, for scripts\rdoc.ps1
+# (`summary` first: the frame's passes in a few lines). The window need not be in front.
+#   scripts\live.ps1 record 4           # a frame trace of the next 4 frames (<live>\trace\*.rxt)
+#   scripts\live.ps1 play <trace.rxt>   # the game's executable plays the trace instead of the
+#                                       # game, as the live game: every command here works on it
+#                                       # (-Extra "--rexnative_trace_play_loops=2 ..." to exit)
+# With -Oracle at start the Xenos plugin draws the game and ReXNative draws beside it, and
+#   scripts\live.ps1 oracle [threshold] # compares every resolve of the next frame between the
+#                                       # two, printing only the ones that differ (the first one
+#                                       # is where a pass went wrong; scripts\resolves.py)
 #
 # The game runs in a 1280x720 window (full screen slowed the whole PC down) with
 # --rexnative_capture_dir, --rexnative_d3d_control and --rexnative_d3d_trace_dir in <Dir>\live,
@@ -63,8 +69,8 @@ param(
     [switch]$Pulse,
     [switch]$Force,
     [switch]$RenderDoc,
-    [switch]$Plain,
-    [string]$RenderDocDir = $env:REXNATIVE_RENDERDOC
+    [switch]$Oracle,
+    [switch]$Plain
 )
 $ErrorActionPreference = 'Stop'
 $stateDir = Join-Path $env:LOCALAPPDATA 'rexnative-live'
@@ -206,6 +212,29 @@ function Set-Debug($s, [string]$line) {
 }
 
 $s = Read-State
+$more = @()
+if ($Command -eq 'play') {
+    # The live game's executable (or -Dir/-Exe) plays a frame trace instead of the game.
+    if (-not $Arg) { throw 'play needs a trace: scripts\live.ps1 play <trace.rxt>' }
+    # ... the game stopped last, when none is running.
+    $last = Join-Path $stateDir 'last.json'
+    $from = if ($s) { $s } elseif (Test-Path $last) { Get-Content $last -Raw | ConvertFrom-Json } else { $null }
+    if (-not $Dir -and $from) { $Dir = $from.dir }
+    if (-not $Exe -and $from) { $Exe = Split-Path $from.exe -Leaf }
+    $more = @("--rexnative_trace_play=$((Resolve-Path $Arg).Path)")
+    $RenderDoc = $RenderDoc -or ($from -and $from.renderdoc)
+    $Command = 'start'; $Force = $true
+}
+function Wait-Stable([string]$path) {
+    # Written once its size is above zero and stops changing.
+    $len = -1
+    for ($i = 0; $i -lt 100; ++$i) {
+        Start-Sleep -Milliseconds 400
+        $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        if ($f -and $f.Length -gt 0 -and $f.Length -eq $len) { return }
+        if ($f) { $len = $f.Length }
+    }
+}
 switch ($Command) {
     'start' {
         if ($s) {
@@ -220,39 +249,27 @@ switch ($Command) {
         if (-not $Dir -or -not $Exe) { throw 'start needs -Dir and -Exe' }
         $exePath = (Resolve-Path (Join-Path $Dir $Exe)).Path
         $live = Join-Path $Dir 'live'
-        foreach ($d in 'cap', 'trace', 'shots', 'rdoc') { New-Item -ItemType Directory -Force (Join-Path $live $d) | Out-Null }
+        foreach ($d in 'cap', 'trace', 'shots', 'rdoc', 'resolves') { New-Item -ItemType Directory -Force (Join-Path $live $d) | Out-Null }
         Set-Content -Path (Join-Path $live 'cap\draw-debug.txt') -Value '0' -Encoding ascii
         # -Plain: a game without ReXNative (a stock ReXGlue build, which refuses settings it
         # does not know): the window and the keyboard only.
         $native = if ($Plain) { @() } else {
             @("--rexnative_capture_dir=$live\cap", "--rexnative_d3d_control=$live\control.txt",
               "--rexnative_d3d_trace_dir=$live\trace") }
-        $args = @('--log_file=live\live.log', '--mnk_mode=true', '--fullscreen=false',
-                  '--window_width=1280', '--window_height=720') + $native +
-                ($Extra -split ' ' | Where-Object { $_ })
-        if ($RenderDoc) {
-            # Else the newest RenderDoc_* in the Tools folder beside the repository's (F:\Tools for
-            # F:\ReXNative): the tools shared by every project live there, not in a game's folder.
-            if (-not $RenderDocDir) {
-                $RenderDocDir = Get-ChildItem (Join-Path $PSScriptRoot '..\..\Tools') -Directory -Filter 'RenderDoc*' -ErrorAction SilentlyContinue |
-                    Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
-            }
-            $rdcmd = if ($RenderDocDir) { Join-Path $RenderDocDir 'renderdoccmd.exe' } else { '' }
-            if (-not $RenderDocDir -or -not (Test-Path $rdcmd)) { throw 'RenderDoc not found: -RenderDocDir, REXNATIVE_RENDERDOC or ..\Tools\RenderDoc*' }
-            $name = [IO.Path]::GetFileNameWithoutExtension($exePath)
-            $before = @(Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-            Start-Process $rdcmd -ArgumentList (@('capture', '-d', $Dir, '-c', "$live\rdoc\cap", $exePath) + $args) -WorkingDirectory $Dir -WindowStyle Hidden | Out-Null
-            $p = $null
-            for ($i = 0; $i -lt 100 -and -not $p; ++$i) {
-                Start-Sleep -Milliseconds 200
-                $p = Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Select-Object -First 1
-            }
-            if (-not $p) { throw 'the game did not start under RenderDoc' }
-        } else {
-            $p = Start-Process $exePath -ArgumentList $args -WorkingDirectory $Dir -PassThru
+        # -RenderDoc: the renderer loads it and takes the captures (debug_tools.h).
+        if ($RenderDoc) { $native += @('--rexnative_renderdoc=auto', "--rexnative_renderdoc_dir=$live\rdoc") }
+        # -Oracle: the Xenos plugin presents and ReXNative draws beside it, on the guest thread;
+        # `oracle` dumps a frame's resolves from both.
+        if ($Oracle) {
+            $native += @('--rexnative=false', '--rexnative_beside_xenos=true', '--rexnative_render_thread=false',
+                         '--rexnative_hdr=false', "--rexnative_resolve_dump=$live\resolves")
         }
+        $args = @('--log_file=live\live.log', '--mnk_mode=true', '--fullscreen=false',
+                  '--window_width=1280', '--window_height=720') + $native + $more +
+                ($Extra -split ' ' | Where-Object { $_ })
+        $p = Start-Process $exePath -ArgumentList $args -WorkingDirectory $Dir -PassThru
         New-Item -ItemType Directory -Force $stateDir | Out-Null
-        $s = [pscustomobject]@{ pid = $p.Id; exe = $exePath; dir = $Dir; live = $live; started = (Get-Date).ToString('o'); extra = $Extra; renderdoc = [bool]$RenderDoc }
+        $s = [pscustomobject]@{ pid = $p.Id; exe = $exePath; dir = $Dir; live = $live; started = (Get-Date).ToString('o'); extra = $Extra; renderdoc = [bool]$RenderDoc; oracle = [bool]$Oracle }
         $s | ConvertTo-Json | Set-Content $statePath -Encoding utf8
         "started pid $($p.Id): $exePath $($args -join ' ')"
         if ($Route) { Send-Schedule $p $Route; 'route done' }
@@ -345,33 +362,60 @@ switch ($Command) {
             Select-Object -First ([int]$frames) | ForEach-Object { $_.FullName }
     }
     'capture' {
-        # The next frame, through RenderDoc's target control (scripts\rdoc_trigger.py in
-        # qrenderdoc's Python): the game's window need not be in front.
+        # The next N whole guest frames (default 1), a RenderDoc capture each, taken by the
+        # renderer: <live>\rdoc\<game>-f<frame>.rdc, listed in captures.txt as they are written.
         Get-Game $s | Out-Null
         if (-not $s.renderdoc) { throw 'the live game was not started with -RenderDoc' }
-        if (-not $RenderDocDir) {
-            $RenderDocDir = Get-ChildItem (Join-Path $PSScriptRoot '..\..\Tools') -Directory -Filter 'RenderDoc*' -ErrorAction SilentlyContinue |
-                Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+        $n = if ($Arg -match '^\d+$') { [int]$Arg } else { 1 }
+        $list = Join-Path $s.live 'rdoc\captures.txt'
+        $before = if (Test-Path $list) { @(Get-Content $list).Count } else { 0 }
+        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_renderdoc_frames $n" -Encoding ascii
+        $lines = @()
+        for ($i = 0; $i -lt 300 -and $lines.Count -lt $before + $n; ++$i) {
+            Start-Sleep -Milliseconds 300
+            if (Test-Path $list) { $lines = @(Get-Content $list) }
         }
-        $qrd = if ($RenderDocDir) { Join-Path $RenderDocDir 'qrenderdoc.exe' } else { '' }
-        if (-not $RenderDocDir -or -not (Test-Path $qrd)) { throw 'RenderDoc not found: -RenderDocDir or REXNATIVE_RENDERDOC' }
-        $dir = Join-Path $s.live 'rdoc'
-        $log = Join-Path $dir 'trigger.log'
-        Remove-Item $log -ErrorAction SilentlyContinue
-        $env:REXNATIVE_RDOC_TRIGGER_OUT = $log
-        # `capture N`: N consecutive frames, a capture each (a flicker: what changes between them).
-        $env:REXNATIVE_RDOC_FRAMES = if ($Arg -match '^\d+$') { $Arg } else { '1' }
-        $q = Start-Process $qrd -ArgumentList @('--python', "`"$PSScriptRoot\rdoc_trigger.py`"") -PassThru -WindowStyle Minimized
-        if (-not $q.WaitForExit(90000)) { Stop-Process $q -Force; throw 'RenderDoc did not answer in 90 s' }
-        $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
-        $ms = [regex]::Matches($text, '(?m)^capture (.+?)\s*$')
-        if ($ms.Count -eq 0) { throw "no capture: $($text.Trim())" }
-        foreach ($m in $ms) {
-            $new = Get-Item $m.Groups[1].Value
-            # Written once its size stops changing.
-            do { $len = $new.Length; Start-Sleep -Milliseconds 700; $new.Refresh() } while ($new.Length -ne $len)
-            $new.FullName
+        if ($lines.Count -le $before) { throw 'no capture within 90 s (see `log RenderDoc`)' }
+        $lines | Select-Object -Skip $before | ForEach-Object { ($_ -split ' ', 2)[1] }
+    }
+    'record' {
+        # A frame trace of the next N frames (default 2): what the game hands the renderer and
+        # the guest memory it reads, for `play` (renderer/src/native/trace.h).
+        Get-Game $s | Out-Null
+        $n = if ($Arg -match '^\d+$') { [int]$Arg } else { 2 }
+        $start = Get-Date
+        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_trace_record $n" -Encoding ascii
+        $f = $null
+        for ($i = 0; $i -lt 100 -and -not $f; ++$i) {
+            Start-Sleep -Milliseconds 300
+            $f = Get-ChildItem (Join-Path $s.live 'trace') -Filter '*.rxt' | Where-Object { $_.LastWriteTime -ge $start } |
+                Sort-Object LastWriteTime | Select-Object -Last 1
         }
+        if (-not $f) { throw 'no trace within 30 s (the render thread must be on; see `log trace`)' }
+        Wait-Stable $f.FullName
+        $f.Refresh()
+        '{0} ({1:n1} MB)' -f $f.FullName, ($f.Length / 1MB)
+    }
+    'oracle' {
+        # Every resolve of the next frame, ReXNative's against the Xenos plugin's (start -Oracle):
+        # only the ones whose mean difference is above the threshold (default 0.02) are printed.
+        Get-Game $s | Out-Null
+        if (-not $s.oracle) { throw 'the live game was not started with -Oracle' }
+        $dir = Join-Path $s.live 'resolves'
+        $start = Get-Date
+        New-Item -ItemType File -Force (Join-Path $dir 'dump.request') | Out-Null
+        $meta = $null
+        for ($i = 0; $i -lt 100 -and -not $meta; ++$i) {
+            Start-Sleep -Milliseconds 300
+            $meta = Get-ChildItem $dir -Filter 'f*-resolves.jsonl' | Where-Object { $_.LastWriteTime -ge $start } |
+                Sort-Object LastWriteTime | Select-Object -Last 1
+        }
+        if (-not $meta) { throw 'no resolve dump within 30 s' }
+        Wait-Stable $meta.FullName
+        Start-Sleep -Milliseconds 1500  # the frame's .bin files
+        $frame = [regex]::Match($meta.Name, '^f(\d+)-').Groups[1].Value
+        $over = if ($Arg) { $Arg } else { '0.02' }
+        python (Join-Path $PSScriptRoot 'resolves.py') $dir --frame $frame --over $over
     }
     'log' {
         if (-not $s) { throw 'no live game' }
@@ -405,9 +449,9 @@ switch ($Command) {
             # rebuild can replace the executable right after.
             $p = Get-Process -Id $s.pid -ErrorAction SilentlyContinue
             if ($p) { Stop-Process -Id $s.pid -Force -ErrorAction SilentlyContinue; $p.WaitForExit(20000) | Out-Null }
-            Remove-Item $statePath -ErrorAction SilentlyContinue
+            Move-Item $statePath (Join-Path $stateDir 'last.json') -Force -ErrorAction SilentlyContinue  # for `play`
         }
         'stopped'
     }
-    default { throw "unknown command '$Command' (start, keys, shot, debug, snap, drawlog, control, trace, capture, log, status, stop)" }
+    default { throw "unknown command '$Command' (start, play, keys, click, shot, frame, burst, debug, snap, drawlog, control, trace, capture, record, oracle, log, status, stop)" }
 }

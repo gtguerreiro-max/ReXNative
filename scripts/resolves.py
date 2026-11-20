@@ -1,6 +1,6 @@
 """ReXNative's resolves against the stock renderer's, side by side, from a resolve dump.
 
-    python scripts/resolves.py <dump dir> [--frame N] [--only 3,7,12] [--scale 1]
+    python scripts/resolves.py <dump dir> [--frame N] [--only 3,7,12] [--over 0.02]
 
 A dump comes from a game run with --rexnative_beside_xenos=true and
 --rexnative_resolve_dump=<dir>, after <dir>\\dump.request is created: each resolve of one frame
@@ -9,7 +9,8 @@ f<frame>-r<i>-guest.bin (guest memory at the destination after the frame, which 
 plugin wrote: tiled and byte swapped, in the guest format), described in f<frame>-resolves.jsonl.
 For each 32-bit and 64-bit color resolve this writes f<frame>-r<i>.png (ReXNative left, stock
 right, at the destination's size) and prints how far apart they are: the first resolve that
-differs is where a pass went wrong. Needs numpy and Pillow.
+differs is where a pass went wrong. With --over only the resolves further apart than that are
+printed, then a line with how many were compared (live.ps1's `oracle`). Needs numpy and Pillow.
 
 The guest side is untiled with Xenos's 2D tiling (XGAddress2DTiledOffset, as ReXGlue's
 texture_address.h) and swapped by the destination endian (1 8-in-16, 2 8-in-32, 3 16-in-32).
@@ -83,6 +84,7 @@ def main():
     ap.add_argument('dir')
     ap.add_argument('--frame', type=int)
     ap.add_argument('--only', help='resolve indices, comma separated')
+    ap.add_argument('--over', type=float, help='print only the resolves whose mean difference is above this')
     a = ap.parse_args()
     metas = sorted(f for f in os.listdir(a.dir) if f.endswith('-resolves.jsonl'))
     if a.frame is not None:
@@ -92,6 +94,7 @@ def main():
     meta = metas[-1]
     prefix = meta[:-len('-resolves.jsonl')]
     only = {int(i) for i in a.only.split(',')} if a.only else None
+    compared, apart = 0, []
     for line in open(os.path.join(a.dir, meta)):
         m = json.loads(line)
         i = m['index']
@@ -111,8 +114,17 @@ def main():
         diff = float(np.abs(n_rgb - g_rgb).mean())
         img = np.concatenate([n_rgb, g_rgb], 1)
         Image.fromarray((np.clip(img, 0, 1) * 255 + 0.5).astype(np.uint8), 'RGB').save(stem + '.png')
+        compared += 1
+        if a.over is not None:
+            if diff <= a.over:
+                os.remove(stem + '.png')
+                continue
+            apart.append(i)
         print('r%-3d fmt %-2d %4dx%-4d mean |diff| %.4f  native mean %.4f  stock mean %.4f  %s' % (
             i, m['dest_format'], w, h, diff, n_rgb.mean(), g_rgb.mean(), stem + '.png'))
+    if a.over is not None:
+        print('%s: %d resolves compared, %d further apart than %g%s' % (
+            prefix, compared, len(apart), a.over, ' (first: r%d)' % apart[0] if apart else ''))
 
 
 if __name__ == '__main__':

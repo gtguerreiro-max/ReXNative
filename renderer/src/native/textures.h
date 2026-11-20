@@ -132,6 +132,8 @@ class TextureCache {
   // membase, which no watch sees: the textures over it upload again at their next Get, for every
   // draw (the GPU wrote the data before the draws that read it were recorded).
   void InvalidateWritten(uint32_t start, uint32_t length);
+  // Guest memory changed without the page watches seeing it (a played trace's writes).
+  void GuestWritten(uint32_t start, uint32_t length) { Invalidate(start, length, true); }
 
   // Capture order. With the render thread, Get runs up to a frame after the game captured the
   // draw, and in primary mode the game may rewrite texture memory (update a dynamic texture or

@@ -1,6 +1,7 @@
 // ReXNative renderer: host render targets and Clear. See render_targets.h for the
 // model (one host target per guest surface, no EDRAM emulation).
 #include "render_targets.h"
+#include "debug_tools.h"
 
 #include "guest_memory.h"
 #include "hook_args.h"
@@ -304,6 +305,12 @@ bool RenderTargets::Create(RenderTarget* rt, uint32_t height, uint32_t width) {
     if (srgb_view_index != UINT32_MAX) free_rtv_.push_back(srgb_view_index);
     return false;
   }
+  dbg::Name(res.Get(), "rt @{} {} {} {}x{} x{}", rt->edram_base, rt->depth ? "depth" : "color",
+            rt->depth ? xenos::GetDepthRenderTargetFormatName(
+                            xenos::DepthRenderTargetFormat(rt->guest_format))
+                      : xenos::GetColorRenderTargetFormatName(
+                            xenos::ColorRenderTargetFormat(rt->guest_format)),
+            d.Width, d.Height, rt->samples);
   if (log_)
     std::fprintf(log_, "rt created %s base %u pitch %u x%u format %d %ux%u%s\n",
                  rt->depth ? "depth" : "color", rt->edram_base, rt->pitch, rt->samples,

@@ -14,6 +14,9 @@ What this repository contains from other projects, with their licenses.
   takes them from AMD FidelityFX, MIT), kept here since ReXGlue v0.11 has no FidelityFX. The SDK is not in this repository.
 - `renderer/src/native/dlss.cpp` and `neural*.cpp` build with the NVIDIA DLSS SDK and DLSS 5
   headers, under NVIDIA's license; they are not in this repository.
+- `renderer/src/compat/renderdoc_app.h` is RenderDoc's in-application API header (MIT, Baldur
+  Karlsson; its license is at its top), which `renderer/src/native/debug_tools.cpp` loads
+  RenderDoc through. RenderDoc itself is not in this repository.
 - `renderer/src/hud/` draws with Dear ImGui (MIT, Omar Cornut), which the ReXGlue SDK provides.
 - `rexnative/listing.py` is based on pgr4-native's `scripts/analysis/tu_address_map.py` (MIT).
 - `sdk/patches/v0.11/` modify the ReXGlue SDK (BSD-3-Clause, below). Those whose `From:` names

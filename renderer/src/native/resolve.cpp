@@ -5,6 +5,7 @@
 // red/blue swap of RB_COPY_DEST_INFO and the sample selections of RB_COPY_CONTROL.
 // The oracle dumps and the self test are in resolve_debug.cpp.
 #include "resolve.h"
+#include "debug_tools.h"
 
 #include "clock.h"
 #include "gpu_timer.h"
@@ -1252,6 +1253,8 @@ Resolver::Image* Resolver::GetImage(const ResolveParams& p, Destination& dest, u
                                               IID_PPV_ARGS(&img->texture)),
              "resolve destination texture"))
     return nullptr;
+  dbg::Name(img->texture.Get(), "resolved {:08X} fmt {} {}x{}", p.dest_base, p.dest_format,
+            p.dest_width, p.dest_height);
   if (bits565) {
     D3D12_RESOURCE_DESC bd = d;
     bd.Format = DXGI_FORMAT_R16_UINT;

@@ -67,9 +67,11 @@ rexnative/                            the tool (python -m rexnative)
 deck/                                 a game's scripts on the Steam Deck (python -m rexnative deck)
 sdk/                                  the ReXGlue SDK the renderer needs: lock and patches
 scripts/build-sdk.ps1                 fetch, patch, build and install that SDK
-scripts/live.ps1, snaps.py            a running game for experiments, snapshots as images
-scripts/rdoc.ps1, rdoc.py             RenderDoc capture queries
-scripts/rdoc_trigger.py               a RenderDoc capture of a running game, without focus
+scripts/live.ps1, snaps.py            a running game for experiments: shots, RenderDoc captures,
+                                      frame traces (record, play), the resolve oracle
+scripts/rdoc.ps1, rdoc.py             RenderDoc capture queries (summary, draws, pixel history...)
+scripts/resolves.py                   ReXNative's resolves against the Xenos plugin's
+scripts/xenia.ps1, rdoc_trigger.py    Xenia Canary as a reference: shots and captures
 scripts/deck_drive.py                 a game on the Steam Deck on a schedule (keys, captures, power)
 docs/                                 the documentation (the README links each file)
 ```

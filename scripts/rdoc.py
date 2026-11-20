@@ -12,6 +12,12 @@
 #   {"capture": ..., "out": ..., "cmd": "save", "event": 1234, "texture": 0}
 #       the texture (0: the event's first colour output, else a resource id) as PNG, as it is
 #       after that event
+#   {"capture": ..., "out": ..., "cmd": "summary"}
+#       the frame in a few lines, from the renderer's events (debug_tools.h): each pass with its
+#       render targets and how many draws it has (their indices and events), each clear, resolve
+#       and the Swap; "draws" (with "event": a pass's): its draws, one line each (index,
+#       primitive, count, shader hashes); "find" (with "text"): the events whose name has the
+#       text (a shader hash, a guest address, "resolve")
 #   "inputs", "mesh", "disasm", "cbuffers", "state" (with "event"): the draw's textures as PNG,
 #       its vertex shader's output positions, its shaders disassembled, its constant buffers,
 #       its depth, stencil, depth bias and viewport; "buffer" ("offset", "size" in hex): bytes
@@ -76,6 +82,58 @@ def main():
                     outs = [describe(o) for o in list(a.outputs) + [a.depthOut] if o != null]
                     f.write("%d %s n=%d i=%d | %s\n" % (a.eventId, a.GetName(sfile), a.numIndices,
                                                           a.numInstances, "; ".join(outs)))
+        elif cmd in ("summary", "draws", "find"):
+            # The renderer's events: "pass N: ...", "d<index> prim ...", "clear ...",
+            # "resolve ...", "swap: frame N".
+            def name(a):
+                return a.GetName(sfile)
+
+            def is_draw(a):
+                n = name(a)
+                return n[:1] == "d" and n[1:2].isdigit()
+
+            lines = []
+            if cmd == "summary":
+                counts = {"pass": 0, "draw": 0, "resolve": 0, "clear": 0}
+
+                def walk(nodes):
+                    for a in nodes:
+                        n = name(a)
+                        if n.startswith("pass "):
+                            draws = [c for c in a.children if is_draw(c)]
+                            counts["pass"] += 1
+                            counts["draw"] += len(draws)
+                            span = ""
+                            if draws:
+                                span = " %s-%s e%d-%d" % (name(draws[0]).split()[0],
+                                                           name(draws[-1]).split()[0],
+                                                           draws[0].eventId, draws[-1].eventId)
+                            lines.append("e%d %s | %d draws%s" % (a.eventId, n, len(draws), span))
+                            walk([c for c in a.children if not is_draw(c)])
+                        elif n.startswith(("resolve ", "clear ", "swap")):
+                            counts[n.split()[0].rstrip(":")] = counts.get(n.split()[0].rstrip(":"), 0) + 1
+                            lines.append("e%d %s" % (a.eventId, n))
+                        elif is_draw(a):
+                            counts["draw"] += 1
+                        else:
+                            walk(a.children)
+
+                walk(controller.GetRootActions())
+                lines.insert(0, "%d passes, %d draws, %d resolves, %d clears, %d events" % (
+                    counts["pass"], counts["draw"], counts["resolve"], counts["clear"],
+                    last_event()))
+            elif cmd == "draws":
+                event = job.get("event") or 0
+                for a in actions:
+                    if a.eventId == event or (not event and name(a).startswith("pass ")):
+                        lines.append("e%d %s" % (a.eventId, name(a)))
+                        lines += ["  e%d %s" % (c.eventId, name(c)) for c in a.children if is_draw(c)]
+            else:
+                text = str(job.get("text") or "").lower()
+                lines = ["e%d %s" % (a.eventId, name(a)) for a in actions
+                         if text and text in name(a).lower()]
+            with open(os.path.join(out, cmd + ".txt"), "w") as f:
+                f.write("\n".join(lines) + "\n")
         elif cmd == "history":
             event = job.get("event") or last_event()
             rid = job.get("texture") or 0

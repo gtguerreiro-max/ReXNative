@@ -10,11 +10,20 @@
 // next Swap (NativeRenderer::NoteCrash), as the renderer switch does, instead of the crash report.
 #pragma once
 
+#include <cstdint>
+
 namespace rexnative {
 
 // Runs fn(ctx). False when it raised an access violation (its frames are left without their C++
 // cleanups: the caller turns the native path off for good).
 bool RunGuarded(void (*fn)(void*), void* ctx);
+// The last fault RunGuarded caught: the address read or written, and where the code that did it
+// is in the executable (an offset to look up in its PDB or map).
+struct Fault {
+  uint64_t address = 0, code_offset = 0;
+  bool write = false;
+};
+Fault LastFault();
 
 template <class F>
 bool Guarded(F& f) {

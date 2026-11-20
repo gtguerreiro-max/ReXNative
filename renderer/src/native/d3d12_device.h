@@ -96,6 +96,12 @@ class D3D12Device {
   // no work but the stream's from the thread recording: what it submits runs after the calls
   // recorded before it, once the stream has made them.
   CommandStream* command_list() { return &stream_; }
+  // Before EndFrame: RenderDoc captures the frame recorded after it, guest frame `frame`
+  // (debug_tools.h).
+  void CaptureNextFrame(uint64_t frame) {
+    capture_next_ = true;
+    capture_frame_ = frame;
+  }
 
   // The swapchain's current back buffer (state PRESENT outside EndFrame) and its RTV, or the
   // frame's image (SetFrameImage, or the present interval's).
@@ -208,7 +214,11 @@ class D3D12Device {
     uint64_t fence = 0;
     uint32_t slot = 0, next_slot = 0;
     uint64_t next_slot_fence = 0;  // the next slot's last frame's
+    bool capture_end = false;      // a RenderDoc capture of this frame ends after its Present
+    uint64_t capture_frame = 0;    // its guest frame
   };
+  bool capture_next_ = false, capturing_ = false;  // CaptureNextFrame
+  uint64_t capture_frame_ = 0, capturing_frame_ = 0;
   void FinishFrame(List* list, const FrameEnd& f);
   // gpu_busy_ns: the timestamps around the frame's submissions. False (logged) on failure.
   bool CreateBusyTimer();

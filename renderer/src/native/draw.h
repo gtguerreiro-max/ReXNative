@@ -224,6 +224,10 @@ class DrawRenderer {
   // Per frame, with the fence values of NativeRenderer (once per Swap, after EndFrame).
   void EndFrame(uint64_t completed_fence);
 
+  // Guest memory changed without the page watches seeing it (a played trace's writes): the
+  // shared memory pages there are copied again when a draw reads them.
+  void GuestWritten(uint32_t start, uint32_t length);
+
   const Stats& stats() const { return stats_; }
   void ResetStats() { stats_ = Stats{}; }
 

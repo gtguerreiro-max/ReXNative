@@ -1,5 +1,6 @@
 // ReXNative renderer: NativeRenderer host.
 #include "renderer.h"
+#include "debug_tools.h"
 
 #include "legacy_names.h"
 
@@ -14,6 +15,7 @@
 #include "frame_height.h"
 #include "frame_pacer.h"
 #include "gpu_timer.h"
+#include "guard.h"
 #include "guest_memory.h"
 #include "occlusion.h"
 #include "present.h"
@@ -21,6 +23,7 @@
 #include "render_targets.h"
 #include "resolve.h"
 #include "textures.h"
+#include "trace.h"
 #include "upscaler.h"
 
 #include "host.h"
@@ -169,6 +172,7 @@ REXCVAR_DEFINE_INT32(
     "registers against the game thread's, and the shared memory each draw reads "
     "against guest memory as it was when the draw was queued (0: off)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
+REXCVAR_DECLARE(int32_t, rexnative_trace_record);
 REXCVAR_DECLARE(int32_t, rexnative_d3d_stats_frames);
 REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
 REXCVAR_DECLARE(int32_t, rexnative_dlss5_passes);
@@ -293,6 +297,7 @@ struct NativeRenderer::Queue {
     Kind kind;
     uint32_t index;    // into the batch's vector of that kind
     uint32_t reg_end;  // Batch::regs up to here are applied before the command
+    uint32_t trace;    // its number + 1 in the trace being recorded (trace.h), else 0
   };
   struct DrawCmd {
     DrawState state;  // regs and immediate ucode pointers are filled in on the render thread
@@ -367,6 +372,11 @@ struct NativeRenderer::Queue {
   std::deque<std::pair<uint64_t, uint64_t>> frame_fences;  // (frames submitted, their fence)
 
   void Publish() {
+    if (trace::Recording()) [[unlikely]] {
+      size_t count;
+      if (const RegWrite* regs = TraceRegs(&count)) trace::Regs(regs, count);
+    }
+    trace_from = 0;
     std::unique_ptr<Batch> next;
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -380,8 +390,18 @@ struct NativeRenderer::Queue {
     current = next ? std::move(next) : std::make_unique<Batch>();
     GuestState().RecordInto(&current->regs);
   }
-  void Push(Kind kind, uint32_t index) {
-    current->cmds.emplace_back(kind, index, uint32_t(current->regs.size()));
+  // While a trace is recorded: the register writes since the batch's last command, for the
+  // command about to be pushed.
+  // The writes of a command the trace does not hold (an occlusion query) wait for the next one.
+  size_t trace_from = 0;  // current->regs from here are not in the trace yet
+  const RegWrite* TraceRegs(size_t* count) {
+    const size_t from = std::min(trace_from, current->regs.size());
+    trace_from = current->regs.size();
+    *count = trace_from - from;
+    return *count ? &current->regs[from] : nullptr;
+  }
+  void Push(Kind kind, uint32_t index, uint32_t traced = 0) {
+    current->cmds.emplace_back(kind, index, uint32_t(current->regs.size()), traced);
     if (kind != kSwap && current->cmds.size() >= kBatchCommands) Publish();
   }
   // Blocks the guest thread until the render thread finished `frames` Swaps; returns the ns.
@@ -622,7 +642,8 @@ bool NativeRenderer::Initialize() {
                   pacer_->frame_latency());
   }
   frame_start_ns_ = NowNs();
-  if (REXCVAR_GET(rexnative_render_thread)) {
+  // A played trace is drawn by the thread that plays it (trace.h).
+  if (REXCVAR_GET(rexnative_render_thread) && trace::PlayPath().empty()) {
     queue_ = std::make_unique<Queue>();
     queue_->thread = std::thread([this] { RenderThreadMain(); });
     REXLOG_INFO("ReXNative: recording on the render thread");
@@ -769,6 +790,8 @@ void NativeRenderer::RenderThreadMain() {
       stats_.reg_writes += c.reg_end - reg;
       for (; reg < c.reg_end; ++reg) q.regs[b->regs[reg].reg] = b->regs[reg].value;
       if (g_failed && c.kind != Queue::kSwap) continue;
+      if (c.trace) [[unlikely]]
+        trace::SetExecuting(c.trace);
       switch (c.kind) {
         case Queue::kDraw: {
           Queue::DrawCmd& d = b->draws[c.index];
@@ -864,12 +887,34 @@ void NativeRenderer::QueueDraw(const uint8_t* base, const HookArgs& args) {
     d.audit_end = uint32_t(b.audits.size());
     d.memexport_end = uint32_t(b.memexport_guest.size());
     if (d.prep.copy_segment) b.segments.push_back(d.copy_begin);
+    uint32_t traced = 0;
+    if (trace::Recording()) [[unlikely]] {
+      size_t count;
+      const RegWrite* regs = q.TraceRegs(&count);
+      traced = trace::Draw(d.state, d.state.regs, regs, count);
+    }
     d.state.regs = nullptr;
     d.state.vs.immediate = d.state.ps.immediate = nullptr;  // Prepare loaded the shaders
-    q.Push(Queue::kDraw, uint32_t(b.draws.size() - 1));
+    q.Push(Queue::kDraw, uint32_t(b.draws.size() - 1), traced);
     profile::Mark(profile::kCapRecord);
   }
   q.AddHook(Ticks() - t0);
+}
+
+uint32_t NativeRenderer::TraceClear(const ClearCall& c) {
+  if (!trace::Recording()) [[likely]]
+    return 0;
+  size_t count;
+  const RegWrite* regs = queue_->TraceRegs(&count);
+  return trace::Clear(c, GuestState().regs(), regs, count);
+}
+
+uint32_t NativeRenderer::TraceResolve(const ResolveParams& p) {
+  if (!trace::Recording()) [[likely]]
+    return 0;
+  size_t count;
+  const RegWrite* regs = queue_->TraceRegs(&count);
+  return trace::Resolve(p, GuestState().regs(), regs, count);
 }
 
 void NativeRenderer::QueueClear(const uint8_t* base, const HookArgs& args) {
@@ -879,7 +924,7 @@ void NativeRenderer::QueueClear(const uint8_t* base, const HookArgs& args) {
   Queue::Batch& b = *q.current;
   ClearCall& c = b.clears.emplace_back();
   if (RenderTargets::DecodeClear(base, args, &c))
-    q.Push(Queue::kClear, uint32_t(b.clears.size() - 1));
+    q.Push(Queue::kClear, uint32_t(b.clears.size() - 1), TraceClear(c));
   else
     b.clears.pop_back();
   q.AddHook(Ticks() - t0);
@@ -892,7 +937,7 @@ void NativeRenderer::QueueResolve(const uint8_t* base, const HookArgs& args) {
   Queue::Batch& b = *q.current;
   ResolveParams& p = b.resolves.emplace_back();
   if (DecodeResolve(base, args, &p))
-    q.Push(Queue::kResolve, uint32_t(b.resolves.size() - 1));
+    q.Push(Queue::kResolve, uint32_t(b.resolves.size() - 1), TraceResolve(p));
   else
     b.resolves.pop_back();  // logged once per reason by DecodeResolve
   q.AddHook(Ticks() - t0);
@@ -939,9 +984,20 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   for (uint64_t& t : profile::g.ticks) t = 0;
   profile::g.track_calls = 0;
   q.state_fail = q.hook_ns = q.hook_wait_ns = q.hook_ticks = q.hook_max_ticks = 0;
-  q.Push(Queue::kSwap, uint32_t(b.swaps.size() - 1));
+  uint32_t traced = 0;
+  if (trace::Recording()) [[unlikely]] {
+    size_t count;
+    const RegWrite* regs = q.TraceRegs(&count);
+    traced = trace::Swap(s.call, GuestState().regs(), regs, count);
+  }
+  q.Push(Queue::kSwap, uint32_t(b.swaps.size() - 1), traced);
   q.Publish();
   ++q.frame;
+  // A trace starts and ends between two frames, once the render thread ran what came before.
+  if (trace::Recording() || REXCVAR_GET(rexnative_trace_record) > 0) [[unlikely]] {
+    q.hook_wait_ns += q.WaitFrames(q.frame);
+    trace::AtSwap(q.frame);
+  }
   // Handing over and a capture's wait count towards the next frame.
   const uint64_t capture_wait =
       sync || REXCVAR_GET(rexnative_render_thread_lockstep) ? q.WaitFrames(q.frame) : 0;
@@ -1003,7 +1059,7 @@ void NativeRenderer::OnRegisterResolve(const ResolveRegisters& regs) {
     Queue::Batch& b = *q.current;
     ResolveParams& p = b.resolves.emplace_back();
     if (DecodeRegisterResolve(physical, regs, &p))
-      q.Push(Queue::kResolve, uint32_t(b.resolves.size() - 1));
+      q.Push(Queue::kResolve, uint32_t(b.resolves.size() - 1), TraceResolve(p));
     else
       b.resolves.pop_back();  // logged once per reason
     q.AddHook(Ticks() - t0);
@@ -1023,7 +1079,7 @@ void NativeRenderer::OnRegisterClear(const ResolveRegisters& regs) {
     Queue::Batch& b = *q.current;
     ClearCall& c = b.clears.emplace_back();
     if (DecodeRegisterClear(physical, regs, &c))
-      q.Push(Queue::kClear, uint32_t(b.clears.size() - 1));
+      q.Push(Queue::kClear, uint32_t(b.clears.size() - 1), TraceClear(c));
     else
       b.clears.pop_back();  // logged once
     q.AddHook(Ticks() - t0);
@@ -1061,9 +1117,16 @@ uint64_t NativeRenderer::FrontEndLimit() {
 }
 
 void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
+  if (!trace::PlayPath().empty()) [[unlikely]]
+    PlayTrace(base);  // never returns
   if (queue_) return QueueSwap(base, args);
   if (g_failed) [[unlikely]]
     return HandOver(base, args.device);
+  if (REXCVAR_GET(rexnative_trace_record) > 0) [[unlikely]] {
+    REXLOG_WARN("ReXNative trace: a frame trace is recorded with the render thread on "
+                "(--rexnative_render_thread=true): none recorded");
+    rex::cvar::SetFlagByName("rexnative_trace_record", "0");
+  }
   stats_.guest_swap_ns = NowNs();
   SwapCall swap;
   Presenter::ReadSwap(base, args, &swap);
@@ -1184,10 +1247,12 @@ bool NativeRenderer::AutoHandOverDue() {
 
 void NativeRenderer::NoteCrash(const char* where) {
   if (crashed_.exchange(true, std::memory_order_relaxed)) return;
+  const Fault fault = LastFault();
   REXLOG_ERROR("ReXNative: the native path read a bad guest address in {} (the fault was "
-               "caught): this game's layer does not fit its D3D. The Xenos plugin draws from the "
-               "next Swap, for the rest of the run",
-               where);
+               "caught: {} of {:016X} by the code at +{:X} of the executable): this game's "
+               "layer does not fit its D3D. The Xenos plugin draws from the next Swap, for the "
+               "rest of the run",
+               where, fault.write ? "a write" : "a read", fault.address, fault.code_offset);
 }
 
 bool NativeRenderer::HandOverRequested() {
@@ -1360,6 +1425,8 @@ void NativeRenderer::ExecuteDraw(const DrawState& state, const DrawPrep* prep) {
                                                      : Stage::kUpscaled;
           }()))
     draw_->InvalidateListState();
+  if (dbg::Markers()) [[unlikely]]
+    dbg::Pass(device_->command_list(), SurfaceRegsFromRegisters(state.regs));
   draw_->OnDraw(state, prep);
   SubmitEarly();
   draw_ticks_ += Ticks() - t0;
@@ -1429,6 +1496,8 @@ void NativeRenderer::ExecuteClear(const ClearCall& c) {
     if (u->upscaled_this_frame() && !u->post_scene())
       u->EnterPostScene(device_->command_list(), *rt_, c.regs);
   }
+  dbg::Event event(device_->command_list(), "clear flags {:X} colors {:X}{}", c.p.flags,
+                   c.bound_colors, c.depth_bound ? " depth" : "");
   rt_->Clear(device_->command_list(), c.regs, c.bound_colors, c.depth_bound, c.height, c.p);
   clear_ticks_ += Ticks() - t0;
 }
@@ -1441,8 +1510,14 @@ void NativeRenderer::ExecuteResolve(const ResolveParams& p) {
   draw_->LogResolve(p);
   if (frame_generation_) frame_generation_->OnResolve(p);
   if (neural_) neural_->OnResolve(p);
+  if (dbg::Markers()) [[unlikely]] {
+    dbg::EndPass(device_->command_list());
+    dbg::BeginEvent(device_->command_list(), dbg::DescribeResolve(p));
+  }
   // Sets its own compute root signature, pipeline and descriptor heap on the list.
   resolver_->Resolve(device_->command_list(), p);
+  if (dbg::Markers()) [[unlikely]]
+    dbg::EndEvent(device_->command_list());
   draw_->InvalidateListState();
   resolve_ticks_ += Ticks() - t0;
 }
@@ -1559,6 +1634,10 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   // What the frame's memexport draws wrote, into guest memory before the guest's next frame.
   draw_->FlushMemexport();
   D3D12Device& d = *device_;
+  if (dbg::Markers()) [[unlikely]] {
+    dbg::EndPass(d.command_list());
+    dbg::BeginEvent(d.command_list(), std::format("swap: frame {}", frame_index_));
+  }
   if (gpu_timer_) gpu_timer_->Pass(d.command_list(), GpuTimer::KeyPresent());
   // A scene's first frame without the draws whose pipelines were compiling: the previous frame
   // stays on screen while the next one waits for them.
@@ -1609,6 +1688,8 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   draw_->BeforeSubmit();
   const uint64_t fence = d.frame_fence();
   if (occlusion_) occlusion_->Resolve(d.command_list(), fence);
+  if (dbg::CaptureNext(frame_index_, present_->capturing(frame_index_)))
+    d.CaptureNextFrame(frame_index_ + 1);
   if (!CloseUploadLists() || !d.EndFrame(shown, upload_lists_)) return Fail();
   const D3D12Device::EndFrameTimes& et = d.end_frame_times();
   stats_.swap_submit_ns = et.submit_ns;
