@@ -15,7 +15,7 @@
 #   scripts\live.ps1 log "failed|removed" 20
 #   scripts\live.ps1 control "renderer stock"   # control-file commands (rexnative_d3d_hooks.cpp),
 #                                               # ; between several: here the Xenos plugin draws
-#   scripts\live.ps1 status | stop
+#   scripts\live.ps1 status | stop      # stop -Dir <folder>: only if the live game is that one
 # With -RenderDoc at start the game runs under RenderDoc (renderdoccmd from -RenderDocDir,
 # $env:REXNATIVE_RENDERDOC or the newest Tools\RenderDoc* beside the repository's folder):
 # `capture` then takes the next frame into <Dir>\live\rdoc through
@@ -389,6 +389,11 @@ switch ($Command) {
         } else { "not running (last: $($s.exe))" }
     }
     'stop' {
+        # stop -Dir <folder> stops only the game started from that folder: the live game is one
+        # for the whole PC, and another session's (or the app's boot test) is left running.
+        if ($s -and $Dir -and ([IO.Path]::GetFullPath($Dir).TrimEnd('\') -ne [IO.Path]::GetFullPath($s.dir).TrimEnd('\'))) {
+            "not stopped: the live game is $($s.exe) (pid $($s.pid)), not one in $Dir"; break
+        }
         if ($s) {
             # Its exit can take seconds (the D3D12 device's teardown): waited for, so that a
             # rebuild can replace the executable right after.
