@@ -128,6 +128,15 @@ whose pixel shader writes depth no longer writes motion (its vertices say nothin
 covers). A RenderDoc capture with the camera turning: the motion at FSR's input went from 0% to
 100% of the pixels, and the character's double and the smearing while turning went.
 
+What is left for FSR 3 is what has no motion: particles, glows, blended effects. FSR's reactive
+mask (`--rexnative_fsr_reactive`, on) is made as AMD's sample makes it: the scene is copied as it
+is before the first blended draw that writes no depth in the pass to be upscaled
+(`Upscaler::SnapshotOpaque`; in a deferred scene the lights are blended too, so the first such
+draw that reads none of the G-buffer pass's resolves), and at the upscale FidelityFX's
+GenerateReactiveMask compares that copy with the finished scene (tone mapped, threshold 0.2,
+0.9 where above). In Overlord II's first level FSR 3's debug view shows the snowflakes in the
+mask and nothing else. FSR only: DLSS needs no mask.
+
 ## A scene drawn after a depth prepass
 
 With the upscaler on (the Steam Deck's default), FSR did nothing in Iron Brigade. It draws a depth

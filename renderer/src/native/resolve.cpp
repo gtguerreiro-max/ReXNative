@@ -1668,9 +1668,13 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
     // The frame's last pass of the scene only (Upscaler::SceneResolveDue, which counts the passes
     // after the upscaled resolve too): an earlier pass's resolve copies the render-size target,
     // and the scene goes on at the render size.
+    bool scene_due = false;
     if (upscaler_ && !depth && Upscaler::IsScene(p.regs.surface_info) &&
-        Upscaler::IsSceneResolve(p.x0, p.y0, p.x1, p.y1) && upscaler_->SceneResolveDue() &&
-        !upscaler_->post_scene()) {
+        Upscaler::IsSceneResolve(p.x0, p.y0, p.x1, p.y1)) {
+      scene_due = upscaler_->SceneResolveDue();
+      upscaler_->NoteSceneColorResolve(p.dest_base, p.dest_extent_bytes);  // G-buffer targets
+    }
+    if (scene_due && !upscaler_->post_scene()) {
       RenderTarget* upscaled = upscaler_->Upscale(list, *targets_, p.regs);
       if (upscaled) upscaler_->NoteSceneResolve(p);
       if (upscaled && !depth) {

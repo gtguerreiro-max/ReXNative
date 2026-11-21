@@ -4836,6 +4836,27 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                       gbuffer);
     if (up->upscaled_this_frame() && !up->post_scene())
       up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
+    // FSR's reactive mask: the scene before its first blended draw that writes no depth, in a
+    // deferred scene the first that does not read the G-buffer (its lights do).
+    if (up->WantsOpaqueSnapshot() && ps && depth_control.z_enable &&
+        !depth_control.z_write_enable && GetRtBlend(regs, 0).Blends() &&
+        (GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xFu)) {
+      bool lighting = false;
+      if (up->deferred()) {
+        for (const auto& tb : ps->GetTextureBindings()) {
+          TextureKey key;
+          if (TextureKeyFromFetch(s.fetch(tb.fetch_constant), &key) &&
+              up->ReadsGBuffer(key.base_page << 12)) {
+            lighting = true;
+            break;
+          }
+        }
+      }
+      if (!lighting) {
+        up->SnapshotOpaque(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
+        ResetListState();  // the copy set its own heaps, root signature and pipeline
+      }
+    }
   }
   const Upscaler* const scene_upscaler =
       Upscaler::IsScene(sdr.rb_surface_info) && r.upscaler() && !r.upscaler()->post_scene()

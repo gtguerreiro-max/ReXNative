@@ -34,6 +34,7 @@
 #include "scene.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -153,6 +154,7 @@ class Upscaler {
                               scene_passes_, pass_depth_draws_, most_depth_draws_);
         }
       }
+      resolved_gbuffer_ = pass_gbuffer_;
       pass_drawn_ = false;
       pass_gbuffer_ = false;
       pass_depth_draws_ = 0;
@@ -262,6 +264,18 @@ class Upscaler {
   // that target. Returns whether it recorded calls (the caller sets its own state again).
   bool post_scene() const { return post_scene_frame_ == frame_; }
   bool EnterPostScene(CommandStream* list, RenderTargets& targets, const SurfaceRegs& regs);
+
+  // FSR's reactive mask (--rexnative_fsr_reactive). FSR 3 keeps the history of a pixel whose
+  // motion it trusts, so particles and other blended draws without motion trail behind. The scene
+  // as it is before the first blended draw that writes no depth in the pass to be upscaled (in a
+  // deferred scene, after its lights: draws that read the G-buffer) is copied (SnapshotOpaque);
+  // at the upscale FidelityFX's GenerateReactiveMask compares it with the finished scene.
+  bool WantsOpaqueSnapshot() const;
+  void SnapshotOpaque(CommandStream* list, RenderTargets& targets, const SurfaceRegs& regs);
+  // A colour resolve of the scene's surface (after SceneResolveDue): a G-buffer pass's
+  // destinations are remembered for ReadsGBuffer for the rest of the frame.
+  void NoteSceneColorResolve(uint32_t base, uint32_t extent_bytes);
+  bool ReadsGBuffer(uint32_t address) const;
   // Each resolve that copied the upscaled output: its clears, for EnterPostScene.
   void NoteSceneResolve(const ResolveParams& p);
   // This frame's depth and motion, made readable in `list`; empty when the frame was not upscaled.
@@ -284,7 +298,11 @@ class Upscaler {
   // The clamp of FSR's input (kInputHlsl); false (logged) on failure.
   bool CreateInputPass();
   // Records the clamp of the scene's `color` (read as `format`) into input_ at the render size.
-  void ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format);
+  // `target` (input_ or opaque_) and `view_slot` (its views' first slot in the frame's views).
+  void ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format,
+                  ID3D12Resource* target, uint32_t view_slot);
+  // GenerateReactiveMask into reactive_ when this frame's opaque snapshot is of the upscaled pass.
+  bool GenerateReactive(CommandStream* list);
 
   ID3D12Device* device_ = nullptr;
   Backend backend_ = Backend::kDlss;
@@ -329,6 +347,18 @@ class Upscaler {
   // FSR's color input: the scene's color clamped, at the largest render size.
   ComPtr<ID3D12Resource> input_;
   D3D12_RESOURCE_STATES input_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  // The reactive mask: the opaque scene (as input_) and the mask (R8), at the largest render size.
+  ComPtr<ID3D12Resource> opaque_, reactive_;
+  D3D12_RESOURCE_STATES opaque_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  uint64_t opaque_frame_ = UINT64_MAX;  // the frame of the snapshot in opaque_
+  uint32_t opaque_pass_ = 0;            // its pass (scene_passes_ numbering)
+  struct Range {
+    uint32_t lo, hi;
+  };
+  std::array<Range, 8> gbuffer_dests_ = {};
+  uint32_t gbuffer_dest_count_ = 0;
+  uint64_t gbuffer_dest_frame_ = UINT64_MAX;
+  bool resolved_gbuffer_ = false;  // the last pass closed by SceneResolveDue was a G-buffer's
   ComPtr<ID3D12RootSignature> input_signature_;
   ComPtr<ID3D12PipelineState> input_pso_;
   ComPtr<ID3D12DescriptorHeap> input_heap_;

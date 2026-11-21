@@ -35,6 +35,10 @@ REXCVAR_DEFINE_STRING(rexnative_upscaler_backend, "auto", "ReXNative",
                       "auto (NVIDIA DLSS where the GPU and nvngx_dlss.dll have it, AMD FSR "
                       "otherwise: FSR 4 on the GPUs that run it, FSR 3.1 elsewhere, the Steam "
                       "Deck among them), dlss or fsr");
+REXCVAR_DEFINE_BOOL(rexnative_fsr_reactive, true, "ReXNative",
+                    "FSR: a reactive mask made from the scene before and after its blended draws "
+                    "without motion (particles, glows), so FSR 3 does not trail them "
+                    "(FidelityFX's GenerateReactiveMask; Upscaler::SnapshotOpaque)");
 REXCVAR_DEFINE_STRING(rexnative_fsr_version, "auto", "ReXNative",
                       "The FSR the FSR backend runs: auto (the newest this GPU has: FSR 4 on "
                       "AMD's GPUs with its driver library, the Steam Deck's under GE-Proton's "
@@ -95,8 +99,10 @@ void main(uint2 p : SV_DispatchThreadID) {
   dst[p] = float4(clamp(c.rgb, 0.0, 31.875), saturate(c.a));
 }
 )";
-// Per frame in flight: the input pass's SRV and UAV, EnterPostScene's copy's SRV.
-constexpr uint32_t kViewsPerFrame = 3;
+// Per frame in flight: the input pass's SRV and UAV, EnterPostScene's copy's SRV, the opaque
+// snapshot's SRV and UAV.
+constexpr uint32_t kViewsPerFrame = 5;
+constexpr uint32_t kOpaqueViews = 3;
 
 // EnterPostScene's copy of the upscaled output into the scene surface's full-size target: a
 // triangle over the target, each pixel loaded from the output (the same size).
@@ -294,10 +300,12 @@ bool Upscaler::CreateInputPass() {
   return !Failed(device_->CreateComputePipelineState(&pd, IID_PPV_ARGS(&input_pso_)), kName);
 }
 
-void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format) {
+void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMAT format,
+                          ID3D12Resource* target, uint32_t view_slot) {
   // In the frame's own views: those of a frame kFramesInFlight back, whose fence the device
   // waited for, are free.
-  const uint32_t first = uint32_t(frame_ % D3D12Device::kFramesInFlight) * kViewsPerFrame;
+  const uint32_t first =
+      uint32_t(frame_ % D3D12Device::kFramesInFlight) * kViewsPerFrame + view_slot;
   D3D12_CPU_DESCRIPTOR_HANDLE cpu = input_heap_->GetCPUDescriptorHandleForHeapStart();
   cpu.ptr += size_t(first) * input_stride_;
   D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
@@ -310,7 +318,7 @@ void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMA
   D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
   ud.Format = kOutputFormat;
   ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-  device_->CreateUnorderedAccessView(input_.Get(), nullptr, &ud, cpu);
+  device_->CreateUnorderedAccessView(target, nullptr, &ud, cpu);
   D3D12_GPU_DESCRIPTOR_HANDLE gpu = input_heap_->GetGPUDescriptorHandleForHeapStart();
   gpu.ptr += uint64_t(first) * input_stride_;
 
@@ -322,6 +330,82 @@ void Upscaler::ClampInput(CommandStream* list, ID3D12Resource* color, DXGI_FORMA
   list->SetComputeRootDescriptorTable(0, gpu);
   list->SetComputeRoot32BitConstants(1, 2, size, 0);
   list->Dispatch((size[0] + 7) / 8, (size[1] + 7) / 8, 1);
+}
+
+bool Upscaler::WantsOpaqueSnapshot() const {
+  return opaque_ && reactive_ && opaque_frame_ != frame_ && !post_scene() &&
+         scene_passes_ + 1 == expected_pass_ && REXCVAR_GET(rexnative_fsr_reactive);
+}
+
+void Upscaler::SnapshotOpaque(CommandStream* list, RenderTargets& targets,
+                              const SurfaceRegs& regs) {
+  opaque_frame_ = frame_;  // once a frame, taken or not
+  opaque_pass_ = 0;
+  RenderTarget* color = targets.GetColor(regs, 0, SceneHeight());
+  if (!color || color->samples != 1 || color->scale != scale()) return;
+  const D3D12_RECT whole = {0, 0, LONG(SceneWidth()), LONG(SceneHeight())};
+  targets.PrepareRead(list, color, whole);
+  RenderTargets::Transition(list, color, kInputState);
+  if (opaque_state_ != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+    const D3D12_RESOURCE_BARRIER b = TransitionBarrier(
+        opaque_.Get(), opaque_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    list->ResourceBarrier(1, &b);
+    opaque_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  }
+  ClampInput(list, color->resource.Get(), color->srv_format, opaque_.Get(), kOpaqueViews);
+  const D3D12_RESOURCE_BARRIER b = TransitionBarrier(opaque_.Get(), opaque_state_, kInputState);
+  list->ResourceBarrier(1, &b);
+  opaque_state_ = kInputState;
+  opaque_pass_ = scene_passes_ + 1;
+  REXNATIVE_LOG_FIRST(1, INFO,
+                      "ReXNative upscaler: reactive mask from the scene before its blended draws "
+                      "(pass {})",
+                      opaque_pass_);
+}
+
+void Upscaler::NoteSceneColorResolve(uint32_t base, uint32_t extent_bytes) {
+  if (!resolved_gbuffer_) return;
+  if (gbuffer_dest_frame_ != frame_) {
+    gbuffer_dest_frame_ = frame_;
+    gbuffer_dest_count_ = 0;
+  }
+  for (uint32_t i = 0; i < gbuffer_dest_count_; ++i)
+    if (gbuffer_dests_[i].lo == base) return;
+  if (gbuffer_dest_count_ < gbuffer_dests_.size())
+    gbuffer_dests_[gbuffer_dest_count_++] = {base, base + std::max(extent_bytes, 1u)};
+}
+
+bool Upscaler::ReadsGBuffer(uint32_t address) const {
+  if (gbuffer_dest_frame_ != frame_) return false;
+  for (uint32_t i = 0; i < gbuffer_dest_count_; ++i)
+    if (address >= gbuffer_dests_[i].lo && address < gbuffer_dests_[i].hi) return true;
+  return false;
+}
+
+bool Upscaler::GenerateReactive(CommandStream* list) {
+  if (!reactive_ || opaque_frame_ != frame_ || opaque_pass_ == 0 ||
+      opaque_pass_ != scene_passes_ || encoded_ || !REXCVAR_GET(rexnative_fsr_reactive))
+    return false;
+  // AMD's sample values (FidelityFX_FSR's fsrapirendermodule.cpp).
+  ffxDispatchDescUpscaleGenerateReactiveMask g = {};
+  g.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK;
+  g.colorOpaqueOnly = ffxApiGetResourceDX12(opaque_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+  g.colorPreUpscale = ffxApiGetResourceDX12(input_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
+  g.outReactive =
+      ffxApiGetResourceDX12(reactive_.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+  g.renderSize = {render_width_, render_height_};
+  g.scale = 1.0f;
+  g.cutoffThreshold = 0.2f;
+  g.binaryValue = 0.9f;
+  g.flags = FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_TONEMAP |
+            FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_THRESHOLD |
+            FFX_UPSCALE_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
+  list->Call([this, g](CommandStream::List* l) mutable {
+    g.commandList = l;
+    if (const ffxReturnCode_t rc = api_->dispatch(&context_, &g.header); rc != FFX_API_RETURN_OK)
+      REXNATIVE_WARN_ONCE("ReXNative upscaler: reactive mask dispatch failed ({})", rc);
+  });
+  return true;
 }
 
 void Upscaler::Time(CommandStream* list, GpuTimer::UpscalePhase phase) {
@@ -477,6 +561,25 @@ bool Upscaler::CreateTargets() {
                                               IID_PPV_ARGS(&input_)),
              "upscaler input"))
     return false;
+  // The reactive mask's (FSR only; a failure leaves FSR without one).
+  opaque_.Reset();
+  reactive_.Reset();
+  opaque_frame_ = UINT64_MAX;
+  if (backend_ == Backend::kFsr) {
+    opaque_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_DESC r = d;
+    r.Format = DXGI_FORMAT_R8_UNORM;
+    if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, opaque_state_,
+                                                nullptr, IID_PPV_ARGS(&opaque_)),
+               "upscaler opaque scene") ||
+        Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &r,
+                                                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                IID_PPV_ARGS(&reactive_)),
+               "upscaler reactive mask")) {
+      opaque_.Reset();
+      reactive_.Reset();
+    }
+  }
 
   d.Format = kMotionFormat;
   d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -754,7 +857,7 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
   to(input_.Get(), &input_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   to(output_.resource.Get(), &output_.state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   if (nb) list->ResourceBarrier(nb, bs);
-  ClampInput(list, color->resource.Get(), color->srv_format);
+  ClampInput(list, color->resource.Get(), color->srv_format, input_.Get(), 0);
   nb = 0;
   to(input_.Get(), &input_state_, kInputState);
   list->ResourceBarrier(nb, bs);
@@ -798,8 +901,12 @@ RenderTarget* Upscaler::Upscale(CommandStream* list, RenderTargets& targets,
       if (!dlss_.Evaluate(l, setup, f)) REXNATIVE_WARN_ONCE("ReXNative upscaler: DLSS evaluation failed");
     });
   } else {
+    const bool reactive = GenerateReactive(list);
     ffxDispatchDescUpscale d = {};
     d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+    if (reactive)
+      d.reactive =
+          ffxApiGetResourceDX12(reactive_.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     d.color = ffxApiGetResourceDX12(input_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.depth = ffxApiGetResourceDX12(depth->resource.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.motionVectors = ffxApiGetResourceDX12(motion_.Get(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
