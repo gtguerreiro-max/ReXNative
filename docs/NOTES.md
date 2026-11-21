@@ -21,6 +21,22 @@ made functions; codegen handles their calls.
   loaded image (`run/image.bin`) is there. Games prepared before a rule was added get it on their
   next build: Crazy Taxi's 699 streamed sound names (82229474, bounded only by its caller) trapped
   on sound 673 when ARCADE was chosen, and Spelunky's 534-entry table had the same cut.
+- **Tables whose index is gone at the `bctr`**: Burnout Crash's `crash.dll` builds a table's
+  address as `li r27,lo` + `addis r27,r27,hi` and loads with the index first (`rlwinm r3,r3,2,0,29;
+  lwzx r3,r3,r27; mtctr r3; bctr`), so no register holds the index at the jump. ReXGlue's detector
+  knows only `lis` + `addi`; it took each of these `bctr`s for a tail call through CTR and emitted
+  none of the cases (137 such switches in that module; the game stopped at once on "Call to invalid
+  or unregistered function at guest address 0x8A601E1C", a case of a 6-way switch). Its `switch`
+  reads the index register at the `bctr`, so a `[[switch_tables]]` entry alone cannot work: the
+  entry switches on the register the target was loaded into (r3), and a `[[midasm_hook]]` at the
+  `bctr` (`rexnative_case_<bctr>`, written into `src/cases_<binary>.cpp` and built into that
+  binary's own target) turns that target back into its index first. The register is the
+  compiler's temporary for `mtctr`, dead after the jump. The listing leaves `cr0` out (`cmplwi
+  r3,5`, `bgt 0x...`), which the bound check now reads as cr0.
+- **XEX DLL modules** get the same search, over their own image: `--rexnative_dump_image` loads
+  each module first (`LoadUserModule` without its entry point, in that run only) and writes
+  `run/image.<module>.bin` beside `run/image.bin`; its tables go to `switch_tables.<module>.toml`,
+  in the module's own `includes` (an entry outside a binary's image is an error).
 - **Gotos** to labels of other functions become functions (Minecraft).
 - **Imports** the runtime lacks become stubs (the Vision camera, `XUsbcam*`).
 - **One function per layer address** (Perfect Dark, Bionic Commando Rearmed).

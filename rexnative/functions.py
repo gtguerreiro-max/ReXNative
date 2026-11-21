@@ -195,23 +195,60 @@ def find(generated, image_path, known=(), gaps=True):
 
 # The XDK compiler's jump table: a bound check, the table's address in two halves, the index times
 # four, a load, a jump. Its operands, in the instructions' listing form.
-_CMPLWI = re.compile(r'^cmplwi (cr\d),(r\d+),(\d+)$')
-_BGT = re.compile(r'^bgt (cr\d),0x[0-9a-f]+$')
+# The listing leaves cr0 out (`cmplwi r3,5`, `bgt 0x8a601c04`): a missing field is cr0.
+_CMPLWI = re.compile(r'^cmplwi (?:(cr\d),)?(r\d+),(\d+)$')
+_BGT = re.compile(r'^bgt (?:(cr\d),)?0x[0-9a-f]+$')
 _LIS = re.compile(r'^lis (r\d+),(-?\d+)$')
 _ADDI = re.compile(r'^addi (r\d+),(r\d+),(-?\d+)$')
+_LI = re.compile(r'^li (r\d+),(-?\d+)$')
+_ADDIS = re.compile(r'^addis (r\d+),(r\d+),(-?\d+)$')
 _SCALE = re.compile(r'^rlwinm (r\d+),(r\d+),2,0,29$')
 _LWZX = re.compile(r'^lwzx (r\d+),(r\d+),(r\d+)$')
 _MTCTR = re.compile(r'^mtctr (r\d+)$')
 _MR = re.compile(r'^mr (r\d+),(r\d+)$')
 
 
+def _far_bound(insns, i, index, back, far=200):
+    """The bound of the bctr at insns[i] whose compare the compiler moved far ahead of it (Burnout
+    Crash's crash.dll: `cmplwi cr2,r27,4` 94 instructions before its `bgt cr2`, stores between):
+    from the last `bgt crN` before the bctr back to the nearest instruction that sets crN, which
+    must be `cmplwi crN,<index>,N`, with nothing between it and the bctr writing the index (an
+    instruction other than a store, compare or branch whose first operand it is). None when not
+    so."""
+    bgt = next((k for k in range(i - 1, max(-1, i - back), -1) if _BGT.match(insns[k][1])), None)
+    if bgt is None:
+        return None
+    cr = _BGT.match(insns[bgt][1]).group(1) or 'cr0'
+    for k in range(bgt - 1, max(-1, bgt - far), -1):
+        t = insns[k][1]
+        mn, _, ops = t.partition(' ')
+        m = _CMPLWI.match(t)
+        if m and (m.group(1) or 'cr0') == cr:
+            if m.group(2) != index:
+                return None
+            for kk in range(k + 1, i):
+                mn2, _, ops2 = insns[kk][1].partition(' ')
+                if (not mn2.startswith(('st', 'cmp', 'b', 'mtctr')) and
+                        ops2.split(',')[0] == index and not
+                        (mn2 == 'rlwinm' and _SCALE.match(insns[kk][1]))):
+                    return None
+            return int(m.group(3))
+        # Anything else that sets crN: a compare, a record form on cr0, a CR operation.
+        if (mn.startswith('cmp') and (ops.split(',')[0] if ops.startswith('cr') else 'cr0') == cr
+                or mn.endswith('.') and cr == 'cr0' or mn.startswith(('cr', 'mtcr', 'mcrf'))):
+            return None
+    return None
+
+
 def jump_tables(generated, image_path, back=24, all_tables=False):
-    """The jump tables codegen cut short: [(bctr address, index register, [targets])]. A table
+    """The jump tables codegen cut short: [(bctr address, register, [targets], by_target)]. A table
     is read from the image with as many entries as its bound check allows (cmplwi rA,N; bgt:
     N + 1); it is cut short when one of its targets is not among the instructions codegen
     emitted for the function (Double Dragon Neon's 826B8920: a bound of 143 on r11 and the index
     in its copy r10, so codegen read 16 entries, emitted no code for the other cases, and traps
-    on them). ReXGlue takes those from [[switch_tables]] (address: the bctr; register; labels)."""
+    on them). ReXGlue takes those from [[switch_tables]] (address: the bctr; register; labels).
+    by_target: the index is overwritten before the bctr (the li + addis form), and the register is
+    the one the target was loaded into."""
     base, size, code0, code_size = bounds(generated)
     with open(image_path, 'rb') as f:
         img = f.read()
@@ -230,51 +267,78 @@ def jump_tables(generated, image_path, back=24, all_tables=False):
             if not m:
                 continue
             target_reg = m.group(1)
-            lwzx = idx_reg = table = scale_src = None
+            lwzx = idx_reg = table = None
             lo = hi = None
             bound = None
+            # The table's address: `lis rT,hi` + `addi rT,rT,lo` in the load's first operand
+            # (the index in the second), or `li rT,lo` + `addis rT,rT,hi` in its second, the
+            # index in the first (Burnout Crash's crash.dll: li r27,11084; rlwinm r3,r3,2,0,29;
+            # addis r27,r27,-30208; lwzx r3,r3,r27). The index is then overwritten before the
+            # bctr, which codegen cannot switch on (its switch reads the index register at the
+            # bctr): it took the bctr for a tail call and emitted none of the cases.
+            form = None
+            scales = {}  # the scaled index register: the register it was scaled from
+
+            def scale_src():
+                return scales.get(lwzx[0] if form == 'li' else lwzx[1])
+
             for j in range(i - 2, max(-1, i - back), -1):
                 t = insns[j][1]
                 if lwzx is None:
                     m = _LWZX.match(t)
                     if m and m.group(1) == target_reg:
-                        lwzx = (m.group(2), m.group(3))  # (table register, scaled index)
+                        lwzx = (m.group(2), m.group(3))
                     continue
                 m = _ADDI.match(t)
-                if m and lo is None and m.group(1) == lwzx[0] and m.group(2) == lwzx[0]:
-                    lo = int(m.group(3))
+                if (m and lo is None and form != 'li' and m.group(1) == lwzx[0] and
+                        m.group(2) == lwzx[0]):
+                    lo, form = int(m.group(3)), 'lis'
                     continue
                 m = _LIS.match(t)
-                if m and hi is None and m.group(1) == lwzx[0]:
-                    hi = int(m.group(2))
+                if m and hi is None and form != 'li' and m.group(1) == lwzx[0]:
+                    hi, form = int(m.group(2)), 'lis'
+                    continue
+                m = _ADDIS.match(t)
+                if (m and hi is None and form is None and m.group(1) == lwzx[1] and
+                        m.group(2) == lwzx[1] and lwzx[0] != lwzx[1]):
+                    hi, form = int(m.group(3)), 'li'
+                    continue
+                m = _LI.match(t)
+                if m and lo is None and form == 'li' and m.group(1) == lwzx[1]:
+                    lo = int(m.group(2))
                     continue
                 m = _SCALE.match(t)
-                if m and scale_src is None and m.group(1) == lwzx[1]:
-                    scale_src = m.group(2)
+                if m and m.group(1) in lwzx and m.group(1) not in scales:
+                    scales[m.group(1)] = m.group(2)
                     continue
                 m = _CMPLWI.match(t)
-                if m and scale_src and j + 1 < len(insns) and bound is None:
+                if m and scale_src() and j + 1 < len(insns) and bound is None:
                     # the bound check on the index or the register it was copied from
-                    regs = {scale_src}
+                    regs = {scale_src()}
                     for k in range(max(0, i - back), i):  # copies either way, before or after
                         mm = _MR.match(insns[k][1])
                         if mm and mm.group(1) in regs:
                             regs.add(mm.group(2))
                         elif mm and mm.group(2) in regs:
                             regs.add(mm.group(1))
-                    if m.group(2) in regs and any(_BGT.match(insns[k][1]) and
-                                                  _BGT.match(insns[k][1]).group(1) == m.group(1)
-                                                  for k in range(j + 1, i)):
+                    cr = m.group(1) or 'cr0'
+                    if m.group(2) in regs and any(
+                            _BGT.match(insns[k][1]) and
+                            (_BGT.match(insns[k][1]).group(1) or 'cr0') == cr
+                            for k in range(j + 1, i)):
                         bound = int(m.group(3))
                         break
-            if None in (lo, hi) or scale_src is None:
+            if None in (lo, hi) or scale_src() is None:
                 continue
+            by_target = form == 'li'
+            if by_target and bound is None:
+                bound = _far_bound(insns, i, scale_src(), back)
             table = ((hi << 16) + lo) & 0xFFFFFFFF
             if bound is None:
                 # No bound check (the index from a mask: Bink's 8362CDC0 in The Bureau, r19 from
                 # clrlwi 29 or 7 + clrlwi 30, so 0..10; codegen read 8): a table right after the
                 # bctr ends where the first of its cases begins.
-                if table != addr + 4:
+                if table != addr + 4 or by_target:
                     continue
                 first = None
                 k = 0
@@ -294,7 +358,10 @@ def jump_tables(generated, image_path, back=24, all_tables=False):
                 continue
             if not all_tables and all(t in emitted for t in targets):
                 continue
-            out.append((addr, int(scale_src[1:]), targets))
+            # A table whose index is overwritten: the switch is on the loaded target, which a
+            # hook at the bctr turns back into its index (project.write_switch_tables).
+            out.append((addr, int((target_reg if by_target else scale_src())[1:]), targets,
+                        by_target))
     return out
 
 

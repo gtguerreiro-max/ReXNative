@@ -89,7 +89,12 @@ endif()
 # (gpu.xenos.skip_draws), and it is the comparison renderer (--rexnative=false, or F9).
 rexglue_setup_target({name})
 target_link_libraries({name} PRIVATE {name}_common)
-
+# The hooks of the jump tables whose index the code overwrites before its bctr (src/cases_*.cpp,
+# written with switch_tables*.toml when they are found), each in its binary's target.
+if(EXISTS "${{CMAKE_CURRENT_SOURCE_DIR}}/src/cases_default.cpp")
+    target_sources({name}_common PRIVATE src/cases_default.cpp)
+endif()
+{module_sources}
 set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
 set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")
 set(REXNATIVE_FIDELITYFX_SDK "" CACHE PATH "AMD FidelityFX SDK v2.4.0")
@@ -146,6 +151,7 @@ APP_CPP = '''// {name}: recompiled with ReXGlue, drawn by ReXNative (written by 
 
 #include <rex/cvar.h>
 #include <rex/kernel/guest_memory.h>
+#include <rex/kernel/module.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/logging/log_category.h>
 
@@ -197,17 +203,19 @@ rex::Result<void> {cls}::OnInit() {{
 }}
 
 // --rexnative_dump_image: the image as loaded (decrypted, decompressed), before any guest code
-// runs.
+// runs. Each XEX DLL module first, loaded for it without its entry point (only in that run, which
+// `project --find-functions` stops once the image is written), into <file>.<module>.bin.
 rex::Result<void> {cls}::OnTitleLaunch(rex::kernel::TitleRuntime& title) {{
   if (const std::string path = REXCVAR_GET(rexnative_dump_image); !path.empty()) {{
-    auto image = title.GetGuestMemory().GetReadOnlySpan(uint32_t(REX_IMAGE_BASE),
-                                                        uint32_t(REX_IMAGE_SIZE));
-    if (std::FILE* f = image ? std::fopen(path.c_str(), "wb") : nullptr) {{
-      std::fwrite(image->data(), 1, image->size(), f);
-      std::fclose(f);
-      REXLOG_INFO("image dump: {{:08X}}+{{:X}} -> {{}}", uint32_t(REX_IMAGE_BASE),
-                  uint32_t(REX_IMAGE_SIZE), path);
-    }}
+    auto dump = [&](uint32_t base, uint32_t size, const std::string& file) {{
+      auto image = title.GetGuestMemory().GetReadOnlySpan(base, size);
+      if (std::FILE* f = image ? std::fopen(file.c_str(), "wb") : nullptr) {{
+        std::fwrite(image->data(), 1, image->size(), f);
+        std::fclose(f);
+        REXLOG_INFO("image dump: {{:08X}}+{{:X}} -> {{}}", base, size, file);
+      }}
+    }};
+{module_dumps}    dump(uint32_t(REX_IMAGE_BASE), uint32_t(REX_IMAGE_SIZE), path);
   }}
   return TitleApp::OnTitleLaunch(title);
 }}
@@ -253,6 +261,54 @@ def _write(path, text, keep=False):
     return True
 
 
+def _module_targets(work):
+    """{generated folder name: CMake target} of the DLL modules, from the dll_targets.cmake codegen
+    writes (`add_library(<name>_CRASH_DLL SHARED ${DLL_SOURCES_CRASH_DLL})` after the include of
+    generated/crash_dll/sources.cmake)."""
+    path = os.path.join(work, 'generated', 'default', 'dll_targets.cmake')
+    if not os.path.exists(path):
+        return {}
+    text = open(path, encoding='utf-8').read()
+    var = dict((v, d) for d, v in re.findall(
+        r'include\(generated/([^/]+)/sources\.cmake\)\s*set\(DLL_SOURCES_(\w+) ', text))
+    return {var[v]: t for t, v in re.findall(r'add_library\((\S+) SHARED \$\{DLL_SOURCES_(\w+)\}',
+                                              text) if v in var}
+
+
+def _module_cases_cmake(work):
+    """CMake lines that build each DLL module's src/cases_<module>.cpp into its DLL, when there."""
+    out = ''
+    for module, target in sorted(_module_targets(work).items()):
+        out += ('if(TARGET %s AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cases_%s.cpp")\n'
+                '    target_sources(%s PRIVATE src/cases_%s.cpp)\nendif()\n' % (
+                    target, module, target, module))
+    return out
+
+
+def _module_dumps(work):
+    """C++ that loads each DLL module (without its entry point) and dumps its image beside the
+    executable's (the app's OnTitleLaunch, under --rexnative_dump_image): <file>.<module>.bin, as
+    prepare.module_image names it."""
+    from . import functions, prepare
+    out = ''
+    for m in prepare.modules(work):
+        module = m['out'].split('/')[-1]
+        gen = os.path.join(work, *m['out'].split('/'))
+        try:
+            base, size = functions.bounds(gen)[:2]
+        except SystemExit:
+            base, size = m['span']
+        # game:\DLL\CRASH.DLL.XEX, as a C++ string literal
+        guest = ('game:\\' + m['guest_path'].replace('/', '\\')).replace('\\', '\\\\')
+        out += ('    if (title.GetModuleRegistry().LoadUserModule("%s", false)) {\n'
+                '      dump(0x%08Xu, 0x%Xu,\n'
+                '           std::filesystem::path(path).replace_extension().string() + ".%s.bin");\n'
+                '    } else {\n'
+                '      REXLOG_WARN("image dump: %s not loaded");\n'
+                '    }\n' % (guest, base, size, module, guest))
+    return out
+
+
 def write(work):
     """Writes the project files into `work`; returns the project's name."""
     work = os.path.abspath(work)
@@ -271,7 +327,8 @@ def write(work):
     game_sources = ''.join(' src/' + os.path.basename(f) for f in
                            sorted(glob.glob(os.path.join(work, 'src', 'game_*.cpp'))))
     _write(os.path.join(work, 'CMakeLists.txt'),
-           CMAKE.format(name=name, rexnative=rexnative, game_sources=game_sources))
+           CMAKE.format(name=name, rexnative=rexnative, game_sources=game_sources,
+                        module_sources=_module_cases_cmake(work)))
     _write(os.path.join(work, 'src', 'main.cpp'), MAIN.format(name=name, cls=cls))
     # ReXGlue v0.11 writes its own crash report (logs/), and the generated sources.cmake replaced
     # generated/rexglue.cmake.
@@ -281,7 +338,8 @@ def write(work):
             os.remove(old)
     write_import_stubs(work, [])
     _write(os.path.join(work, 'src', '%s_app.h' % name), APP_H.format(name=name, cls=cls))
-    _write(os.path.join(work, 'src', '%s_app.cpp' % name), APP_CPP.format(name=name, cls=cls))
+    _write(os.path.join(work, 'src', '%s_app.cpp' % name),
+           APP_CPP.format(name=name, cls=cls, module_dumps=_module_dumps(work)))
     _write(os.path.join(work, '%s.toml' % name), TOML.format(name=name), keep=True)
     return name
 
@@ -733,7 +791,7 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
         name, len(new), (': ' + ' '.join('%08X' % a for a in new[:12]) +
                          (' ...' if len(new) > 12 else '')) if new else ''))
     # Jump tables codegen cut short (it traps on the cases it left out): given whole.
-    tables = write_switch_tables(work, functions.jump_tables(gen, image))
+    tables = find_switch_tables(work)
     if tables:
         log('%s: %d jump tables codegen cut short, given whole: %s' % (
             name, len(tables), ' '.join('%08X (%d)' % (a, n) for a, n in tables[:8])))
@@ -799,33 +857,95 @@ def write_crt(work, functions_found):
     return True
 
 
-def write_switch_tables(work, found):
-    """Adds the tables to <work>/switch_tables.toml (the manifest includes it); returns the new
-    ones as [(bctr address, entries)]."""
-    path = os.path.join(work, 'switch_tables.toml')
+def switch_tables_file(work, binary='default'):
+    """The [[switch_tables]] of a binary: switch_tables.toml for default.xex (the entrypoint's
+    includes), switch_tables.<module>.toml for a DLL module (its own includes)."""
+    return os.path.join(work, 'switch_tables.toml' if binary == 'default' else
+                        'switch_tables.%s.toml' % binary)
+
+
+def cases_source(work, binary='default'):
+    """The hooks of a binary's tables whose index is overwritten before the bctr (C++, built into
+    that binary's target: the executable's for default.xex, the module's DLL for a module)."""
+    return os.path.join(work, 'src', 'cases_%s.cpp' % binary)
+
+
+def write_switch_tables(work, found, binary='default'):
+    """Adds the tables (functions.jump_tables) to the binary's switch_tables file (the manifest
+    includes it); returns the new ones as [(bctr address, entries)]. A table whose index is
+    overwritten before its bctr (by_target) is a switch on the register the target was loaded
+    into, with a [[midasm_hook]] at the bctr that turns that target back into its index (the
+    first entry that holds it; any other value, the switch's default, which traps). That
+    register is the compiler's temporary for mtctr, dead after the bctr."""
+    path = switch_tables_file(work, binary)
     have = {}
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
-            for block in f.read().split('[[switch_tables]]')[1:]:
-                a = re.search(r'address = 0x([0-9A-Fa-f]+)', block)
-                r = re.search(r'register = (\d+)', block)
-                labels = re.findall(r'0x([0-9A-Fa-f]{8})', block.split('labels', 1)[-1])
-                if a and r:
-                    have[int(a.group(1), 16)] = (int(r.group(1)), [int(x, 16) for x in labels])
-    new = [(a, reg, t) for a, reg, t in found if a not in have]
+            text = f.read()
+        hooked = {int(a, 16) for a in re.findall(
+            r'\[\[midasm_hook\]\]\s*address = 0x([0-9A-Fa-f]+)', text)}
+        for block in text.split('[[switch_tables]]')[1:]:
+            block = block.split('[[midasm_hook]]')[0]
+            a = re.search(r'address = 0x([0-9A-Fa-f]+)', block)
+            r = re.search(r'register = (\d+)', block)
+            labels = re.findall(r'0x([0-9A-Fa-f]{8})', block.split('labels', 1)[-1])
+            if a and r:
+                addr = int(a.group(1), 16)
+                have[addr] = (int(r.group(1)), [int(x, 16) for x in labels], addr in hooked)
+    found = [(t[0], t[1], t[2], t[3] if len(t) > 3 else False) for t in found]
+    new = [(a, reg, t, hook) for a, reg, t, hook in found if a not in have]
     if not new:
         return []
-    for a, reg, t in new:
-        have[a] = (reg, t)
+    for a, reg, t, hook in new:
+        have[a] = (reg, t, hook)
     lines = ['# Jump tables ReXGlue codegen cut short, given whole (written by ReXNative:',
              '# rexnative project --find-functions). Included by the manifest.', '']
     for a in sorted(have):
-        reg, t = have[a]
+        reg, t, hook = have[a]
         lines += ['[[switch_tables]]', 'address = 0x%08X' % a, 'register = %d' % reg,
                   'labels = [%s]' % ', '.join('0x%08X' % x for x in t), '']
+        if hook:
+            lines += ['[[midasm_hook]]', 'address = 0x%08X' % a,
+                      'name = "rexnative_case_%08X"' % a, 'registers = ["r%d"]' % reg, '']
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines))
-    return [(a, len(t)) for a, reg, t in new]
+    hooks = [(a, have[a][1]) for a in sorted(have) if have[a][2]]
+    if hooks:
+        src = ['// The jump tables whose index the code overwrites before its bctr (li + addis: the',
+               "// table address in the load's second operand). The switch is on the loaded target;",
+               '// the hook at the bctr turns it back into its index. Written by ReXNative',
+               '// (project.write_switch_tables) from %s.' % os.path.basename(path),
+               '#include <cstddef>', '#include <cstdint>', '', '#include <rex/ppc/context.h>', '',
+               'namespace {', '',
+               'void CaseIndex(PPCRegister& r, const uint32_t* targets, size_t count) {',
+               '  for (size_t i = 0; i < count; ++i) {',
+               '    if (r.u32 == targets[i]) {',
+               '      r.u64 = i;',
+               '      return;',
+               '    }',
+               '  }',
+               '  r.u64 = count;  // not one of the cases: the default, which traps',
+               '}', '', '}  // namespace', '']
+        for a, t in hooks:
+            src += ['void rexnative_case_%08X(PPCRegister& r) {' % a,
+                    '  static constexpr uint32_t kTargets[] = {%s};' % ', '.join(
+                        '0x%08X' % x for x in t),
+                    '  CaseIndex(r, kTargets, sizeof(kTargets) / sizeof(kTargets[0]));', '}', '']
+        os.makedirs(os.path.join(work, 'src'), exist_ok=True)
+        with open(cases_source(work, binary), 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(src))
+    return [(a, len(t)) for a, reg, t, hook in new]
+
+
+def find_switch_tables(work):
+    """functions.jump_tables over default.xex's generated code and each DLL module's, with their
+    loaded images (run/image.bin, run/image.<module>.bin, from --rexnative_dump_image), added to
+    their switch_tables files. Returns the new ones as [(bctr address, entries)]."""
+    from . import functions, prepare
+    new = []
+    for binary, gen, image in prepare.table_sources(work):
+        new += write_switch_tables(work, functions.jump_tables(gen, image), binary)
+    return new
 
 
 # What the runtime logs when the game reaches code codegen did not make a function of: a thread

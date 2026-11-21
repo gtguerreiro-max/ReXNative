@@ -16,6 +16,7 @@ against the listing's SHA-1 and opened as an STFS title update of the game's tit
 file of it is installed. Nothing is fetched unless asked (`rexnative prepare --title-update`;
 `rexnative title-update <work>` only lists them).
 """
+import glob
 import hashlib
 import json
 import os
@@ -176,6 +177,11 @@ def reset(work, log=print):
         if os.path.isdir(p):
             shutil.rmtree(p)
         elif os.path.exists(p):
+            os.remove(p)
+    # The DLL modules' jump tables, their hooks and images (project.write_switch_tables).
+    for pattern in ('switch_tables.*.toml', os.path.join('run', 'image.*.bin'),
+                    os.path.join('src', 'cases_*.cpp')):
+        for p in glob.glob(os.path.join(work, pattern)):
             os.remove(p)
     hints = os.path.join(work, 'hints.txt')
     if os.path.exists(hints):

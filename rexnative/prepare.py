@@ -381,16 +381,43 @@ def _shares_scanned(work, gen, mark=False):
 
 
 # The rules of functions.jump_tables, counted: a new rule makes every game's generated code
-# looked at again (tables.scanned).
-TABLE_RULES = 1
+# looked at again (tables.scanned). 2: the li + addis tables (their index overwritten before the
+# bctr), the bound checks on cr0, and the DLL modules' code with their own images.
+TABLE_RULES = 2
+
+
+def module_image(work, module):
+    """The loaded image of a DLL module (its generated folder's name), which
+    --rexnative_dump_image writes beside run/image.bin."""
+    return os.path.join(work, 'run', 'image.%s.bin' % module)
+
+
+def table_sources(work):
+    """[(binary, generated folder, loaded image)] that functions.jump_tables can read: default.xex
+    with run/image.bin, each DLL module with run/image.<module>.bin, when there."""
+    out = []
+    image = os.path.join(work, 'run', 'image.bin')
+    gen = os.path.join(work, 'generated', 'default')
+    if os.path.exists(image) and os.path.isdir(gen):
+        out.append(('default', gen, image))
+    for m in modules(work):
+        ident = m['out'].split('/')[-1]
+        gen = os.path.join(work, *m['out'].split('/'))
+        image = module_image(work, ident)
+        if os.path.exists(image) and os.path.isdir(gen):
+            out.append((ident, gen, image))
+    return out
 
 
 def _tables_scanned(work, gen, mark=False):
     """Whether functions.jump_tables, as its rules are now (TABLE_RULES), already looked at this
-    generated code (tables.scanned holds the rules' count and the newest generated file's
-    mtime); with mark, records that it did."""
-    files = glob.glob(os.path.join(gen, '*_recomp.*.cpp'))
+    generated code (tables.scanned holds the rules' count, the newest generated file's mtime and
+    the binaries it had images of); with mark, records that it did."""
+    sources = table_sources(work)
+    files = [f for _, g, _ in sources for f in glob.glob(os.path.join(g, '*_recomp.*.cpp'))]
     newest = '%d %d' % (TABLE_RULES, max((os.path.getmtime(f) for f in files), default=0))
+    if len(sources) > 1:
+        newest += ' ' + ','.join(b for b, _, _ in sources)
     stamp = os.path.join(work, 'tables.scanned')
     if mark:
         with open(stamp, 'w', encoding='utf-8') as f:
@@ -408,12 +435,12 @@ def _add_switch_tables(work, gen, log, rnd):
     a game prepared before a rule was learned never had it applied (Crazy Taxi, prepared before
     the no-bound-check rule: its switch of 699 streamed sound names at 82229474, bounded by its
     caller only, read as 512 entries; sound 673 trapped, ILLEGAL_INSTRUCTION, when ARCADE was
-    chosen; Spelunky's 534-entry 820ED328 the same)."""
-    image = os.path.join(work, 'run', 'image.bin')
-    if not os.path.exists(image) or _tables_scanned(work, gen):
+    chosen; Spelunky's 534-entry 820ED328 the same). A DLL module's code is read with its own
+    image (run/image.<module>.bin), into switch_tables.<module>.toml."""
+    if not table_sources(work) or _tables_scanned(work, gen):
         return False
-    from . import functions, project
-    new = project.write_switch_tables(work, functions.jump_tables(gen, image))
+    from . import project
+    new = project.find_switch_tables(work)
     _tables_scanned(work, gen, True)
     if not new:
         return False
@@ -528,7 +555,12 @@ def _write_manifest(work, name):
     for i, m in enumerate(mods):
         lines += ['', '[[modules]]', 'file_path = "%s"' % m['file'],
                   'guest_path = "%s"' % m['guest_path'],
-                  'out_directory_path = "%s"' % m['out'], 'includes = []']
+                  'out_directory_path = "%s"' % m['out']]
+        # Its jump tables (project.write_switch_tables): an include of the entrypoint's would
+        # hold addresses outside the module's image.
+        tables = 'switch_tables.%s.toml' % m['out'].split('/')[-1]
+        lines.append('includes = [%s]' % ('"%s"' % tables if os.path.exists(
+            os.path.join(work, tables)) else ''))
         lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
         if entries[i + 1]:
             lines.append('[modules.functions]')
