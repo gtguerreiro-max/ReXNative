@@ -58,7 +58,7 @@ DECK_SETTINGS = [
     ('ui', 'window_height', '800'),
     ('ui', 'fullscreen', 'true'),
     ('ui', 'resolution', '"720p"'),
-    ('rexnative', 'anisotropy', '8'),
+    ('rexnative', 'anisotropy', '16'),
     ('rexnative', 'upscaler', 'true'),
     ('rexnative', 'upscaler_mode', '"native"'),
     # One frame begun ahead of the display: the picture 8-22 ms sooner after the pad than at 2.

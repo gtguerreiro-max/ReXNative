@@ -117,7 +117,7 @@ REXCVAR_DEFINE_INT32(rexnative_draw_log_from, -1, "ReXNative",
 REXCVAR_DEFINE_INT32(rexnative_draw_log_frames, 1, "ReXNative",
                      "Frames one draw log trigger (--rexnative_draw_log_from or draw-debug.txt "
                      "bit 16) covers");
-REXCVAR_DEFINE_INT32(rexnative_anisotropy, 1, "ReXNative",
+REXCVAR_DEFINE_INT32(rexnative_anisotropy, 16, "ReXNative",
                      "Anisotropic filtering of the game's linearly filtered textures with mips, "
                      "at least this many samples per pixel (2, 4, 8 or 16; 1: the game's own)");
 REXCVAR_DEFINE_BOOL(rexnative_gamma_targets, true, "ReXNative",
@@ -4819,8 +4819,18 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     // or with --rexnative_upscaler_depth_test where it tests it: Diablo III draws its hero into
     // the scene's surface, resolves it, and draws it into its menu with a pass that tests depth
     // only. Upscaling the hero's pass left it invisible (FSR) or black (DLSS).
+    // A draw writing depth into two or more colour targets fills a G-buffer (Overlord II): the
+    // lighting passes after it test depth without writing it, and they are the scene's colour,
+    // so from then on depth-tested draws count as --rexnative_upscaler_depth_test makes them.
+    if (depth_control.z_enable && depth_control.z_write_enable && ps && !up->deferred()) {
+      const uint32_t cm = GetNormalizedColorMask(regs, ps->GetWritesColorTargets());
+      uint32_t targets = 0;
+      for (uint32_t i = 0; i < 4; ++i) targets += ((cm >> (4 * i)) & 0xFu) != 0;
+      if (targets >= 2) up->NoteGBufferDraw();
+    }
     up->NoteSceneDraw(depth_control.z_enable &&
-                      (depth_control.z_write_enable || REXCVAR_GET(rexnative_upscaler_depth_test)));
+                      (depth_control.z_write_enable || REXCVAR_GET(rexnative_upscaler_depth_test) ||
+                       up->deferred()));
     if (up->upscaled_this_frame() && !up->post_scene())
       up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
   }

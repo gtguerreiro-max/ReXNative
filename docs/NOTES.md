@@ -103,6 +103,15 @@ pass that tests depth and writes none: the hero's pass was upscaled, and the her
 invisible with FSR and black with DLSS. `rexnative.upscaler_depth_test = true` (Diablo III's
 settings) counts the draws that test depth too, so the second pass is the one upscaled.
 
+Overlord II lights its scene in deferred passes: its geometry writes depth into a G-buffer of
+three colour targets (two predicated tiles of 1280x368), and the lighting passes after it test
+depth without writing it. The last pass writing depth was the G-buffer's, so its first target was
+upscaled on its own; the lighting then took that FSR output with the other targets as rendered,
+and on the Steam Deck (FSR Native AA by default) the menu's rocks came out white and speckled,
+"wet". A scene draw writing depth into two or more colour targets now marks the scene as deferred
+(`Upscaler::NoteGBufferDraw`, logged once), and from then on depth-tested draws count as
+`upscaler_depth_test` makes them: the lit pass is the one upscaled, as in Xenia's look.
+
 ## A scene drawn after a depth prepass
 
 With the upscaler on (the Steam Deck's default), FSR did nothing in Iron Brigade. It draws a depth
