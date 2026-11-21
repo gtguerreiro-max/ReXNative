@@ -48,8 +48,13 @@ REXCVAR_DEFINE_INT32(rexnative_trace_play_fps, 30, "ReXNative",
 REXCVAR_DEFINE_BOOL(rexnative_trace_play_dump, false, "ReXNative",
                     "Debug: capture every frame of the last time through a played trace "
                     "(--rexnative_capture_dir, with --rexnative_trace_play_loops)");
+REXCVAR_DEFINE_STRING(rexnative_trace_play_stale, "", "ReXNative",
+                      "Debug: <address>,<width>,<height>[;...] (addresses in hex): before a played "
+                      "trace, an empty image resolved into a texture at each, as a game's earlier "
+                      "screens leave them over memory the trace's textures use");
 REXCVAR_DECLARE(std::string, rexnative_d3d_trace_dir);
 REXCVAR_DECLARE(std::string, rexnative_d3d_control);
+REXCVAR_DECLARE(std::string, rexnative_resolve_dump);
 
 namespace rexnative::trace {
 namespace detail {
@@ -238,6 +243,11 @@ bool AtSwap(uint64_t frame) {
   g_rec.first = true;
   detail::g_executing.store(0, std::memory_order_relaxed);
   detail::g_recording.store(++g_rec.id, std::memory_order_relaxed);
+  // With resolve dumps on, the trace's first frame is dumped: the render thread begins it next
+  // (it finished the frames before), and its resolves are then the ones a dump of the played
+  // trace is compared with (scripts/resolves.py --against).
+  if (const std::string dump = REXCVAR_GET(rexnative_resolve_dump); !dump.empty())
+    std::ofstream(std::filesystem::path(dump) / "dump.request") << "trace";
   REXLOG_INFO("ReXNative trace: recording {} frames from {}", g_rec.frames, frame);
   return true;
 }
@@ -385,12 +395,48 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
   // ... and the renderer is told as well: a page copied a moment ago has no watch yet.
   const auto write = [this, base](uint32_t physical, const uint8_t* bytes, uint32_t size) {
     if (physical >= kPhysicalSize || size > kPhysicalSize - physical) return;
+    // Only what changes: a write also tells the resolver that the images over that memory are
+    // gone (Resolver::WatchDestination), and from the second time through most pages are as the
+    // trace wants them.
+    if (std::memcmp(base + 0xA0000000u + physical, bytes, size) == 0) return;
     std::memcpy(base + 0xA0000000u + physical, bytes, size);
     draw_->GuestWritten(physical, size);
     textures_->GuestWritten(physical, size);
+    resolver_->GuestWritten(physical, size);
   };
   static uint32_t regs[kGuestRegisterCount];
   std::vector<std::vector<uint32_t>> ucode(2);
+  // --rexnative_trace_play_stale=<address>,<width>,<height>[;...]: before the trace, a resolve
+  // of an empty 8_8_8_8 target into a tiled texture at each, as a game's earlier screens leave
+  // them: images that stand for memory the trace's textures lie in (NOTES.md, "Resolved images that
+  // outlive their memory"). With --rexnative_resolve_watch=false it is copied into them.
+  if (const std::string stale = REXCVAR_GET(rexnative_trace_play_stale); !stale.empty()) {
+    uint32_t count = 0;
+    for (size_t at = 0; at < stale.size();) {
+      const size_t next = std::min(stale.find(';', at), stale.size());
+      unsigned address = 0, width = 0, height = 0;
+      if (std::sscanf(stale.substr(at, next - at).c_str(), "%x,%u,%u", &address, &width,
+                      &height) == 3 &&
+          width && height) {
+        ResolveParams p;
+        p.regs.surface_info = width & 0x3FFF;  // pitch, 1x
+        p.x1 = int32_t(width);
+        p.y1 = int32_t(height);
+        p.dest_base = address;
+        p.dest_format = 6;  // k_8_8_8_8
+        p.dest_width = width;
+        p.dest_height = height;
+        p.dest_tiled = true;
+        p.dest_pitch_blocks = (width + 31) & ~31u;
+        p.dest_extent_bytes = p.dest_pitch_blocks * ((height + 31) & ~31u) * 4;
+        ExecuteResolve(p);
+        ++count;
+      }
+      at = next + 1;
+    }
+    REXLOG_INFO("ReXNative trace: {} images resolved before the trace (--rexnative_trace_play_stale)",
+                count);
+  }
   const int32_t loops = REXCVAR_GET(rexnative_trace_play_loops);
   const bool dump = REXCVAR_GET(rexnative_trace_play_dump) && loops > 0;
   const std::string control = REXCVAR_GET(rexnative_d3d_control);
@@ -399,6 +445,12 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
   for (int32_t loop = 0; loops <= 0 || loop < total; ++loop) {
     const uint64_t loop_start = NowNs();
     uint64_t frame_start = loop_start;
+    // With resolve dumps on: the trace's first frame, the third time through (the images of the
+    // frames before it are there by then), is dumped, as it was when it was recorded
+    // (trace::AtSwap), for scripts/resolves.py --against.
+    if (loop == 2)
+      if (const std::string dump_dir = REXCVAR_GET(rexnative_resolve_dump); !dump_dir.empty())
+        std::ofstream(std::filesystem::path(dump_dir) / "dump.request") << "trace";
     uint32_t command = 0;
     size_t texture_at = 0;
     const auto before_command = [&] {

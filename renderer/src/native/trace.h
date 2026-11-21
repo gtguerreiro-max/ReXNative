@@ -18,6 +18,9 @@
 //   --rexnative_trace_play_fps       frames per second (0: as fast as they go)
 //   --rexnative_trace_play_dump      with --rexnative_capture_dir: the last time through, each
 //                                    frame is captured (f<index>-native.png)
+// With --rexnative_resolve_dump both sides dump the resolves of the trace's first frame, the game
+// as it records it and the player the third time through, for scripts/resolves.py --against
+// (live.ps1 compare): where a fault the replay does not have comes into the frame.
 // Everything live works on a played trace: draw-debug.txt, captures, RenderDoc, `set` in the
 // control file (the player reads the file itself, each frame).
 //

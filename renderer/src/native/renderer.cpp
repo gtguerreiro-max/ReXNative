@@ -173,6 +173,7 @@ REXCVAR_DEFINE_INT32(
     "against guest memory as it was when the draw was queued (0: off)");
 REXCVAR_DECLARE(std::string, rexnative_capture_dir);
 REXCVAR_DECLARE(int32_t, rexnative_trace_record);
+REXCVAR_DECLARE(int32_t, rexnative_texture_audit);
 REXCVAR_DECLARE(int32_t, rexnative_d3d_stats_frames);
 REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
 REXCVAR_DECLARE(int32_t, rexnative_dlss5_passes);
@@ -528,6 +529,9 @@ bool NativeRenderer::Initialize() {
       [this](uint32_t a, uint32_t* row) { return resolver_->FindContaining(a, row); });
   textures_->SetCaptureOrder(REXCVAR_GET(rexnative_texture_capture_order));
   resolver_->SetChangedCallback([this](uint32_t a) { textures_->OnResolved(a); });
+  // The textures over a dropped image's memory are the guest's again: uploaded from it.
+  resolver_->SetOverwrittenCallback(
+      [this](uint32_t base, uint32_t bytes) { textures_->InvalidateWritten(base, bytes); });
   draw_ = std::make_unique<DrawRenderer>(*this);
   if (!draw_->Initialize()) return false;
   present_ = std::make_unique<Presenter>(*this);
@@ -1631,6 +1635,13 @@ bool NativeRenderer::OwnGameWindow(bool own) {
 void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   const uint64_t t0 = NowNs();
   BeginFrame();
+  if (REXCVAR_GET(rexnative_texture_audit) >= 3) [[unlikely]] {
+    rex::cvar::SetFlagByName("rexnative_texture_audit", "1");
+    textures_->AuditGpu(device_->command_list(), [this] {
+      uint64_t ns = 0;
+      return SubmitAndWait(&ns);
+    });
+  }
   // What the frame's memexport draws wrote, into guest memory before the guest's next frame.
   draw_->FlushMemexport();
   D3D12Device& d = *device_;
@@ -1720,6 +1731,10 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
     rex::cvar::SetFlagByName("rexnative_texture_reload", "false");
     textures_->InvalidateWritten(0, 0x20000000u);
     REXLOG_INFO("ReXNative textures: every texture uploads again (rexnative_texture_reload)");
+  }
+  if (REXCVAR_GET(rexnative_texture_audit) >= 2) [[unlikely]] {
+    rex::cvar::SetFlagByName("rexnative_texture_audit", "1");
+    textures_->Audit();
   }
   if (frame_generation_) frame_generation_->FinishCaptures(completed);
   if (occlusion_) occlusion_->Retire(completed);

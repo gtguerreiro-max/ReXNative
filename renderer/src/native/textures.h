@@ -186,6 +186,13 @@ class TextureCache {
   // Recycles upload memory and upload list allocators of frames the GPU finished and evicts
   // textures over the budget. Once per Swap, after the submission.
   void Retire(uint64_t completed_fence);
+  // --rexnative_texture_audit: logs the textures used in the last second whose guest memory is
+  // no longer what they were uploaded from although no write reached the cache (render thread).
+  void Audit();
+  // ... and the same textures read back from the GPU, each subresource against guest memory
+  // untiled now. Records the copies into `list`; `submit_and_wait` submits it and waits for the
+  // GPU (NativeRenderer::SubmitAndWait).
+  void AuditGpu(CommandStream* list, const std::function<bool()>& submit_and_wait);
 
   // Whether the binding Get returned for this texture can be bound again without a Get: not
   // evicted, still bound through the same resource (no alias set or dropped), no guest write
@@ -279,6 +286,7 @@ class TextureCache {
   // Arms the watches on the guest pages of a texture's base and mips: after its dirty flag is
   // cleared, before its data is read.
   void ArmWatches(const TextureKey& key, uint32_t base_bytes, uint32_t mips_bytes);
+  uint64_t GuestHash(const Texture& t) const;
   static std::pair<uint32_t, uint32_t> InvalidationThunk(void* context, uint32_t start,
                                                          uint32_t length, bool exact);
   // Marks the textures on [start, start + length) stale and returns the range the memory may

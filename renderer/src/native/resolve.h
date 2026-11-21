@@ -65,6 +65,7 @@ struct ResolvedImage {
   // size and state as `texture`; nullptr otherwise.
   ID3D12Resource* linear = nullptr;
   uint64_t seq = 0;  // increases with every write (global resolve counter)
+  uint64_t frame = 0;  // the frame of its last write
   // The guest layout the image stands for (Resolver::FindContaining): its memory from guest_base
   // for extent_bytes, tiled or not, rows of pitch_blocks texels of bytes_per_texel.
   uint32_t extent_bytes = 0, pitch_blocks = 0, bytes_per_texel = 0;
@@ -228,6 +229,17 @@ class Resolver {
   // Called with a guest physical address whenever its Find result may change (an image is
   // resolved into, created, replaced or erased), so a cache can recheck only the textures
   // that sample that address.
+  // Called (on the thread that records) with the guest memory of an image that no longer stands
+  // for it: the game wrote there after the image's last resolve (see Destination::watched). The
+  // textures over that memory hold the guest's bytes from then on.
+  void SetOverwrittenCallback(std::function<void(uint32_t base, uint32_t bytes)> f) {
+    overwritten_ = std::move(f);
+  }
+  // Guest memory written without the page watches seeing it (a played trace's writes): as a
+  // write the watch caught. Any thread.
+  void GuestWritten(uint32_t start, uint32_t length) {
+    if (watch_) WrittenThunk(this, start, length, true);
+  }
   void SetChangedCallback(std::function<void(uint32_t guest_phys_base)> f) {
     changed_ = std::move(f);
   }
@@ -257,7 +269,30 @@ class Resolver {
     // Looked up by the texture cache or the presenter (Find, FindContaining): the GPU uses it.
     // A destination it never used is one the CPU reads (rexnative.resolve_writeback).
     mutable bool sampled = false;
+    // The image's guest memory has a write watch (WatchDestination). The console's memory holds
+    // what was written last, a resolve or the CPU; the image stands for the memory only until
+    // the CPU writes there. A game frees a render target's texture and loads other data at the
+    // address (Blur's menus: a 1280x720 target, then in a race its 32x32x32 color grading
+    // texture inside that memory, one slice of it at the start of a row of the old image's
+    // tiles): without the watch the image is found there for good (Find, FindContaining) and
+    // its texels are copied over the new data.
+    bool watched = false;
   };
+  struct MemoryWatch;
+  std::unique_ptr<MemoryWatch> watch_;
+  void* watch_handle_ = nullptr;
+  static std::pair<uint32_t, uint32_t> WrittenThunk(void* context, uint32_t start, uint32_t length,
+                                                    bool exact);
+  // After a resolve into the destination at `base`: watches its memory, if it is not watched.
+  void WatchDestination(uint32_t base, Destination& dest);
+  // BeginFrame: the destinations the CPU wrote over since the last one have no current image.
+  void DropOverwritten();
+  // The destination at `base` has no current image from here on (until it is resolved into
+  // again), and the textures over its memory are the guest's.
+  void Drop(uint32_t base, Destination& dest);
+  // --rexnative_resolve_drop_idle (live): drops every image not resolved into for that many
+  // frames. A fault that goes with them was an image that outlived its memory.
+  void DropIdle(uint64_t frames);
   struct Dump;
   struct DumpDeleter {
     void operator()(Dump* dump) const;
@@ -316,6 +351,7 @@ class Resolver {
   uint64_t frame_ = 0, frame_fence_ = 0;
   uint64_t seq_ = 0;
   std::function<void(uint32_t)> changed_;
+  std::function<void(uint32_t, uint32_t)> overwritten_;
   std::unique_ptr<Dump, DumpDeleter> dump_;
   GpuTimer* timer_ = nullptr;
   Upscaler* upscaler_ = nullptr;

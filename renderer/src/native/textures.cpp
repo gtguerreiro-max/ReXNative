@@ -21,12 +21,20 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/kernel/heap.h>
+#include <xxhash.h>
 
 #include "log.h"
 
 REXCVAR_DEFINE_STRING(rexnative_texture_trace, "", "ReXNative",
                       "Log every TextureCache::Get of the texture at this guest physical address "
                       "(hex): dirty upload, resolved image seq, copy");
+REXCVAR_DEFINE_INT32(
+    rexnative_texture_audit, 0, "ReXNative",
+    "Debug: 1 keeps a hash of the guest memory each texture was uploaded from; 2 (live, then "
+    "back to 1) compares, at the next Swap, every texture used in the last second with guest "
+    "memory as it is now and logs the ones that changed without the cache seeing a write; 3 "
+    "(live, then back to 1) reads those textures back from the GPU and compares each "
+    "subresource with guest memory untiled now, logging the ones that differ");
 REXCVAR_DEFINE_INT32(rexnative_texture_memory_soft_mb, 512, "ReXNative",
                      "Texture memory above which textures unused for "
                      "--rexnative_texture_memory_soft_lifetime_s are evicted (0: no limit)");
@@ -40,6 +48,7 @@ REXCVAR_DEFINE_INT32(rexnative_texture_memory_hard_mb, 1024, "ReXNative",
 #include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 namespace rexnative {
@@ -71,6 +80,8 @@ struct TextureCache::Texture {
   uint32_t slot = 0;
   uint64_t placed = kCommitted, bytes = 0;  // CreateTextureResource's placement and size
   uint32_t trace_id = 0;  // the frame trace that has its guest memory (trace.h)
+  uint64_t content_hash = 0;  // --rexnative_texture_audit: of its guest memory at its upload
+  uint64_t upload_ms = 0;     // ... and when
   uint64_t used_fence = 0, used_ms = 0;     // the last frame that bound it (MarkUsed)
   Texture* lru_prev = nullptr;
   Texture* lru_next = nullptr;
@@ -415,8 +426,10 @@ void TextureCache::Touch(TextureHandle entry, uint64_t frame_fence) {
 void TextureCache::MarkUsed(Texture& t, uint64_t frame_fence) {
   if (t.used_fence == frame_fence) return;
   t.used_fence = frame_fence;
-  if (const uint32_t id = trace::Recording(); id && t.trace_id != id) [[unlikely]] {
-    // A texture's first use in a frame trace: its guest memory, for the player to load.
+  if (const uint32_t id = trace::Recording(); id && t.trace_id != id && !t.alias) [[unlikely]] {
+    // A texture's first use in a frame trace: its guest memory, for the player to load. Not a
+    // resolved image's (an alias): the trace's resolves make it, and a write there would tell
+    // the resolver that the image is gone.
     t.trace_id = id;
     if (t.key.base_page) trace::TextureMem(t.key.base_page << 12, t.base_bytes);
     if (t.key.mip_page) trace::TextureMem(t.key.mip_page << 12, t.mips_bytes);
@@ -756,6 +769,10 @@ bool TextureCache::Upload(Texture& t, CommandStream* list, uint64_t frame_fence,
   }
   job.key = key;
   job.layout = t.layout;
+  if (REXCVAR_GET(rexnative_texture_audit) > 0) [[unlikely]] {
+    t.content_hash = GuestHash(t);
+    t.upload_ms = now_ms_;
+  }
   if (const uint32_t id = trace::Recording()) [[unlikely]] {
     t.trace_id = id;
     if (key.base_page) trace::TextureMem(key.base_page << 12, t.base_bytes);
@@ -899,6 +916,13 @@ bool TextureCache::CopyResolved(Texture& t, CommandStream* list) {
                      uint32_t(index % key.mip_levels()), key.mip_levels(), image->scale);
       return;
     }
+    if (image->guest_base != address)
+      REXNATIVE_LOG_FIRST(32, INFO,
+                          "ReXNative textures: {:08X} {}x{}x{} {} takes subresource {} from row {} "
+                          "of the resolved image at {:08X} ({}x{})",
+                          key.base_page << 12, key.width, key.height, key.depth_or_array_size,
+                          rex::graphics::FormatInfo::Get(key.format)->name, index, row,
+                          image->guest_base, image->width, image->height);
     D3D12_RESOURCE_DESC sd = source->GetDesc();
     D3D12_BOX box = {0, row, 0, 0, 0, 1};
     // A 3D texture's index is a depth slice of its base level (subresource 0, at that z).
@@ -1160,6 +1184,168 @@ bool TextureCache::CloseUploadLists(std::vector<ID3D12CommandList*>* lists) {
     u.closed.emplace_back(u.allocator_fence, std::move(u.list));
   }
   return !upload_list_failed_.load(std::memory_order_relaxed);
+}
+
+uint64_t TextureCache::GuestHash(const Texture& t) const {
+  uint64_t h = 1;
+  if (t.key.base_page && t.base_bytes)
+    h = XXH3_64bits(membase_ + (t.key.base_page << 12), t.base_bytes);
+  if (t.key.mip_page && t.mips_bytes)
+    h = XXH3_64bits_withSeed(membase_ + (t.key.mip_page << 12), t.mips_bytes, h);
+  return h ? h : 1;
+}
+
+void TextureCache::Audit() {
+  uint32_t used = 0, hashed = 0, stale = 0, resolved = 0, aliased = 0, dirty = 0, listed = 0;
+  for (Texture* t = lru_last_; t && now_ms_ - t->used_ms < 1000; t = t->lru_prev) {
+    ++used;
+    const bool from_resolve =
+        std::any_of(t->resolved_seq.begin(), t->resolved_seq.end(), [](uint64_t s) { return s; });
+    aliased += t->alias != nullptr;
+    resolved += from_resolve;
+    if (t->dirty.load(std::memory_order_acquire)) {
+      ++dirty;
+      continue;
+    }
+    if (!t->content_hash || t->alias || from_resolve) continue;
+    ++hashed;
+    if (GuestHash(*t) == t->content_hash) continue;
+    ++stale;
+    if (listed++ < 16)
+      REXLOG_WARN("ReXNative texture audit: {:08X} {}x{} {} mips {}: guest memory changed since "
+                  "its upload #{} {:.1f} s ago and the cache saw no write",
+                  t->key.base_page << 12, t->key.width, t->key.height,
+                  rex::graphics::FormatInfo::Get(t->key.format)->name, t->key.mip_levels(),
+                  t->uploads, double(now_ms_ - t->upload_ms) / 1000.0);
+  }
+  REXLOG_INFO("ReXNative texture audit: {} textures used in the last second: {} from guest "
+              "memory checked, {} STALE (memory changed unseen), {} waiting to upload, {} with "
+              "resolved data, {} aliased to a resolved image; {} cached in all",
+              used, hashed, stale, dirty, resolved, aliased, textures_.size());
+}
+
+void TextureCache::AuditGpu(CommandStream* list, const std::function<bool()>& submit_and_wait) {
+  FinishUploads();
+  struct Item {
+    Texture* t;
+    std::vector<HostSubresource> footprints;
+    uint64_t size;
+    ComPtr<ID3D12Resource> readback;
+    bool from_resolve = false;  // some of it is a resolved image's (CopyResolved)
+  };
+  std::vector<Item> items;
+  uint64_t total = 0;
+  uint32_t used = 0, skipped = 0;
+  for (Texture* t = lru_last_; t && now_ms_ - t->used_ms < 1000; t = t->lru_prev) {
+    ++used;
+    const bool from_resolve =
+        std::any_of(t->resolved_seq.begin(), t->resolved_seq.end(), [](uint64_t s) { return s; });
+    Item item;
+    item.t = t;
+    // What the GPU holds is guest memory's only for a texture uploaded from it and not written
+    // since.
+    item.from_resolve = from_resolve;
+    if (t->failed || t->alias || !t->uploads || t->dirty.load(std::memory_order_acquire) ||
+        !(item.size = GetHostFootprints(t->key, true, &item.footprints)) ||
+        total + item.size > (uint64_t(768) << 20) ||
+        !CreateBuffer(device_, D3D12_HEAP_TYPE_READBACK, item.size, D3D12_RESOURCE_STATE_COPY_DEST,
+                      "texture audit readback", &item.readback)) {
+      ++skipped;
+      continue;
+    }
+    total += item.size;
+    uint32_t block_width = 1, block_height = 1;
+    if (t->host->block_compressed) {
+      const rex::graphics::FormatInfo* info = rex::graphics::FormatInfo::Get(t->key.format);
+      block_width = info->block_width;
+      block_height = info->block_height;
+    }
+    Transition(*t, list, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    for (const HostSubresource& s : item.footprints) {
+      D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
+      src.pResource = t->resource.Get();
+      src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+      src.SubresourceIndex = s.level + s.slice * t->key.mip_levels();
+      dst.pResource = item.readback.Get();
+      dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+      dst.PlacedFootprint.Offset = s.offset;
+      dst.PlacedFootprint.Footprint.Format = t->host->resource;
+      dst.PlacedFootprint.Footprint.Width = s.block_columns * block_width;
+      dst.PlacedFootprint.Footprint.Height = s.block_rows * block_height;
+      dst.PlacedFootprint.Footprint.Depth = s.depth;
+      dst.PlacedFootprint.Footprint.RowPitch = s.row_pitch;
+      list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    Transition(*t, list, kShaderRead);
+    items.push_back(std::move(item));
+  }
+  if (!submit_and_wait()) return;
+  std::vector<uint8_t> expected, scratch;
+  uint32_t wrong = 0, listed = 0, resolved_differ = 0;
+  for (Item& item : items) {
+    const Texture& t = *item.t;
+    expected.assign(item.size, 0);
+    GuestTextureMemory guest;
+    if (t.key.base_page) {
+      guest.base = membase_ + (t.key.base_page << 12);
+      guest.base_size = t.base_bytes;
+    }
+    if (t.key.mip_page) {
+      guest.mips = membase_ + (t.key.mip_page << 12);
+      guest.mips_size = t.mips_bytes;
+    }
+    if (!UntileTexture(t.key, t.layout, guest, item.footprints, expected.data(), &scratch)) continue;
+    void* mapped = nullptr;
+    const D3D12_RANGE range = {0, size_t(item.size)};
+    if (FAILED(item.readback->Map(0, &range, &mapped))) continue;
+    const uint8_t* gpu = static_cast<const uint8_t*>(mapped);
+    std::string levels;
+    uint64_t differ = 0, bytes = 0;
+    for (const HostSubresource& s : item.footprints) {
+      uint64_t d = 0;
+      for (uint32_t row = 0; row < s.block_rows * s.depth; ++row) {
+        const uint64_t at = s.offset + uint64_t(row) * s.row_pitch;
+        if (std::memcmp(gpu + at, expected.data() + at, s.row_bytes) == 0) continue;
+        for (uint32_t i = 0; i < s.row_bytes; ++i) d += gpu[at + i] != expected[at + i];
+      }
+      bytes += uint64_t(s.row_bytes) * s.block_rows * s.depth;
+      if (!d) continue;
+      differ += d;
+      if (levels.size() < 90)
+        levels += " L" + std::to_string(s.level) + (s.slice ? "s" + std::to_string(s.slice) : "") +
+                  ":" +
+                  std::to_string(d * 100 / (uint64_t(s.row_bytes) * s.block_rows * s.depth)) + "%";
+    }
+    const D3D12_RANGE none = {0, 0};
+    item.readback->Unmap(0, &none);
+    if (!differ) continue;
+    if (item.from_resolve) {
+      // Expected of a texture a resolve wrote into; listed, since a resolved image that
+      // outlived its memory shows here and nowhere else.
+      ++resolved_differ;
+      REXNATIVE_LOG_FIRST(24, INFO,
+                          "ReXNative texture audit: {:08X} {}x{}x{} {} holds resolved data: {} of "
+                          "{} bytes are not guest memory's (levels{})",
+                          t.key.base_page << 12, t.key.width, t.key.height,
+                          t.key.depth_or_array_size,
+                          rex::graphics::FormatInfo::Get(t.key.format)->name, differ, bytes,
+                          levels);
+      continue;
+    }
+    ++wrong;
+    if (listed++ < 24)
+      REXLOG_WARN("ReXNative texture audit: GPU copy of {:08X} {}x{}x{} {} mips {} differs from "
+                  "guest memory in {} of {} bytes (levels{}); upload #{}, {} MB into heap {}",
+                  t.key.base_page << 12, t.key.width, t.key.height, t.key.depth_or_array_size,
+                  rex::graphics::FormatInfo::Get(t.key.format)->name, t.key.mip_levels(), differ,
+                  bytes, levels, t.uploads,
+                  t.placed == kCommitted ? 0 : (t.placed % kTextureHeapSize) >> 20,
+                  t.placed == kCommitted ? -1 : int64_t(t.placed / kTextureHeapSize));
+  }
+  REXLOG_INFO("ReXNative texture audit: {} textures used in the last second, {} read back from "
+              "the GPU ({} MB): {} DIFFER from guest memory, {} more hold resolved data that "
+              "does (listed); {} not checked (bound as a resolved image, waiting to upload)",
+              used, items.size(), total >> 20, wrong, resolved_differ, skipped);
 }
 
 void TextureCache::Retire(uint64_t completed_fence) {

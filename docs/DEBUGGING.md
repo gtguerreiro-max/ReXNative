@@ -10,6 +10,9 @@ it to the problem, and ask it questions; nothing needs a restart but a rebuild.
 |---|---|---|
 | Something is drawn wrong and stays wrong | `live.ps1 capture`, then `rdoc.ps1 summary`, `history`, `inputs` | which pass and draw made the pixel, with what |
 | It is wrong only now and then, or only in motion | `live.ps1 record 4`, then `live.ps1 play` | the same frames again, every time: wrong in the replay too, the data or the drawing is wrong; right in the replay, the timing or the renderer's leftover state is |
+| Right in the replay, wrong in the game | `live.ps1 record 1` at the fault, `live.ps1 play`, `live.ps1 compare` | the first resolve of that frame that differs between the game and its replay: the pass the leftover state is in |
+| A texture looks wrong | `live.ps1 audit` | the textures whose guest memory changed unseen, and the ones whose GPU copy is not guest memory's |
+| Wrong after other screens, right when entered at once | `live.ps1 idle` | whether a resolved image left by an earlier screen is in it: dropped live, the fault goes |
 | Which pass goes wrong first | `live.ps1 start -Oracle`, `live.ps1 oracle` | the first resolve that differs from the Xenos plugin's, same frame |
 | Is ReXGlue's renderer right itself | `xenia.ps1 start`, `shot`, `capture` | Xenia Canary at the same spot |
 | A renderer change broke a game, or fixed one | `live.ps1 play <trace> -Extra "--rexnative_trace_play_loops=2 --rexnative_trace_play_dump=true"` | the trace's frames as images, before and after, without playing |
@@ -101,6 +104,44 @@ a shared memory page taken as current, a pipeline). Blur's black patches (2026-1
 frames recorded with the patches on the screen replayed clean, every time, so the game's draws,
 registers, vertices and textures were right.
 
+`live.ps1 compare` then finds where the two part. `record` also dumps the resolves of the
+trace's first frame as the game drew it (`<live>\resolves`), and the player dumps the same frame
+the third time through (`<live>\resolves-play`); `compare` sets them side by side, each resolve
+against the one into the same destination, and prints only those apart (mean difference above
+0.004, or `compare 0.02`), each with a PNG of both. Record one frame (`record 1`) at the fault.
+The passes of a frame feed each other, so the first resolve listed is where the game's state
+differs from a fresh renderer's, and when only the last one is listed the fault is in the final
+pass's own inputs. Resolves of one texel (exposure, adapted over frames) differ by themselves.
+Compare once the replay has settled: what a game adapts over frames (exposure) starts from
+nothing in a replay, so `compare` waits for the third time through and a trace of one frame is
+best compared again some seconds later (create `<live>\resolves-play\dump.request`, then
+`python scripts\resolves.py <live>\resolves --against <live>\resolves-play --over 0.002`). Float
+targets are compared as a display shows them: a fault in dark tones is a small number in linear
+light. Blur: 64 of the frame's 67 resolves were equal, the exposure too, and the final image was
+not; the pixels apart were the ones of a narrow band of one colour channel, a tenth of the
+screen, which is what one wrong slice of a colour grading volume does
+([NOTES.md](NOTES.md#resolved-images-that-outlive-their-memory)). More switches sort what is
+left: `live.ps1 control "set rexnative_gpu_serialize true"` live (a fault that stays is not
+timing), `control "set rexnative_texture_reload true"`, `live.ps1 audit` and `live.ps1 idle`.
+
+`live.ps1 audit` checks the textures drawn with in the last second, in two lines when all is
+well: first each one's guest memory against the hash taken when it was uploaded (a texture the
+game rewrote without the cache seeing the write is listed), then each one read back from the GPU
+against guest memory untiled now, subresource by subresource (a copy that went wrong, or
+something else written over it, is listed with the levels that differ). A texture that holds
+resolved data and differs from guest memory is listed apart: that is expected of a texture a
+resolve wrote into, and it is where an image that outlived its memory shows (Blur's colour
+grading volume: 4608 of 131072 bytes). Textures bound as a resolved image are counted only.
+
+`live.ps1 idle` drops, in the running game, every resolved image that nothing was resolved into
+for 60 frames (`idle 600` for another age) and names them in the log; the textures over their
+memory are uploaded from guest memory again. A fault that goes away at that moment was a stale
+image. Blur's patches went with it, 49 images dropped, one of them from the boot screens.
+
+Two sessions working at once share the PC's one live game unless each sets
+`$env:REXNATIVE_LIVE_STATE` to a folder of its own: `start`, `play` and `stop` act on the game
+of that state. `play` takes the game from the trace's own path (`<game>\live\trace\<exe>-f<frame>.rxt`).
+
 ## Against a reference
 
 `live.ps1 start -Oracle` runs the game with the Xenos plugin presenting and ReXNative drawing
@@ -124,8 +165,9 @@ window and drives it to the problem; then each experiment takes seconds on the r
   the window in front; `log`: the game's log; `stop`;
 - `debug "<mask>"`: the renderer's switches (depth, stencil, cull, blend, alpha test off, skip a
   range of draws);
-- `snap`: the render targets after given shaders (`python scripts\snaps.py` turns them into
-  images); `drawlog`: one frame's draws; `trace`: the guest push buffer of one frame;
+- `snap`: the render targets after given shaders or after a draw (`python scripts\snaps.py`
+  turns them into images; a multisampled colour target is resolved first, a multisampled depth
+  target is left out); `drawlog`: one frame's draws; `trace`: the guest push buffer of one frame;
 - in `-Route`, `pad:A+START:200` presses the game's pad through the control file (no focus
   needed, for a layer with XInputGetState); `pad:none:600:ry=32767` holds a stick or a trigger
   meanwhile (`lx` `ly` `rx` `ry` from -32768 to 32767, `lt` `rt` from 0 to 255). A lone Start
@@ -156,7 +198,8 @@ window and drives it to the problem; then each experiment takes seconds on the r
   Swap wait until the render thread recorded the frame (the guest never writes ahead), and
   `live.ps1 control "set rexnative_texture_reload true"` uploads every cached texture again
   from guest memory at the next frame (a texture whose memory changed unnoticed). Blur's black
-  patches (2026-11-20, unsolved) kept both: not the guest writing ahead, not stale textures.
+  patches kept both: not the guest writing ahead, not stale textures (they were a resolved
+  image that outlived its memory, NOTES.md).
 - `--rexnative_coherency_check`: each vertex and index range a draw reads is compared with guest
   memory, and a stale page is logged (slow). A mesh broken in whole 4 KB pages of its vertex
   buffer is a stale page; one broken by the vertices of one bone is a constant (NOTES.md,

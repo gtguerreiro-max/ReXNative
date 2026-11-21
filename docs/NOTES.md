@@ -607,6 +607,46 @@ in one session (`live.ps1 control "renderer stock"`) averaged as bright, and Ren
 last pass's inputs (LUT slices, exposure, noise) equal in both. Compare animated screens that
 way, not by one capture each.
 
+## Resolved images that outlive their memory
+
+Blur's races had black patches over walls, road and trees: in most runs that went through the
+menus slowly, never in a replay of the same frames, and once there they stayed whatever was
+switched afterwards. A resolve's image stands for the guest memory it was resolved into, and the
+texture cache looks images up by address: a texture at an image's address binds it, and a
+texture inside an image's memory takes rows of it (`Resolver::FindContaining`: a stack of shadow
+cascades in one texture). Images were kept for good. Blur's boot screens resolve a 1280x720
+target into 0F0D6000 and the game frees that texture around frame 400; in a race its 32x32x32
+colour grading texture is loaded by the CPU into 0F408000, inside the old image's memory, with
+the key address of slice 11 at the start of a row of the old image's tiles. After every upload
+the cache copied a 32x32 block of the boot screen's image over that slice ("it copies even over
+fresh guest data"), and the last pass mapped one band of one colour channel, a tenth of the
+screen, to near black. Where the game put the texture changed from run to run (another run had it
+at 0F420000 and looked right), which made the fault look like a timing race.
+
+The console's memory holds what was written last, a resolve or the CPU. So each image's memory
+now has a write watch (`Resolver::WatchDestination`, `--rexnative_resolve_watch`): when the game
+writes there the image stands for nothing until it is resolved into again, and the textures
+over that memory are uploaded from it. Blur drops the boot image at frame 409 and some forty
+menu images when it loads a race (the log names each). The renderer's own writes there (the
+writeback, the memexport readback) go through the physical view and trip no watch.
+
+How it was found, with the tools of [DEBUGGING.md](DEBUGGING.md): a frame trace recorded with
+the patches on the screen replayed clean, so the game's data was right; the patches stayed with
+the GPU serialized live, so it was not timing; the texture audit found every texture from guest
+memory equal to it, hash and GPU copy; the resolves of the same frame, the game's against the
+settled replay's, were equal but for the final image (64 of 67, the exposure too), and the pixels
+apart were one band of one channel; the audit, extended to textures that hold resolved data,
+listed the grading volume alone; and `live.ps1 idle`, dropping the idle images in the running
+game, took the patches away at once. A replay of that frame with an image put at 0F0D6000 first
+(`--rexnative_trace_play_stale=0F0D6000,1280,720`) has the volume wrong with
+`--rexnative_resolve_watch=false` and right without it: the test of the fix.
+
+Two wrong turns on the way, for next time. The first comparison of resolves measured float
+targets in linear light with a threshold that a fault in dark tones stays under, and compared a
+replay whose exposure had not settled. And a run that came out right with the fix off was the
+game putting the texture elsewhere, not the fix failing: one run each way proves nothing about a
+fault that depends on where memory falls.
+
 ## Frame generation's HUD-less copy
 
 Frame generation looked right by its counts (every frame with a generated one before it, 30 FPS

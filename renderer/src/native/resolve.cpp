@@ -59,6 +59,17 @@ REXCVAR_DEFINE_BOOL(rexnative_resolve_specialize, true, "ReXNative",
                     "Compile a copy shader per kind of resolve (formats, samples, swap, bias) on a "
                     "worker thread; resolves use the generic shader until it is ready");
 
+REXCVAR_DEFINE_INT32(rexnative_resolve_drop_idle, 0, "ReXNative",
+                     "Debug (live, once): drop every resolved image that was not resolved into "
+                     "for this many frames; the textures over their memory take the guest's "
+                     "bytes. A fault that goes away with them was an image that outlived its "
+                     "memory");
+REXCVAR_DEFINE_BOOL(rexnative_resolve_watch, true, "ReXNative",
+                    "A resolved image stands for its guest memory only until the game writes "
+                    "there (the memory was freed and holds something else): false keeps every "
+                    "image for good, as before")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace rexnative {
 namespace {
 
@@ -1146,9 +1157,104 @@ struct Resolver::Writeback {
   uint32_t width = 0, height = 0, row_pitch = 0;
 };
 
+// The watched destinations' guest ranges, and the ones written since the last DropOverwritten.
+// The callback runs on any guest thread, under the SDK's watch lock.
+struct Resolver::MemoryWatch {
+  struct Range {
+    uint32_t start, end, base;
+  };
+  std::mutex mutex;
+  std::vector<Range> ranges;
+  std::vector<std::pair<uint32_t, uint32_t>> written;  // destination base, the address written
+};
+
 Resolver::Resolver() = default;
-Resolver::~Resolver() = default;
+Resolver::~Resolver() {
+  if (watch_handle_)
+    rexnative::host::Memory()->UnregisterPhysicalMemoryInvalidationCallback(watch_handle_);
+}
+
+std::pair<uint32_t, uint32_t> Resolver::WrittenThunk(void* context, uint32_t start,
+                                                     uint32_t length, bool) {
+  MemoryWatch& w = *static_cast<Resolver*>(context)->watch_;
+  const uint64_t end = uint64_t(start) + length;
+  std::lock_guard<std::mutex> lock(w.mutex);
+  for (size_t i = 0; i < w.ranges.size();) {
+    const MemoryWatch::Range r = w.ranges[i];
+    if (r.start < end && start < r.end) {
+      w.written.emplace_back(r.base, std::max(start, r.start));
+      w.ranges[i] = w.ranges.back();
+      w.ranges.pop_back();
+    } else {
+      ++i;
+    }
+  }
+  // Only the pages written: the other watchers of this memory keep theirs.
+  return {start, length};
+}
+
+void Resolver::WatchDestination(uint32_t base, Destination& dest) {
+  if (dest.watched || !dest.current || !watch_) return;
+  const uint32_t bytes = dest.current->view.extent_bytes;
+  if (!bytes || base >= 0x20000000u || bytes > 0x20000000u - base) return;
+  dest.watched = true;
+  {
+    std::lock_guard<std::mutex> lock(watch_->mutex);
+    watch_->ranges.push_back({base, base + bytes, base});
+  }
+  rexnative::host::Memory()->EnablePhysicalMemoryAccessCallbacks(base, bytes, true, false);
+}
+
+void Resolver::DropOverwritten() {
+  std::vector<std::pair<uint32_t, uint32_t>> written;
+  {
+    std::lock_guard<std::mutex> lock(watch_->mutex);
+    written.swap(watch_->written);
+  }
+  for (const auto& [base, address] : written) {
+    const auto it = destinations_.find(base);
+    if (it == destinations_.end()) continue;
+    Destination& dest = it->second;
+    dest.watched = false;
+    if (!dest.current) continue;
+    const ResolvedImage& v = dest.current->view;
+    REXNATIVE_LOG_FIRST(64, INFO,
+                        "ReXNative resolve: the image at {:08X} ({}x{}, format {}, last resolved "
+                        "into {} resolves ago) no longer stands for its memory: the game wrote "
+                        "at {:08X} (frame {})",
+                        base, v.width, v.height, uint32_t(v.format), seq_ - v.seq, address, frame_);
+    Drop(base, dest);
+  }
+}
+
+void Resolver::Drop(uint32_t base, Destination& dest) {
+  const uint32_t bytes = dest.current ? dest.current->view.extent_bytes : 0;
+  dest.current = nullptr;
+  if (changed_) changed_(base);
+  if (overwritten_ && bytes) overwritten_(base, bytes);
+}
+
+void Resolver::DropIdle(uint64_t frames) {
+  uint32_t dropped = 0;
+  for (auto& [base, dest] : destinations_) {
+    if (!dest.current || frame_ - dest.current->view.frame <= frames) continue;
+    const ResolvedImage& v = dest.current->view;
+    REXNATIVE_LOG_FIRST(128, INFO,
+                        "ReXNative resolve: idle image at {:08X} ({}x{}, format {}) dropped: not "
+                        "resolved into for {} frames",
+                        base, v.width, v.height, uint32_t(v.format), frame_ - v.frame);
+    Drop(base, dest);
+    ++dropped;
+  }
+  REXLOG_INFO("ReXNative resolve: {} images idle for more than {} frames dropped (frame {})",
+              dropped, frames, frame_);
+}
 bool Resolver::Initialize(ID3D12Device* device, RenderTargets* targets, ID3D12CommandQueue* queue) {
+  if (REXCVAR_GET(rexnative_resolve_watch)) {
+    watch_ = std::make_unique<MemoryWatch>();
+    watch_handle_ =
+        rexnative::host::Memory()->RegisterPhysicalMemoryInvalidationCallback(WrittenThunk, this);
+  }
   device_ = device;
   targets_ = targets;
   D3D12_DESCRIPTOR_HEAP_DESC hd = {};
@@ -1331,6 +1437,11 @@ void Resolver::BeginFrame(uint64_t frame, uint64_t frame_fence, uint64_t complet
   frame_fence_ = frame_fence;
   heap_next_ = 0;
   if (!writebacks_.empty()) WritebackFlush(completed_fence);
+  if (watch_) DropOverwritten();
+  if (const int32_t idle = REXCVAR_GET(rexnative_resolve_drop_idle); idle > 0) [[unlikely]] {
+    rex::cvar::SetFlagByName("rexnative_resolve_drop_idle", "0");
+    DropIdle(uint64_t(idle));
+  }
   if (dump_) DumpBeginFrame(completed_fence);
 }
 
@@ -1766,12 +1877,14 @@ bool Resolver::Copy(CommandStream* list, const ResolveParams& p, RenderTarget* r
   img->view.width = std::max(img->view.width, uint32_t(dx) + w);
   img->view.height = std::max(img->view.height, uint32_t(dy) + h);
   img->view.seq = ++seq_;
+  img->view.frame = frame_;
   img->view.extent_bytes = p.dest_extent_bytes;
   img->view.pitch_blocks = p.dest_pitch_blocks;
   img->view.bytes_per_texel = DestBytesPerTexel(p.dest_format);
   img->view.tiled = p.dest_tiled;
   dest.current = img;
   if (&dest == &own_) return true;
+  WatchDestination(p.dest_base, dest);
   if (changed_) changed_(p.dest_base);
   // Written back for the CPU (rexnative.resolve_writeback): a small resolve, and one into a
   // destination the GPU has not used (no texture, no front buffer looked it up); and by

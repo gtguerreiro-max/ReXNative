@@ -24,6 +24,17 @@
 #   scripts\live.ps1 play <trace.rxt>   # the game's executable plays the trace instead of the
 #                                       # game, as the live game: every command here works on it
 #                                       # (-Extra "--rexnative_trace_play_loops=2 ..." to exit)
+#   scripts\live.ps1 compare [threshold] # on a played trace: the resolves of its first frame as
+#                                       # the game drew them when it was recorded against the
+#                                       # replay's, only the ones apart (default 0.004): a fault
+#                                       # the replay does not have is in the first pass listed
+#   scripts\live.ps1 audit              # the textures used in the last second: guest memory
+#                                       # changed unseen, or the GPU's copy differs from it
+#   scripts\live.ps1 idle [frames]      # drops the resolved images not resolved into for that
+#                                       # many frames (default 60): a fault that goes with them
+#                                       # was an image that outlived its memory
+# Two sessions at once: each sets $env:REXNATIVE_LIVE_STATE to a folder of its own, or one's
+# start, play and stop act on the other's game (the live game is one per state folder).
 # With -Oracle at start the Xenos plugin draws the game and ReXNative draws beside it, and
 #   scripts\live.ps1 oracle [threshold] # compares every resolve of the next frame between the
 #                                       # two, printing only the ones that differ (the first one
@@ -73,7 +84,10 @@ param(
     [switch]$Plain
 )
 $ErrorActionPreference = 'Stop'
-$stateDir = Join-Path $env:LOCALAPPDATA 'rexnative-live'
+# The live game is one per state folder, by default one for the PC. Two sessions working at once
+# each set REXNATIVE_LIVE_STATE to a folder of their own, so that neither sees, replaces or stops
+# the other's game.
+$stateDir = if ($env:REXNATIVE_LIVE_STATE) { $env:REXNATIVE_LIVE_STATE } else { Join-Path $env:LOCALAPPDATA 'rexnative-live' }
 $statePath = Join-Path $stateDir 'state.json'
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -214,16 +228,31 @@ function Set-Debug($s, [string]$line) {
 $s = Read-State
 $more = @()
 if ($Command -eq 'play') {
-    # The live game's executable (or -Dir/-Exe) plays a frame trace instead of the game.
+    # The game's own executable plays a frame trace instead of the game. The game is the trace's:
+    # <game's folder>\live\trace\<executable's name>-f<frame>.rxt, as `record` writes it (else
+    # -Dir and -Exe). Never the live game of another folder: the live state is one for the PC,
+    # and that game may be another session's.
     if (-not $Arg) { throw 'play needs a trace: scripts\live.ps1 play <trace.rxt>' }
-    # ... the game stopped last, when none is running.
-    $last = Join-Path $stateDir 'last.json'
-    $from = if ($s) { $s } elseif (Test-Path $last) { Get-Content $last -Raw | ConvertFrom-Json } else { $null }
-    if (-not $Dir -and $from) { $Dir = $from.dir }
-    if (-not $Exe -and $from) { $Exe = Split-Path $from.exe -Leaf }
-    $more = @("--rexnative_trace_play=$((Resolve-Path $Arg).Path)")
-    $RenderDoc = $RenderDoc -or ($from -and $from.renderdoc)
-    $Command = 'start'; $Force = $true
+    $trace = (Resolve-Path $Arg).Path
+    if (-not $Dir) { $Dir = Split-Path (Split-Path (Split-Path $trace)) }
+    if (-not $Exe) { $Exe = ([IO.Path]::GetFileNameWithoutExtension($trace) -replace '-f\d+$', '') + '.exe' }
+    if (-not (Test-Path (Join-Path $Dir $Exe))) { throw "play: no $Exe in $Dir (pass -Dir and -Exe: the game the trace was recorded from)" }
+    $more = @("--rexnative_trace_play=$trace")
+    $same = $s -and ([IO.Path]::GetFullPath($s.dir).TrimEnd('\') -eq [IO.Path]::GetFullPath($Dir).TrimEnd('\'))
+    $RenderDoc = $RenderDoc -or ($same -and $s.renderdoc)
+    # The live game of the same folder is replaced; another one is left alone (start refuses).
+    if ($same) { $Force = $true }
+    $Command = 'start'
+}
+function Get-LogPath($s) {
+    $path = Join-Path $s.live 'live.log'
+    # ReXGlue v0.11 writes --log_file=live\live.log as logs\live\live.log_NNN.log.
+    $rotated = Get-ChildItem (Join-Path $s.dir 'logs\live') -Filter 'live.log*' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($rotated -and (-not (Test-Path $path) -or $rotated.LastWriteTime -gt (Get-Item $path).LastWriteTime)) {
+        $path = $rotated.FullName
+    }
+    return $path
 }
 function Wait-Stable([string]$path) {
     # Written once its size is above zero and stops changing.
@@ -249,27 +278,33 @@ switch ($Command) {
         if (-not $Dir -or -not $Exe) { throw 'start needs -Dir and -Exe' }
         $exePath = (Resolve-Path (Join-Path $Dir $Exe)).Path
         $live = Join-Path $Dir 'live'
-        foreach ($d in 'cap', 'trace', 'shots', 'rdoc', 'resolves') { New-Item -ItemType Directory -Force (Join-Path $live $d) | Out-Null }
+        foreach ($d in 'cap', 'trace', 'shots', 'rdoc', 'resolves', 'resolves-play') { New-Item -ItemType Directory -Force (Join-Path $live $d) | Out-Null }
         Set-Content -Path (Join-Path $live 'cap\draw-debug.txt') -Value '0' -Encoding ascii
         # -Plain: a game without ReXNative (a stock ReXGlue build, which refuses settings it
         # does not know): the window and the keyboard only.
+        # The resolve dumps of the game go to <live>\resolves and a played trace's to
+        # <live>\resolves-play (`record` and `play` each dump the trace's first frame, for
+        # `compare`); the textures keep a hash of what they were uploaded from, for `audit`.
+        $dumps = if ($more) { 'resolves-play' } else { 'resolves' }
+        Remove-Item (Join-Path $live "$dumps\*") -ErrorAction SilentlyContinue
         $native = if ($Plain) { @() } else {
             @("--rexnative_capture_dir=$live\cap", "--rexnative_d3d_control=$live\control.txt",
-              "--rexnative_d3d_trace_dir=$live\trace") }
+              "--rexnative_d3d_trace_dir=$live\trace", "--rexnative_resolve_dump=$live\$dumps",
+              '--rexnative_texture_audit=1') }
         # -RenderDoc: the renderer loads it and takes the captures (debug_tools.h).
         if ($RenderDoc) { $native += @('--rexnative_renderdoc=auto', "--rexnative_renderdoc_dir=$live\rdoc") }
         # -Oracle: the Xenos plugin presents and ReXNative draws beside it, on the guest thread;
         # `oracle` dumps a frame's resolves from both.
         if ($Oracle) {
             $native += @('--rexnative=false', '--rexnative_beside_xenos=true', '--rexnative_render_thread=false',
-                         '--rexnative_hdr=false', "--rexnative_resolve_dump=$live\resolves")
+                         '--rexnative_hdr=false')
         }
         $args = @('--log_file=live\live.log', '--mnk_mode=true', '--fullscreen=false',
                   '--window_width=1280', '--window_height=720') + $native + $more +
                 ($Extra -split ' ' | Where-Object { $_ })
         $p = Start-Process $exePath -ArgumentList $args -WorkingDirectory $Dir -PassThru
         New-Item -ItemType Directory -Force $stateDir | Out-Null
-        $s = [pscustomobject]@{ pid = $p.Id; exe = $exePath; dir = $Dir; live = $live; started = (Get-Date).ToString('o'); extra = $Extra; renderdoc = [bool]$RenderDoc; oracle = [bool]$Oracle }
+        $s = [pscustomobject]@{ pid = $p.Id; exe = $exePath; dir = $Dir; live = $live; started = (Get-Date).ToString('o'); extra = $Extra; renderdoc = [bool]$RenderDoc; oracle = [bool]$Oracle; playing = [bool]$more }
         $s | ConvertTo-Json | Set-Content $statePath -Encoding utf8
         "started pid $($p.Id): $exePath $($args -join ' ')"
         if ($Route) { Send-Schedule $p $Route; 'route done' }
@@ -396,6 +431,56 @@ switch ($Command) {
         $f.Refresh()
         '{0} ({1:n1} MB)' -f $f.FullName, ($f.Length / 1MB)
     }
+    'compare' {
+        # A played trace against the game it was recorded from: `record` dumped the resolves of
+        # the trace's first frame as the game drew it, the player dumps the same frame the third
+        # time through; only the resolves apart are printed (scripts\resolves.py --against).
+        Get-Game $s | Out-Null
+        if (-not $s.playing) { throw 'compare works on a played trace: live.ps1 record 1, then live.ps1 play <trace>' }
+        $mine = Join-Path $s.live 'resolves'; $play = Join-Path $s.live 'resolves-play'
+        if (-not (Get-ChildItem $mine -Filter 'f*-resolves.jsonl')) { throw "no resolve dump of the game in $mine (record the trace with this live.ps1)" }
+        $meta = $null
+        for ($i = 0; $i -lt 200 -and -not $meta; ++$i) {
+            Start-Sleep -Milliseconds 300
+            $meta = Get-ChildItem $play -Filter 'f*-resolves.jsonl' | Select-Object -First 1
+        }
+        if (-not $meta) { throw 'the player wrote no resolve dump within 60 s' }
+        Wait-Stable $meta.FullName
+        Start-Sleep -Milliseconds 1500
+        $over = if ($Arg) { $Arg } else { '0.004' }
+        python (Join-Path $PSScriptRoot 'resolves.py') $mine --against $play --over $over
+    }
+    'audit' {
+        # The textures used in the last second (renderer/src/native/textures.cpp, Audit): the
+        # ones whose guest memory changed without the cache seeing a write, then the ones whose
+        # GPU copy, read back, differs from guest memory. Two summary lines when all is well.
+        Get-Game $s | Out-Null
+        $control = Join-Path $s.live 'control.txt'
+        $start = Get-Date
+        Add-Content -Path $control -Value 'set rexnative_texture_audit 2' -Encoding ascii
+        Start-Sleep -Milliseconds 1500
+        Add-Content -Path $control -Value 'set rexnative_texture_audit 3' -Encoding ascii
+        Start-Sleep -Milliseconds 2500
+        Get-Content -LiteralPath (Get-LogPath $s) -Tail 2000 | Select-String 'ReXNative texture audit' |
+            ForEach-Object { $_.Line } | Where-Object {
+                $t = [datetime]::MinValue
+                [datetime]::TryParse($_.Substring(0, 23), [ref]$t) -and $t -ge $start.AddSeconds(-1)
+            } | ForEach-Object { $_ -replace '^.*ReXNative texture audit: ', '' }
+    }
+    'idle' {
+        # The resolved images nothing was resolved into for N frames (default 60) are dropped
+        # (--rexnative_resolve_drop_idle): the textures over their memory take the guest's bytes.
+        Get-Game $s | Out-Null
+        $n = if ($Arg -match '^\d+$') { $Arg } else { '60' }
+        $start = Get-Date
+        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_resolve_drop_idle $n" -Encoding ascii
+        Start-Sleep -Milliseconds 2500
+        Get-Content -LiteralPath (Get-LogPath $s) -Tail 400 | Select-String 'ReXNative resolve: (idle image|[0-9]+ images idle)' |
+            ForEach-Object { $_.Line } | Where-Object {
+                $t = [datetime]::MinValue
+                [datetime]::TryParse($_.Substring(0, 23), [ref]$t) -and $t -ge $start.AddSeconds(-1)
+            } | ForEach-Object { $_ -replace '^.*ReXNative resolve: ', '' }
+    }
     'oracle' {
         # Every resolve of the next frame, ReXNative's against the Xenos plugin's (start -Oracle):
         # only the ones whose mean difference is above the threshold (default 0.02) are printed.
@@ -419,13 +504,7 @@ switch ($Command) {
     }
     'log' {
         if (-not $s) { throw 'no live game' }
-        $path = Join-Path $s.live 'live.log'
-        # ReXGlue v0.11 writes --log_file=live\live.log as logs\live\live.log_NNN.log.
-        $rotated = Get-ChildItem (Join-Path $s.dir 'logs\live') -Filter 'live.log*' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($rotated -and (-not (Test-Path $path) -or $rotated.LastWriteTime -gt (Get-Item $path).LastWriteTime)) {
-            $path = $rotated.FullName
-        }
+        $path = Get-LogPath $s
         $n = if ($Arg2) { [int]$Arg2 } else { 30 }
         $lines = Get-Content -LiteralPath $path -Tail 4000
         if ($Arg) { $lines = $lines | Select-String -Pattern $Arg | ForEach-Object { $_.Line } }
@@ -449,9 +528,9 @@ switch ($Command) {
             # rebuild can replace the executable right after.
             $p = Get-Process -Id $s.pid -ErrorAction SilentlyContinue
             if ($p) { Stop-Process -Id $s.pid -Force -ErrorAction SilentlyContinue; $p.WaitForExit(20000) | Out-Null }
-            Move-Item $statePath (Join-Path $stateDir 'last.json') -Force -ErrorAction SilentlyContinue  # for `play`
+            Remove-Item $statePath -ErrorAction SilentlyContinue
         }
         'stopped'
     }
-    default { throw "unknown command '$Command' (start, play, keys, click, shot, frame, burst, debug, snap, drawlog, control, trace, capture, record, oracle, log, status, stop)" }
+    default { throw "unknown command '$Command' (start, play, compare, audit, idle, keys, click, shot, frame, burst, debug, snap, drawlog, control, trace, capture, record, oracle, log, status, stop)" }
 }

@@ -12,6 +12,13 @@ right, at the destination's size) and prints how far apart they are: the first r
 differs is where a pass went wrong. With --over only the resolves further apart than that are
 printed, then a line with how many were compared (live.ps1's `oracle`). Needs numpy and Pillow.
 
+    python scripts/resolves.py <dump dir> --against <other dump dir> [--over 0.02]
+
+compares ReXNative's own resolves of two dumps instead (the latest frame of each): the game with a
+fault against a played frame trace of the same moment without it (live.ps1 `resolves`), resolve
+by resolve in order, each pair at the same destination address. The first pair apart is the pass
+that the fault is in; f<frame>-r<i>-against.png shows the two, this dump's left.
+
 The guest side is untiled with Xenos's 2D tiling (XGAddress2DTiledOffset, as ReXGlue's
 texture_address.h) and swapped by the destination endian (1 8-in-16, 2 8-in-32, 3 16-in-32).
 """
@@ -79,11 +86,78 @@ def to_rgb(texels, kind):
     return np.clip(np.nan_to_num(words.view('<f2')[..., :3].astype(np.float32)), 0.0, 1.0)
 
 
+def load_native(folder, prefix, m):
+    """A dump's native image of resolve `m` as (h, w, bytes), or None."""
+    bpp = FORMATS.get(m['dest_format'], (None,))[0]
+    w, h = m['native_width'], m['native_height']
+    path = os.path.join(folder, '%s-r%d-native.bin' % (prefix, m['index']))
+    if not os.path.exists(path):
+        return None
+    data = np.fromfile(path, np.uint8)
+    bpp = bpp or (data.size // (w * h) if w * h else 0)
+    if not bpp or data.size < w * h * bpp:
+        return None
+    return data[:w * h * bpp].reshape(h, w, bpp)
+
+
+def against(a, meta, prefix):
+    """This dump's native resolves against another dump's, in order."""
+    others = sorted(f for f in os.listdir(a.against) if f.endswith('-resolves.jsonl'))
+    if not others:
+        raise SystemExit('no resolve dump in ' + a.against)
+    other_prefix = others[-1][:-len('-resolves.jsonl')]
+    mine = [json.loads(l) for l in open(os.path.join(a.dir, meta))]
+    theirs = [json.loads(l) for l in open(os.path.join(a.against, others[-1]))]
+    over = 0.02 if a.over is None else a.over
+    compared, apart, unmatched = 0, [], 0
+    # The k-th resolve of a source into a destination against the other dump's k-th: two frames
+    # of one scene need not hold the same resolves in the same order.
+    def key(m):
+        return (m['dest_base'], m['dest_format'], m['native_width'], m['native_height'], m['source'])
+
+    pool = {}
+    for t in theirs:
+        pool.setdefault(key(t), []).append(t)
+    for m in mine:
+        t = pool.get(key(m), [None]).pop(0) if pool.get(key(m)) else None
+        x = load_native(a.dir, prefix, m)
+        y = load_native(a.against, other_prefix, t) if t else None
+        if x is None or y is None or x.shape != y.shape:
+            unmatched += 1
+            continue
+        compared += 1
+        kind = FORMATS.get(m['dest_format'], (0, None))[1]
+        if kind and m['source'] != 4:
+            xr, yr = to_rgb(x, kind), to_rgb(y, kind)
+        else:  # depth and other formats: their bytes
+            xr, yr = x.astype(np.float32) / 255.0, y.astype(np.float32) / 255.0
+        if kind in ('f16', 'u1010102'):
+            # Linear light: as a display shows it (a dark fault is a small number there).
+            xr, yr = np.sqrt(np.clip(xr, 0, 1)), np.sqrt(np.clip(yr, 0, 1))
+        diff = float(np.abs(xr - yr).mean())
+        if diff <= over:
+            continue
+        apart.append(m['index'])
+        out = ''
+        if xr.shape[-1] == 3:
+            out = os.path.join(a.dir, '%s-r%d-against.png' % (prefix, m['index']))
+            img = np.concatenate([xr, yr], 1)
+            Image.fromarray((np.clip(img, 0, 1) * 255 + 0.5).astype(np.uint8), 'RGB').save(out)
+        print('r%-3d %s -> %08X fmt %-2d %4dx%-4d mean |diff| %.4f  mean %.4f against %.4f  %s' % (
+            m['index'], 'depth' if m['source'] == 4 else 'c%d' % m['source'], m['dest_base'],
+            m['dest_format'], m['native_width'], m['native_height'], diff, xr.mean(), yr.mean(), out))
+    print('%s against %s: %d resolves compared, %d further apart than %g%s%s' % (
+        prefix, other_prefix, compared, len(apart), over,
+        ' (first: r%d)' % apart[0] if apart else '',
+        ', %d without its pair in the other' % unmatched if unmatched else ''))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dir')
     ap.add_argument('--frame', type=int)
     ap.add_argument('--only', help='resolve indices, comma separated')
+    ap.add_argument('--against', help="another dump's folder: its native resolves against this one's")
     ap.add_argument('--over', type=float, help='print only the resolves whose mean difference is above this')
     a = ap.parse_args()
     metas = sorted(f for f in os.listdir(a.dir) if f.endswith('-resolves.jsonl'))
@@ -95,6 +169,8 @@ def main():
     prefix = meta[:-len('-resolves.jsonl')]
     only = {int(i) for i in a.only.split(',')} if a.only else None
     compared, apart = 0, []
+    if a.against:
+        return against(a, meta, prefix)
     for line in open(os.path.join(a.dir, meta)):
         m = json.loads(line)
         i = m['index']

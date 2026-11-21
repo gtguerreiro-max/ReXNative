@@ -1354,6 +1354,7 @@ struct DrawRenderer::Impl {
   struct Snap {
     std::string stem;
     ComPtr<ID3D12Resource> readback;
+    ComPtr<ID3D12Resource> resolved;  // a multisampled target's resolve, read back instead
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
     uint32_t rows = 0;
     uint64_t row_bytes = 0;
@@ -5455,20 +5456,48 @@ void DrawRenderer::Impl::SnapshotTargets(CommandStream* list, const BoundTargets
 }
 
 void DrawRenderer::Impl::Snapshot(CommandStream* list, RenderTarget* rt, const std::string& stem) {
-  if (!rt || rt->samples != 1) return;
-  const D3D12_RESOURCE_DESC desc = rt->resource->GetDesc();
+  if (!rt) return;
+  D3D12_RESOURCE_DESC desc = rt->resource->GetDesc();
   Snap s;
   s.stem = stem;
+  ID3D12Resource* source = rt->resource.Get();
+  const D3D12_RESOURCE_STATES state = rt->state;
+  if (rt->samples != 1) {
+    // A multisampled color target: its resolve (the samples' mean), into a texture of its own.
+    // Depth has none.
+    if (rt->depth) {
+      REXNATIVE_LOG_FIRST(4, INFO, "ReXNative draw: no snapshot of a {}x depth target (base {})",
+                          rt->samples, rt->edram_base);
+      return;
+    }
+    desc.SampleDesc.Count = 1;
+    desc.Format = rt->view_format;
+    desc.Alignment = 0;  // the multisampled target's is 4 MB
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    if (Failed(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
+                                               D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr,
+                                               IID_PPV_ARGS(&s.resolved)),
+               "snapshot resolve texture"))
+      return;
+    RenderTargets::Transition(list, rt, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+    list->Call([dst = s.resolved.Get(), src = source, format = rt->view_format](
+                   ID3D12GraphicsCommandList* l) { l->ResolveSubresource(dst, 0, src, 0, format); });
+    const D3D12_RESOURCE_BARRIER b = TransitionBarrier(
+        s.resolved.Get(), D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->ResourceBarrier(1, &b);
+    source = s.resolved.Get();
+  }
   uint64_t total = 0;
   // Subresource 0: the color target, or a depth target's depth plane.
   device->GetCopyableFootprints(&desc, 0, 1, 0, &s.layout, &s.rows, &s.row_bytes, &total);
   if (!CreateBuffer(device, D3D12_HEAP_TYPE_READBACK, total, D3D12_RESOURCE_STATE_COPY_DEST,
                     "snapshot readback", &s.readback))
     return;
-  const D3D12_RESOURCE_STATES state = rt->state;
-  RenderTargets::Transition(list, rt, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  if (source == rt->resource.Get())
+    RenderTargets::Transition(list, rt, D3D12_RESOURCE_STATE_COPY_SOURCE);
   D3D12_TEXTURE_COPY_LOCATION src = {}, dst = {};
-  src.pResource = rt->resource.Get();
+  src.pResource = source;
   src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
   src.SubresourceIndex = 0;
   dst.pResource = s.readback.Get();
