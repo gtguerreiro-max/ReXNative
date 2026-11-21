@@ -4852,8 +4852,12 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   const auto host_vs_type =
       DxbcShaderTranslator::Modification(mods.vertex).vertex.host_vertex_shader_type;
   const bool domain = rex::gpu::Shader::IsHostVertexShaderTypeDomain(host_vs_type);
+  // Not for a pixel shader that writes depth itself: Overlord II restores the scene's depth
+  // from a texture with a full-screen quad before lighting it, and that quad's motion (none)
+  // wiped the G-buffer's over the whole screen, so FSR 3 got no motion at all and ghosted.
   const bool motion = scene_upscaler && !no_motion && !domain && mods.pixel_shader_used &&
-                      !vs->GetMemExportEMWritten() && depth_control.z_enable &&
+                      !vs->GetMemExportEMWritten() && !(ps && ps->IsDepthWritten()) &&
+                      depth_control.z_enable &&
                       (depth_control.z_write_enable ||
                        ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
                         !GetRtBlend(regs, 0).Blends()));

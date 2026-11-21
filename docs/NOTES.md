@@ -120,6 +120,14 @@ gameplay its 220 draws left the light pass (39 draws) under the quarter rule abo
 G-buffer pass was upscaled again, at its first resolve, the normals' target, and the lit scene
 came out white. Now the light pass is upscaled, in the menu and in gameplay.
 
+FSR 3 still ghosted there (FSR 4 on the Deck hid it): the motion target FSR read was zero at
+every pixel. The G-buffer passes wrote it (100% of the pixels by their end), and then the game
+restored the scene's depth from a texture with a full-screen quad whose pixel shader writes
+depth; that draw writes depth, so it wrote its motion too, none, over the whole screen. A draw
+whose pixel shader writes depth no longer writes motion (its vertices say nothing of what it
+covers). A RenderDoc capture with the camera turning: the motion at FSR's input went from 0% to
+100% of the pixels, and the character's double and the smearing while turning went.
+
 ## A scene drawn after a depth prepass
 
 With the upscaler on (the Steam Deck's default), FSR did nothing in Iron Brigade. It draws a depth
