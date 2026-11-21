@@ -34,6 +34,8 @@
 //                          focus needed
 //   renderer native|stock  as the renderer switch (F9): the native renderer or the Xenos plugin
 //                          draws from the next Swap on, without the window in front
+//   snapshot               a debug snapshot for a report, as the settings menu's Y: the frame
+//                          as presented and a trace of the next frames (native/snapshot.h)
 //   watch <address> [nan|any] [count]   a hardware breakpoint on one guest dword (native/watch.h):
 //                          logs the recompiled functions that write it (a NaN, or any value);
 //                          watch off clears it
@@ -49,6 +51,7 @@
 
 #include "native/guard.h"
 #include "native/watch.h"
+#include "native/snapshot.h"
 #include "native/clock.h"
 #include "native/cmd_replay.h"
 #include "native/d3d_state.h"
@@ -1093,6 +1096,8 @@ void PollControl(Tap& t, uint8_t* base) {
       g_pad_state.store(state, std::memory_order_relaxed);
       g_pad_state2.store(state2, std::memory_order_relaxed);
       g_pad_until_ns.store(rexnative::NowNs() + ms * 1000000ull, std::memory_order_release);
+    } else if (cmd == "snapshot") {
+      rexnative::snapshot::Request("the control file");
     } else if (cmd == "watch") {
       if (arg == "off") {
         rexnative::watch::Clear();

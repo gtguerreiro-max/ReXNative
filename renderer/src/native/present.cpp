@@ -10,6 +10,7 @@
 #include "overlay.h"
 #include "present_debug.h"
 #include "renderer.h"
+#include "snapshot.h"
 #include "resolve.h"
 #include "texture_layout.h"
 
@@ -263,6 +264,7 @@ struct Presenter::Impl {
     uint32_t pitch = 0, width = 0, height = 0, mapping = 0;
     bool rgb10a2 = false;
     uint64_t frame = 0, fence = 0;
+    std::filesystem::path dir;  // --rexnative_capture_dir, or a snapshot's folder (snapshot.h)
   };
   std::vector<Shot> shots;
   std::vector<std::thread> shot_writers;
@@ -428,6 +430,8 @@ bool Presenter::Impl::WriteRamp(RampMode mode, uint32_t slot) {
 bool Presenter::Impl::CaptureRequested(uint64_t frame) {
   const int32_t at = REXCVAR_GET(rexnative_capture_frame);
   bool want = at >= 0 && frame == uint64_t(at);
+  // A snapshot the player asked for (snapshot.h): with or without a capture folder.
+  if (snapshot::Due(frame)) want = true;
   if (capture_dir.empty()) return want;
   // The mark key takes a burst as the request file does (--rexnative_capture_burst): a flicker
   // shows only across frames in a row.
@@ -479,15 +483,15 @@ void Presenter::Impl::WriteShots() {
     shot_writers.front().join();
     shot_writers.erase(shot_writers.begin());
   }
-  shot_writers.emplace_back([ready = std::move(ready), dir = capture_dir] {
+  shot_writers.emplace_back([ready = std::move(ready)] {
     for (const Shot& s : ready) {
       std::vector<uint8_t> rgb;
       if (!ReadbackRgb(s.readback.Get(), s.pitch, s.width, s.height, s.mapping, s.rgb10a2, &rgb))
         continue;
       const std::string name = "f" + std::to_string(s.frame) + "-native.png";
-      const bool ok = WritePng((dir / name).c_str(), rgb, s.width, s.height);
+      const bool ok = WritePng((s.dir / name).c_str(), rgb, s.width, s.height);
       REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", s.frame, s.width, s.height,
-                  dir.string(), name, ok ? "" : ", write failed");
+                  s.dir.string(), name, ok ? "" : ", write failed");
     }
   });
 }
@@ -756,8 +760,9 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                    mapping, rgb10a2, r.frame_index());
   }
 
-  // The Xenos plugin's frame is captured alone (its own copy is the image).
-  if (classic && REXCVAR_GET(rexnative_capture_xenos)) return;
+  // The Xenos plugin's frame is captured alone (its own copy is the image); a snapshot takes it
+  // as it is.
+  if (classic && REXCVAR_GET(rexnative_capture_xenos) && !snapshot::Capturing()) return;
   // A request arms the capture of the next shown frame. With the Xenos copy, that frame's
   // resolves must reach guest memory synchronously (HoldFullReadback) from its start, or the
   // copy is the previous frame's; the native image alone is this frame's.
@@ -769,7 +774,9 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     // Not with frame generation: holding the guest thread half a second makes FidelityFX see a
     // scene change, and its next 4 generated frames are copies of the real ones (no motion), the
     // very frames the capture burst takes (frame_generation.h).
-    c.xenos = REXCVAR_GET(rexnative_capture_xenos) && !r.frame_generation_on();
+    // Nor for a snapshot: the frame alone, without holding the game.
+    c.xenos = REXCVAR_GET(rexnative_capture_xenos) && !r.frame_generation_on() &&
+              !snapshot::Capturing();
     if (c.xenos) {
       capture_holding.store(true, std::memory_order_release);
       HoldFullReadback(true);
@@ -809,6 +816,11 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       shot.rgb10a2 = rgb10a2;
       shot.frame = last_shot_frame = r.frame_index();
       shot.fence = r.frame_fence();
+      shot.dir = capture_dir;
+      if (snapshot::Capturing()) {
+        shot.dir = snapshot::Dir();
+        snapshot::Taken(shot.frame);
+      }
       shots.push_back(std::move(shot));
       return;
     }
@@ -854,7 +866,9 @@ const ImageRect& Presenter::image_rect() const { return impl_->image_rect; }
 
 const LumaProbe& Presenter::luma_probe() const { return impl_->probe.result(); }
 
-bool Presenter::capture_holds_guest() const { return REXCVAR_GET(rexnative_capture_xenos); }
+bool Presenter::capture_holds_guest() const {
+  return REXCVAR_GET(rexnative_capture_xenos) && !snapshot::Pending();
+}
 
 bool Presenter::capture_holding_guest() const {
   return impl_->capture_holding.load(std::memory_order_acquire);

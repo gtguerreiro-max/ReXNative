@@ -229,6 +229,23 @@ window and drives it to the problem; then each experiment takes seconds on the r
   HUD-less frame before by them gives this one where they are right, and the error map shows
   where they are not (a band of the road whose draw read another mesh's vertices, NOTES.md).
 
+## Snapshots from the player
+
+Where something looks wrong, the player opens the settings menu (View + Menu on the Steam Deck,
+Back + Start or F1 elsewhere) and presses Y (or the menu's Snapshot button). Eight frames later,
+the menu gone, the renderer saves the frame as presented (`f<frame>-native.png`) and a frame trace
+of the next three frames (`<game>-f<frame>.rxt`) in `<executable's folder>\snapshots\<date and
+time>\`, with `snapshot.txt` (the frame and the renderer that drew it); a short note on the screen
+says so. It needs no capture folder, does not hold the game, and works on the classic renderer
+too; the newest five are kept. `live.ps1 control snapshot` takes one the same way.
+
+The picture is what the player saw. The trace is what the game handed the renderer there, so a
+snapshot taken on the Steam Deck plays on the PC with the same executable
+(`live.ps1 play <trace> -Dir <game's run folder> -Exe <exe>`), without reaching the place: wrong on
+the PC too, the fault is in the data or in how it is drawn; right on the PC while the Deck's
+picture is wrong, it is in what differs on the Deck (its GPU and driver under Proton, its
+settings). The ReXNative Manager sends the newest snapshots with a report from the Deck.
+
 ## On the Steam Deck
 
 `python scripts\deck_drive.py <work>\<game> <label> "<at>:<item>,..." <end> [flags]` starts an

@@ -5,6 +5,7 @@
 | Key | Pad | |
 |---|---|---|
 | F1 | Back + Start (the Deck: View + Menu) | the settings HUD |
+| | in the HUD: Y (or its Snapshot button) | a debug snapshot for a report: the frame and a trace of the next frames, in `snapshots\` beside the executable ([DEBUGGING.md](DEBUGGING.md#snapshots-from-the-player)) |
 | F9 | | switch between ReXNative and ReXGlue's Xenos GPU emulation (the HUD's Renderer too) |
 | F7 | | the upscaler on or off |
 | F8 | | show the upscaler's inputs |

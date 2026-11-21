@@ -36,6 +36,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 namespace rexnative {
@@ -60,6 +61,9 @@ inline uint32_t Recording() { return detail::g_recording.load(std::memory_order_
 // trace when one was asked for, and ends the one that has its frames. True while one is
 // recorded.
 bool AtSwap(uint64_t frame);
+// Records the next `frames` frames into `dir` instead of the trace folder (a snapshot's, snapshot.h);
+// as `set rexnative_trace_record N` otherwise. Any thread.
+void RecordNext(int frames, const std::filesystem::path& dir);
 // Guest thread, while recording: the register writes since the last command (`regs`, `count`; for
 // a trace's first command, the whole file `all`), then the command. Each returns the command's
 // number + 1, for SetExecuting.

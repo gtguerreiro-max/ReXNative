@@ -117,6 +117,9 @@ std::string GameName() {
   return std::filesystem::path(std::wstring(path, n)).stem().string();
 }
 
+// RecordNext's folder for the next recording (g_rec.mutex).
+std::filesystem::path g_next_dir;
+
 std::filesystem::path TraceDir() {
   std::string dir = REXCVAR_GET(rexnative_trace_dir);
   if (dir.empty()) dir = REXCVAR_GET(rexnative_d3d_trace_dir);
@@ -195,6 +198,14 @@ uint32_t Command(Type type, const T& value, const uint32_t* all, const RegWrite*
 
 }  // namespace
 
+void RecordNext(int frames, const std::filesystem::path& dir) {
+  {
+    std::lock_guard<std::mutex> lock(g_rec.mutex);
+    g_next_dir = dir;
+  }
+  rex::cvar::SetFlagByName("rexnative_trace_record", std::to_string(std::max(1, frames)));
+}
+
 bool AtSwap(uint64_t frame) {
   if (Recording()) {
     std::lock_guard<std::mutex> lock(g_rec.mutex);
@@ -214,7 +225,12 @@ bool AtSwap(uint64_t frame) {
   const int32_t asked = REXCVAR_GET(rexnative_trace_record);
   if (asked <= 0) return false;
   rex::cvar::SetFlagByName("rexnative_trace_record", "0");
-  const std::filesystem::path dir = TraceDir();
+  std::filesystem::path dir;
+  {
+    std::lock_guard<std::mutex> lock(g_rec.mutex);
+    dir.swap(g_next_dir);
+  }
+  if (dir.empty()) dir = TraceDir();
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   const std::string game = GameName();

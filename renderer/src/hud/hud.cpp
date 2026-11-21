@@ -8,6 +8,7 @@
 #include "native/legacy_names.h"
 #include "native/overlay.h"
 #include "native/renderer.h"
+#include "native/snapshot.h"
 
 #include <imgui.h>
 #include <rex/cvar.h>
@@ -783,14 +784,23 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   ImGui::PopTextWrapPos();
   ImGui::PopStyleColor();
   ImGui::Separator();
-  ImGui::TextDisabled("%s", g_pending.empty() ? "D-pad: choose and change     B: close"
+  ImGui::TextDisabled("%s", g_pending.empty() ? "Y: snapshot     B: close"
                                               : "* after a restart     B: close");
-  ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Close").x -
-                  ImGui::GetStyle().FramePadding.x * 2.0f);
+  const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+  ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Snapshot").x -
+                  ImGui::CalcTextSize("Close").x - pad * 2.0f - ImGui::GetStyle().ItemSpacing.x);
+  bool snap = ImGui::Button("Snapshot");
+  ImGui::SameLine();
   if (ImGui::Button("Close")) open = false;
   ImGui::End();
   // B or Escape closes (the rows open no popups for them to close first).
   if (Pressed({ImGuiKey_GamepadFaceRight, ImGuiKey_Escape})) open = false;
+  // Y: a debug snapshot of the game as it is (snapshot.h), taken once the menu is gone.
+  if (Pressed({ImGuiKey_GamepadFaceUp})) snap = true;
+  if (snap) {
+    rexnative::snapshot::Request("the settings menu");
+    open = false;
+  }
   return open;
 }
 
@@ -816,13 +826,26 @@ bool SteamDeck() {
   return deck;
 }
 
+// The last snapshot's message (snapshot.h), shown for kToastTime from when it was set.
+constexpr auto kToastTime = std::chrono::seconds(6);
+
+float ToastAlpha(std::chrono::steady_clock::time_point now, std::string* text) {
+  int64_t at = 0;
+  *text = rexnative::snapshot::Message(&at);
+  if (!at || text->empty()) return 0.0f;
+  const std::chrono::steady_clock::time_point end =
+      std::chrono::steady_clock::time_point{std::chrono::steady_clock::duration(at)} + kToastTime;
+  return std::clamp(std::chrono::duration<float>(end - now).count(), 0.0f, 1.0f);
+}
+
 const char* HintText() {
   if (!g_pad_seen.load(std::memory_order_relaxed))
     return SteamDeck() ? "Settings: keyboard F1" : "Settings:  F1";
-  return SteamDeck() ? "Settings:  View + Menu" : "Settings:  Back + Start   (F1)";
+  return SteamDeck() ? "Settings and snapshots:  View + Menu"
+                     : "Settings and snapshots:  Back + Start   (F1)";
 }
 
-void DrawHint(ImGuiIO& io, float alpha) {
+void DrawHint(ImGuiIO& io, float alpha, const char* text) {
   const float margin = ImGui::GetStyle().WindowPadding.x;
   ImGui::SetNextWindowPos(ImVec2(margin, io.DisplaySize.y - margin), ImGuiCond_Always,
                           ImVec2(0.0f, 1.0f));
@@ -832,7 +855,7 @@ void DrawHint(ImGuiIO& io, float alpha) {
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
                    ImGuiWindowFlags_NoFocusOnAppearing);
-  ImGui::TextUnformatted(HintText());
+  ImGui::TextUnformatted(text);
   ImGui::End();
   ImGui::PopStyleVar();
 }
@@ -842,7 +865,9 @@ void BuildFrame() {
   static bool was_open = false;
   const auto now = std::chrono::steady_clock::now();
   const bool menu = g_open.load(std::memory_order_relaxed);
-  const float hint = menu ? 0.0f : HintAlpha(now);
+  std::string toast_text;
+  const float toast = menu ? 0.0f : ToastAlpha(now, &toast_text);
+  const float hint = menu ? 0.0f : std::max(HintAlpha(now), toast);
   if (!g_context || (!menu && hint <= 0.0f)) {
     was_open = false;
     return;
@@ -866,7 +891,7 @@ void BuildFrame() {
   if (menu)
     open = DrawMenu(io, appearing);
   else
-    DrawHint(io, hint);
+    DrawHint(io, hint, toast > 0.0f ? toast_text.c_str() : HintText());
   ImGui::Render();
   OverlayFrame frame;
   const ImDrawData* data = ImGui::GetDrawData();
@@ -1094,7 +1119,9 @@ bool OverlayFrameFor(uint32_t width, uint32_t height, OverlayFrame* frame) {
   const auto now = std::chrono::steady_clock::now();
   if (!g_hint_end.load(std::memory_order_relaxed) && REXCVAR_GET(rexnative_hud_hint))
     g_hint_end.store((now + kHintTime).time_since_epoch().count(), std::memory_order_relaxed);
-  if (!g_ready || (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f)) {
+  std::string toast;
+  if (!g_ready ||
+      (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f && ToastAlpha(now, &toast) <= 0.0f)) {
     std::lock_guard lock(g_frame_mutex);
     g_frame_ready = false;
     return false;
