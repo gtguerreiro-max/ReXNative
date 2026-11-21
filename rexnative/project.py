@@ -995,6 +995,16 @@ def discover(work, rexglue, build_args, rounds=30, seconds=40, log=print):
                 name, rnd, 'still running after %d s' % seconds if code is None
                 else 'exited 0x%08X' % (code & 0xFFFFFFFF)))
             return added
+        # Codegen can drop a hint again (one that would split a function it already has): then
+        # the next run reports the same address, and another codegen and build change nothing.
+        # Burnout Crash went round 12 times for 8A601E1C, about 1 h 40. Only new addresses
+        # are worth a round.
+        again = [a for a in new if a in added]
+        if len(again) == len(new):
+            log('%s: run %d: missing %s again, which codegen did not keep as a function start: '
+                'discovery stops here' % (name, rnd, ', '.join('%08X' % a for a in again)))
+            return added
+        new = [a for a in new if a not in added]
         log('%s: run %d: missing %s' % (name, rnd, ', '.join('%08X' % a for a in new)))
         for a in new:
             hints[a] = 0
