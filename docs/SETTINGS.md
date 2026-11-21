@@ -25,6 +25,11 @@ change it.
   stays up on both, so the game can go back to Native the same way. A fault in the native path
   (a layer whose offsets do not fit the game's D3D) hands the game to the classic renderer for
   the rest of the run instead of crashing.
+- **Window page** (not on the Steam Deck, where gamescope shows the game on the whole screen):
+  Windowed, Full screen (a borderless window over the display) or Full screen (exclusive); the
+  window's size when windowed (1280x720 to 2560x1440); and the display, when there are several.
+  These are ReXGlue's own settings (`ui.fullscreen`, `ui.fullscreen_exclusive`,
+  `ui.window_width`, `ui.window_height`, `ui.monitor`), applied at once and saved under `[ui]`.
 - **Upscaler page:** switches the upscaler, its type (automatic, DLSS or FSR), the FSR version
   and the mode (native anti-aliasing to ultra performance) while the game runs, and says what
   runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). Frame generation (AMD FSR) switches there

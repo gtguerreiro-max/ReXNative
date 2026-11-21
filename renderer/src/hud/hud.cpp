@@ -94,6 +94,20 @@ bool NvidiaGpu() {
 // and most displays; the frame rate choices are its divisors).
 int RefreshRate() { return 60; }
 
+bool SteamDeck();
+
+// How many displays the desktop has (user32's GetSystemMetrics(SM_CMONITORS), without windows.h
+// and its min/max macros in this file).
+extern "C" __declspec(dllimport) int __stdcall GetSystemMetrics(int index);
+int Displays() { return GetSystemMetrics(80 /* SM_CMONITORS */); }
+
+// The window's size now, as "WxH" (ui.window_width/height; 0 is the video mode's).
+std::string WindowSize() {
+  const int w = FlagInt("ui.window_width"), h = FlagInt("ui.window_height");
+  return std::to_string(w > 0 ? w : FlagInt("ui.video_mode_width")) + "x" +
+         std::to_string(h > 0 ? h : FlagInt("ui.video_mode_height"));
+}
+
 std::vector<Option> MakeOptions() {
   const std::vector<Choice> on_off = {{"Off", "false"}, {"On", "true"}};
   std::vector<Option> o;
@@ -173,6 +187,48 @@ std::vector<Option> MakeOptions() {
                nullptr,
                "Frames the game may run ahead of the screen: 1 responds soonest (the least input "
                "delay), 3 is the steadiest when the GPU is near its limit. Takes effect at once."});
+  // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
+  // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
+  // where gamescope shows the game on the whole screen whatever the window is.
+  o.push_back({"Window", "window_mode", "Window",
+               {{"Windowed", "window"}, {"Full screen", "full"}, {"Full screen (exclusive)", "exclusive"}},
+               false,
+               [] {
+                 if (Flag("ui.fullscreen") != "true") return std::string("window");
+                 return std::string(Flag("ui.fullscreen_exclusive") == "true" ? "exclusive" : "full");
+               },
+               [](const std::string& v) {
+                 if (v == "window") return Assignments{{"ui.fullscreen", "false"}};
+                 return Assignments{{"ui.fullscreen_exclusive", v == "exclusive" ? "true" : "false"},
+                                    {"ui.fullscreen", "true"}};
+               },
+               nullptr,
+               "Full screen is a borderless window over the whole display; exclusive takes the "
+               "display for the game alone (switching away with Alt+Tab is slower). At once.",
+               [] { return !SteamDeck(); }});
+  o.push_back({"Window", "window_size", "Window size",
+               {{"1280x720", "1280x720"}, {"1600x900", "1600x900"}, {"1920x1080", "1920x1080"},
+                {"2560x1440", "2560x1440"}},
+               false,
+               [] {
+                 const std::string now = WindowSize();
+                 const auto& cs = Find("window_size").choices;
+                 const bool listed = std::ranges::any_of(cs, [&](const Choice& c) { return c.value == now; });
+                 return listed ? now : std::string("1280x720");
+               },
+               [](const std::string& v) {
+                 const size_t x = v.find('x');
+                 return Assignments{{"ui.window_width", v.substr(0, x)}, {"ui.window_height", v.substr(x + 1)}};
+               },
+               nullptr, "The window's size on the desktop, when the game is not full screen.",
+               [] { return !SteamDeck() && Flag("ui.fullscreen") != "true"; }});
+  o.push_back({"Window", "monitor", "Display",
+               {{"1", "0"}, {"2", "1"}, {"3", "2"}, {"4", "3"}},
+               false,
+               [] { return std::to_string(std::clamp(FlagInt("ui.monitor"), 0, 3)); },
+               [](const std::string& v) { return Assignments{{"ui.monitor", v}}; },
+               nullptr, "Which display the game is shown on (full screen).",
+               [] { return !SteamDeck() && Displays() > 1; }});
   // The scene's upscaler (upscaler.h): NVIDIA DLSS (dlss.h) or AMD FSR 4 / 3.1, the mode, and
   // FSR frame generation (frame_generation.h). They work on the scene surface (game_layer.h's
   // kSceneSurface, or learned at run time: scene.h). The live ones make the upscaler again at
