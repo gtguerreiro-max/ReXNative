@@ -45,6 +45,22 @@ def slug(name):
     return s or 'game'
 
 
+# Where a prepare's time goes: {what: [times, seconds]} for 'codegen' (each run of the codegen
+# tool), 'build' (configure + build) and 'game' (the runs that dump the image and look for missing
+# functions). `prepare` says them in each game's last line (spent_text): the log has no clock.
+SPENT = {}
+
+
+def spent(what, seconds, times=1):
+    n = SPENT.setdefault(what, [0, 0.0])
+    n[0] += times
+    n[1] += seconds
+
+
+def spent_text():
+    return ', '.join('%s %.0f s in %d' % (k, v[1], v[0]) for k, v in SPENT.items())
+
+
 def _run(cmd, cwd=None):
     flags = BELOW_NORMAL if os.name == 'nt' else 0
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors='replace',
@@ -778,6 +794,7 @@ def codegen(work, name, rexglue, max_rounds, log):
         manifest = _write_manifest(work, name)
         t0 = time.time()
         r = _run([rexglue, 'codegen', os.path.basename(manifest)], cwd=work)
+        spent('codegen', time.time() - t0)
         text = r.stdout + r.stderr
         with open(os.path.join(work, 'codegen.log'), 'w', encoding='utf-8') as f:
             f.write(text)
@@ -804,8 +821,8 @@ def codegen(work, name, rexglue, max_rounds, log):
                 f.write(''.join('0x%08X\n' % h for h in sorted(false)))
             with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8', newline='\n') as f:
                 f.write(''.join('0x%08X 0x%X\n' % (a, z) for a, z in sorted(hints.items())))
-            log('  codegen round %d: %d hints that split a function removed: %s' % (
-                rnd, len(false), ' '.join('%08X' % h for h in sorted(false))))
+            log('  codegen round %d: %d hints that split a function removed (%.0f s): %s' % (
+                rnd, len(false), time.time() - t0, ' '.join('%08X' % h for h in sorted(false))))
             if not tails:
                 continue
         if r.returncode == 0 and not tails:
@@ -819,8 +836,9 @@ def codegen(work, name, rexglue, max_rounds, log):
                 with open(os.path.join(work, 'hints.txt'), 'w', encoding='utf-8',
                           newline='\n') as f:
                     f.write(''.join('0x%08X 0x%X\n' % (a, z) for a, z in sorted(hints.items())))
-                log('  codegen round %d: %d hints at an epilogue or inside a function removed: %s' % (
-                    rnd, len(epilogues), ' '.join('%08X' % h for h in sorted(epilogues))))
+                log('  codegen round %d: %d hints at an epilogue or inside a function removed '
+                    '(%.0f s): %s' % (rnd, len(epilogues), time.time() - t0,
+                                      ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
             if OPTIONS['non_volatile_as_local'] and _add_shares(
                     work, _scan_shares(work, gen), log, rnd):

@@ -152,7 +152,11 @@ def cmd_prepare(a):
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)
     failed = []
+    import time
     for s in sources:
+        # Where this game's time goes (prepare.SPENT), said in its last line: the log has no clock.
+        prepare.SPENT.clear()
+        t0 = time.time()
         st = prepare.prepare(s, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds,
                              title_update=a.title_update, dlc=a.dlc)
         if a.project and st.get('ok'):
@@ -162,6 +166,8 @@ def cmd_prepare(a):
             except SystemExit as e:
                 print('%s: %s' % (st['name'], e), file=sys.stderr)
                 failed.append(st['name'])
+        parts = prepare.spent_text()
+        print('%s: %.0f s%s' % (st['name'], time.time() - t0, ' (%s)' % parts if parts else ''))
     text = prepare.survey(a.work)
     with open(os.path.join(a.work, 'survey.md'), 'w', encoding='utf-8', newline='\n') as f:
         f.write(text)
@@ -174,23 +180,38 @@ def _project_chain(a, source, work, rexglue, refs):
     """prepare --project: a prepared game to a built one that runs. The project is written and
     built; the function starts, jump tables, setjmp / longjmp and XAPI fibers are found in the
     loaded image; the layer is made again over the functions codegen now knows (a layer made
-    right after the first codegen misses D3D functions whose starts it did not know yet) and the
-    game built again if it changed; then --discover runs."""
+    right after the first codegen misses D3D functions whose starts it did not know yet), between
+    that codegen run and its build, so one build compiles the new code and the new layer (it was
+    a build of its own, after it); then --discover runs."""
     from . import prepare, project
     args = (a.sdk_install, a.sdk_src, a.fidelityfx, a.dlss_sdk, a.dlss_nr)
-    project.write(work)
-    project.build_fixing(work, rexglue, args, jobs=a.jobs)
-    project.find_functions(work, rexglue, args)
     layer = os.path.join(work, 'layer', 'game_layer.h')
+    done = os.path.join(work, 'codegen.ok')
 
     def text(p):
         return open(p, encoding='utf-8').read() if os.path.exists(p) else ''
 
-    before = text(layer)
-    prepare.prepare(source, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
-    if text(layer) != before:
-        print('%s: the layer changed over the functions found: built again' % os.path.basename(work))
-        project.build_fixing(work, rexglue, args, jobs=a.jobs)
+    def stamp(p):
+        return os.path.getmtime(p) if os.path.exists(p) else None
+
+    made = []
+
+    def layer_again():
+        prepare.prepare(source, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
+        made.append(stamp(done))
+
+    project.write(work)
+    project.build_fixing(work, rexglue, args, jobs=a.jobs)
+    project.find_functions(work, rexglue, args, before_build=layer_again)
+    # Nothing found (no codegen run, so no layer made again), or the build after it had codegen
+    # run once more (branch targets in other functions): the layer is made again here, and the
+    # game built again if it changed.
+    if not made or made[-1] != stamp(done):
+        before = text(layer)
+        prepare.prepare(source, a.work, rexglue, refs, run_adapt, max_rounds=a.max_rounds)
+        if text(layer) != before:
+            print('%s: the layer changed over the functions found: built again' % os.path.basename(work))
+            project.build_fixing(work, rexglue, args, jobs=a.jobs)
     if a.discover:
         project.discover(work, rexglue, args, rounds=a.discover, seconds=a.discover_seconds)
 

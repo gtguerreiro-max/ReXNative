@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the ReXNative checkout
 
@@ -468,8 +469,11 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
             f.write('@echo off\ncall "%s" >nul || exit /b 1\nset "PATH=%s;%%PATH%%"\n'
                     'set "CFLAGS=%s"\nset "CXXFLAGS=%s"\n%s\n' % (vcenv, llvm, FLAGS, FLAGS, cmd))
         log('%s: %s (log: %s)' % (name, what, logf))
+        t0 = time.time()
         with open(logf, 'w', encoding='utf-8', errors='replace') as out:
             r = subprocess.run(['cmd', '/d', '/c', script], stdout=out, stderr=subprocess.STDOUT)
+        from . import prepare
+        prepare.spent('build', time.time() - t0, 1 if what == 'build' else 0)  # configure: its time only
         if r.returncode:
             with open(logf, encoding='utf-8', errors='replace') as f:
                 text = f.read()
@@ -735,20 +739,25 @@ def _write_hints(work, hints):
         f.write(''.join('0x%08X 0x%X\n' % (a, s) for a, s in sorted(hints.items())))
 
 
-def _codegen_and_build(work, name, rexglue, build_args, log):
+def _codegen_and_build(work, name, rexglue, build_args, log, before_build=None):
+    """before_build: called between the codegen run and the build (`prepare --project` makes the
+    layer again there, over the functions codegen now knows, so one build compiles both)."""
     from . import prepare
     done = os.path.join(work, 'codegen.ok')
     if os.path.exists(done):
         os.remove(done)
     prepare.codegen(work, name, rexglue, 40, log)
+    if before_build:
+        before_build()
     build_fixing(work, rexglue, build_args, log=log)
 
 
-def find_functions(work, rexglue, build_args, seconds=60, log=print):
+def find_functions(work, rexglue, build_args, seconds=60, log=print, before_build=None):
     """Dumps the loaded image (a run with --rexnative_dump_image, stopped once it is written),
     finds the function starts codegen missed (functions.py), adds them to hints.txt, gives the
     jump tables codegen cut short (switch_tables.toml) and the addresses setjmp and longjmp are
-    called at (setjmp.toml), runs codegen and builds again. Returns the addresses added."""
+    called at (setjmp.toml), runs codegen and builds again (before_build: called between the
+    two). Returns the addresses added."""
     import time
     from . import functions, prepare
     work = os.path.abspath(work)
@@ -771,6 +780,7 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
         if p.poll() is None:
             p.kill()
             p.wait()
+        prepare.spent('game', time.time() - t0)
     if not os.path.exists(image):
         raise SystemExit('%s: no image written (%s)' % (name, image))
     hints = prepare._hints(work)
@@ -811,7 +821,7 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print):
         for a in new:
             hints[a] = 0
         _write_hints(work, hints)
-        _codegen_and_build(work, name, rexglue, build_args, log)
+        _codegen_and_build(work, name, rexglue, build_args, log, before_build)
     return new
 
 
@@ -969,6 +979,7 @@ def discover(work, rexglue, build_args, rounds=30, seconds=40, log=print):
         logf = os.path.join(run, 'discover.log')
         if os.path.exists(logf):
             os.remove(logf)
+        t0 = time.time()
         p = subprocess.Popen([exe, '--log_file=' + logf, '--fullscreen=false',
                               '--window_width=1280', '--window_height=720'], cwd=run,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -978,6 +989,7 @@ def discover(work, rexglue, build_args, rounds=30, seconds=40, log=print):
             p.kill()
             p.wait()
             code = None
+        prepare.spent('game', time.time() - t0)
         text = ''
         if os.path.exists(logf):
             with open(logf, encoding='utf-8', errors='replace') as f:
