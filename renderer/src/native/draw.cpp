@@ -16,6 +16,7 @@
 
 #include "cmd_replay.h"
 #include "geometry_shader.h"
+#include "hook_args.h"
 #include "log.h"
 #include "motion_history.h"
 #include "occlusion.h"
@@ -5011,6 +5012,18 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   if (!rt_mask && !depth_used && !memexport) {
     skip("no target to write or test");  // so an occlusion query does not count it
     return;
+  }
+  if constexpr (rexnative::game::kStreamOnly) {
+    // Tiles side by side, drawn at once (RenderTargets::NoteTiledWidth): the window scissor,
+    // moved by the window offset, inside the screen scissor.
+    auto tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
+    int32_t right = int32_t(regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>().br_x);
+    if (!tl.window_offset_disable)
+      right += regs.Get<reg::PA_SC_WINDOW_OFFSET>().window_x_offset;
+    right = std::min(right, int32_t(regs.Get<reg::PA_SC_SCREEN_SCISSOR_BR>().br_x));
+    if (right > 0)
+      r.render_targets().NoteTiledWidth(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch,
+                                        uint32_t(right));
   }
   Scissor scissor;
   HostScissor(regs, scissor,

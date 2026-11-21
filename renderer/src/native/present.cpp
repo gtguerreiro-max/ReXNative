@@ -787,8 +787,9 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     c.armed = false;
     if (!found) {
       ReleaseCapture();
-      REXLOG_WARN("ReXNative capture: frame {}: no native front buffer to capture",
-                  r.frame_index());
+      REXLOG_WARN("ReXNative capture: frame {}: no native front buffer to capture (front "
+                  "buffer {:08X}, texture {:08X})",
+                  r.frame_index(), front_buffer_base, tex);
       return;
     }
     UINT64 total = 0;

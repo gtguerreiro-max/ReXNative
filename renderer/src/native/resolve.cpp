@@ -809,7 +809,9 @@ bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& r,
   p.regs = r.surface;
   p.source = r.copy_control & 7;
   p.copy_command = (r.copy_control >> 20) & 3;
-  if (p.source > 4 || p.copy_command > 1) {
+  // Copy command 3 (kNull): no copy, the clears only; the walk issues them so for the tiles of
+  // game::kStreamOnly (cmd_replay.cpp, Walker::tile_clears).
+  if (p.source > 4 || (p.copy_command > 1 && !(game::kStreamOnly && p.copy_command == 3))) {
     REXNATIVE_LOG_FIRST(4, WARN,
                         "ReXNative resolve (registers): source {} copy command {} unsupported",
                         p.source, p.copy_command);
@@ -869,7 +871,11 @@ bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& r,
   y0 = std::clamp(y0, sy0, sy1) & ~7;
   x1 = (std::clamp(x1, sx0, sx1) + 7) & ~7;
   y1 = (std::clamp(y1, sy0, sy1) + 7) & ~7;
-  const int32_t pitch = int32_t(p.regs.surface_info & 0x3FFF) & ~7;
+  int32_t pitch = int32_t(p.regs.surface_info & 0x3FFF) & ~7;
+  // game::kStreamOnly: tiles side by side are copied from the host surface that holds them all
+  // (RenderTargets::NoteTiledWidth), as far as their scissors' union reaches (the walk's tile
+  // groups); the second of Marble Blast Ultra's 672-wide tiles copies x 608 to 1280, pitch 720.
+  if constexpr (game::kStreamOnly) pitch = std::max(pitch, sx1 & ~7);
   x0 = std::min(x0, pitch);
   x1 = std::min(x1, pitch);
   if (x0 >= x1 || y0 >= y1) {
@@ -1628,7 +1634,8 @@ const ResolvedImage* Resolver::ResolveCopy(CommandStream* list, const ResolvePar
 }
 
 bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination* own) {
-  if (!own) SceneNoteResolve(p);  // the game's resolves show where its scene is (scene.h)
+  const bool copy = p.copy_command != 3;  // kNull: the clears only
+  if (!own && copy) SceneNoteResolve(p);  // the game's resolves show where its scene is (scene.h)
   const bool depth = p.source == 4;
   if (!GetDestStorage(p.dest_format)) return false;
   RenderTarget* rt = depth ? targets_->GetDepth(p.regs, uint32_t(std::max(p.y1, 0)))
@@ -1650,7 +1657,7 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
   const int32_t copy_x1 = std::min<int32_t>(x1, x0 + int32_t(p.dest_width) - dx);
   const int32_t copy_y1 = std::min<int32_t>(y1, y0 + int32_t(p.dest_height) - dy);
   bool ok = true;
-  if (copy_x1 > x0 && copy_y1 > y0 && dx >= 0 && dy >= 0) {
+  if (copy && copy_x1 > x0 && copy_y1 > y0 && dx >= 0 && dy >= 0) {
     const D3D12_RECT src = {LONG(x0), LONG(y0), LONG(copy_x1), LONG(copy_y1)};
     RenderTarget *source = rt, *alpha = nullptr;
     // After the game drew into the scene's surface again (Upscaler::EnterPostScene), its own

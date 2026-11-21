@@ -835,6 +835,21 @@ Xenos plugin. The plugin's frames now log a line of their own in the native stat
 game on the classic renderer, from its start or handed over, still shows that it runs (the
 Gestor's boot test counts those lines).
 
+Marble Blast Ultra (D3D 2.0.2135 too) booted with no frame at all: PGR4's Swap matched nothing
+there, and without the Swap hook the renderer never sees a frame. `adapt` now takes, when no
+reference finds Swap, the one function that calls the VdSwap import (`swap_from_vdswap`). It then
+showed a black screen: it draws its 1280x720 2x MSAA scene in two predicated tiles of 672x720
+side by side (the EDRAM pitch 720, the second tile at x 608, window offset -608), and each tile
+writes its own RB_COPY_DEST_BASE under its bin mask, moved by its origin's tiled offset (x 608:
++0x13000). The walk runs every bin and merges the tiles (window offset 0, the scissors' union),
+so the last base, the second tile's, took both copies, 0x13000 bytes past the front buffer.
+With `kStreamOnly` the walk now merges RB_COPY_DEST_BASE as well (the lowest, the origin tile's);
+a draw whose merged scissor reaches past the pitch widens the host surface
+(`RenderTargets::NoteTiledWidth`, as BeginTiling's clear does for a hooked game), a register
+resolve may copy that far, and a tile's clear-after-copy waits for the other tiles' copies (on the
+host surface the first tile's clear wiped the columns 608-672 the second copies: a black band),
+issued after them as copy command 3 (kNull, the clears only). Title and menus then draw right.
+
 ## Memexport
 
 Memexport draws (shaders that write to memory) run with shared memory as a UAV

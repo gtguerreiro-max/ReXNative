@@ -278,6 +278,11 @@ class RenderTargets {
     auto it = tiled_width_.find(pitch);
     return it == tiled_width_.end() ? pitch : std::max(pitch, it->second);
   }
+  // The same learned from a draw: with game::kStreamOnly no BeginTiling is hooked, and the walk
+  // (cmd_replay.cpp's tile groups) draws the tiles at once under their scissors' union, which
+  // reaches past the pitch when they lie side by side (Marble Blast Ultra: two of 672 on a
+  // 1280-wide scene, the EDRAM pitch 720).
+  void NoteTiledWidth(uint32_t pitch, uint32_t right);
 
   // Before reading rt's pixels in `r` outside a draw (resolve sources): records the EDRAM fills
   // over its tiles since its last use, and its pending clears if one touches `r`, in the order

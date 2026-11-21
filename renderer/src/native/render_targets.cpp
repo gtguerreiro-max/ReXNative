@@ -615,6 +615,14 @@ bool RenderTargets::DecodeClear(const uint8_t* base, const HookArgs& args, Clear
   return true;
 }
 
+void RenderTargets::NoteTiledWidth(uint32_t pitch, uint32_t right) {
+  right = std::min(right, 8192u);
+  if (!pitch || right <= WidthFor(pitch)) return;
+  tiled_width_[pitch] = right;
+  REXLOG_INFO("ReXNative RT: a draw's tiles of pitch {} reach x {}: its surfaces are {} wide",
+              pitch, right, right);
+}
+
 void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t bound_colors,
                           bool depth_bound, uint32_t height, const ClearParams& p) {
   // What the clear leaves in the EDRAM, in pixels from the surface's base. A whole-surface

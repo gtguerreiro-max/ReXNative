@@ -474,7 +474,25 @@ struct Walker {
   bool tile_write = false;  // the current packet is predicated on some of the selected bins
   uint32_t tile_tl = 0, tile_br = 0;  // the group's scissor so far (x | y << 16)
   bool tile_tl_set = false, tile_br_set = false;
-  void EndTileGroup() { tile_tl_set = tile_br_set = false; }
+  // RB_COPY_DEST_BASE written per tile (game::kStreamOnly): each tile's base is moved by the
+  // tile's own origin, as its window offset moves the copy's coordinates there; with the offset
+  // 0 the copy is in the surface's coordinates, from the origin tile's base, the lowest.
+  // Marble Blast Ultra's two 672x720 tiles (the second at x 608, -608 offset): the last write,
+  // the second tile's base (+ the tiled offset of x 608), put both copies 0x13000 bytes past the
+  // front buffer, and nothing was shown.
+  uint32_t tile_dest = 0;
+  bool tile_dest_set = false;
+  // The clears after the tiles' copies (game::kStreamOnly): on the console each tile has the
+  // EDRAM to itself; on the host surface, which holds them all, the first tile's clear would
+  // wipe the columns the next tile copies after it (Marble Blast Ultra's tiles overlap at x 608
+  // to 672: a black band across its screen). Issued once the group's copies are done, before
+  // the next draw that is not a copy, and at the walk's end.
+  std::vector<ResolveRegisters> tile_clears;
+  void FlushTileClears() {
+    for (const ResolveRegisters& r : tile_clears) c.renderer->OnRegisterResolve(r);
+    tile_clears.clear();
+  }
+  void EndTileGroup() { tile_tl_set = tile_br_set = tile_dest_set = false; }
   static uint32_t Corner(uint32_t v, uint32_t so_far, bool set, bool smallest) {
     uint32_t x = v & 0x7FFF, y = (v >> 16) & 0x7FFF;
     if (set) {
@@ -496,6 +514,10 @@ struct Walker {
         tile_br = Corner(v, tile_br, tile_br_set, false);
         tile_br_set = true;
         return tile_br;
+      case 0x2319:  // RB_COPY_DEST_BASE: the lowest (game::kStreamOnly only, see tile_dest)
+        tile_dest = tile_dest_set ? std::min(tile_dest, v) : v;
+        tile_dest_set = true;
+        return tile_dest;
       default:
         return v;
     }
@@ -509,6 +531,8 @@ struct Walker {
         v = TileValue(reg, v);
       else if (reg != 0x2080)
         EndTileGroup();
+    } else if (reg == 0x2319 && rexnative::game::kStreamOnly && tile_write) {
+      v = TileValue(reg, v);
     }
     if constexpr (kApply) {
       if (reg == kFetch95) up = {};  // Execute sets it again after a Begin call's own run
@@ -882,10 +906,22 @@ bool Walker::Draw(uint32_t op, [[maybe_unused]] bool pred, const uint8_t* p, uin
       // A resolve in the main stream between hooked calls (an engine's own, or a D3D path the
       // layer does not hook) or recorded in a replayed buffer (the recording device's calls
       // reach no hook: Forza Horizon records 48 a frame): copied here, from the registers.
+      if (drop != kDropCopy) FlushTileClears();
       if (drop == kDropCopy && emit && REXCVAR_GET(rexnative_inline_resolves)) {
-        c.renderer->OnRegisterResolve(ResolveRegisters::From([&](uint32_t reg) {
+        ResolveRegisters rr = ResolveRegisters::From([&](uint32_t reg) {
           return g_dropped_set.test(reg) ? g_dropped[reg] : regs[reg];
-        }));
+        });
+        if (rexnative::game::kStreamOnly && tile_write && (rr.copy_control & 0x300)) {
+          // A tile's copy that clears after it: the clear waits for the other tiles' copies
+          // (tile_clears).
+          ResolveRegisters clear = rr;
+          clear.copy_control = (rr.copy_control & ~(3u << 20)) | (3u << 20);  // kNull
+          tile_clears.push_back(clear);
+          rr.copy_control &= ~0x300u;
+        } else {
+          FlushTileClears();
+        }
+        c.renderer->OnRegisterResolve(rr);
         ++resolves_issued;
       }
       // The D3D's Clear quad in a replayed buffer, which the recording device drew (no hook saw
@@ -1167,6 +1203,7 @@ void ReplayGap(const uint8_t* base, const RunContext& run, uint32_t first, uint3
   Walker w2(base, pm, c, s);
   setup(w2);
   w2.Execute<true>(phys, walk, 0);
+  w2.FlushTileClears();
   gs.EndCommandBuffer(base, c.device, h);
   if (w2.draws_seen) gs.DropPendingImmediateVs();
   if (w2.resolves_issued) {

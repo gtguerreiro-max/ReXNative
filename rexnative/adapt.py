@@ -119,6 +119,44 @@ def xinput_get_state(T, generated, funcs):
                       'or a lone b XamInputGetState)')
 
 
+def _import_addresses(generated, name):
+    """The addresses of an import's thunk, from the generated code's import table
+    (`{ 0x824F8294, __imp__VdSwap }`)."""
+    found = set()
+    for path in glob.glob(os.path.join(generated, '*.cpp')):
+        base = os.path.basename(path)
+        if not (base.endswith('_init.cpp') or base.endswith('_register.cpp')):
+            continue
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        found.update(int(a, 16) for a in re.findall(
+            r'0x([0-9A-Fa-f]{8}),\s*__imp__%s\b' % re.escape(name), text))
+    return found
+
+
+def swap_from_vdswap(T, generated, funcs):
+    """Swap when no reference's matched: D3D's Swap is the one function that calls the VdSwap
+    import. Marble Blast Ultra (D3D 2.0.2135, as Geometry Wars) matched no Swap from PGR4's, and
+    without the hook the renderer never saw a frame (the boot test counted 0)."""
+    row = funcs['Swap']
+    if row.get('address'):
+        return
+    imports = _import_addresses(generated, 'VdSwap')
+    if not imports:
+        return
+    callers = sorted(f for f, insns in T.funcs.items() if f not in imports and any(
+        t.startswith('bl ') and t[3:].strip().startswith('0x') and
+        int(t[3:].strip(), 16) in imports for _, t in insns))
+    if len(callers) == 1:
+        row.update(address=callers[0], how='pattern', confidence='medium',
+                   detail='the one caller of VdSwap' + (
+                       ' (%s)' % row['detail'] if row.get('detail') else ''))
+    elif callers:
+        row['detail'] = '%d callers of VdSwap: %s%s' % (
+            len(callers), ', '.join('%08X' % f for f in callers),
+            ('; ' + row['detail']) if row.get('detail') else '')
+
+
 # The oldest D3D a reference maps (Castlevania: Symphony of the Night's 2.0.4314). An older one
 # (Geometry Wars: Retro Evolved's 2.0.2135) keeps its device and shader objects in another
 # layout: the renderer draws from the push buffer alone (hook_args.h kStreamOnly).
@@ -207,6 +245,7 @@ def adapt(target, refs, overrides=None, log=print):
     draw_arity(T, funcs)
     create_device_arity(T, funcs)
     xinput_get_state(T, target['generated'], funcs)
+    swap_from_vdswap(T, target['generated'], funcs)
     unique_addresses(funcs)
 
     # Resolve: which function to hook and where its arguments are. Its signature changed between
