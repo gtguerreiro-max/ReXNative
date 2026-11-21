@@ -15,7 +15,12 @@ made functions; codegen handles their calls.
   `lis`/`addi`, `lwzx`, `bctr`) and given whole as `[[switch_tables]]` (Double Dragon Neon trapped
   on its cases 16 to 143). A table with no such check (its index from masks, or checked with `ble`)
   that sits right after its `bctr` is read up to the first of its cases (The Bureau's Bink decoder:
-  11 cases read as 8, a trap on the BinkAsy2 thread when its first video played).
+  11 cases read as 8, a trap on the BinkAsy2 thread when its first video played). Codegen reads
+  such a table as at most 512 entries (`max_jump_table_entries`). The search runs again on every
+  new generated tree, and on a reused one when its rules change (`tables.scanned`), whenever the
+  loaded image (`run/image.bin`) is there. Games prepared before a rule was added get it on their
+  next build: Crazy Taxi's 699 streamed sound names (82229474, bounded only by its caller) trapped
+  on sound 673 when ARCADE was chosen, and Spelunky's 534-entry table had the same cut.
 - **Gotos** to labels of other functions become functions (Minecraft).
 - **Imports** the runtime lacks become stubs (the Vision camera, `XUsbcam*`).
 - **One function per layer address** (Perfect Dark, Bionic Commando Rearmed).

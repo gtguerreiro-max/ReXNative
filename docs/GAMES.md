@@ -47,7 +47,7 @@ no 3D scene yet, so neither the upscaler nor frame generation runs there (Open p
 | The Bureau: XCOM Declassified | title screen, its intro and the first mission's motel room on the native renderer (the outside and the fog showed through its walls until 2026-11-21: [NOTES](NOTES.md#a-clear-inside-predicated-tiling)); the lamps' hard shadows on the walls are still missing there; like Brothers (Unreal Engine 3) no 3D scene is found yet, so no upscaler or frame generation | installed (frame rate not measured) |
 | Castle Crashers | menus and the name entry, drawn as ReXGlue's renderer draws them | installed; its Deck settings tested on the PC |
 | Tetris Splash | menus and Marathon on the native renderer (with the upscaler, its frame drawn in two predicated tiles was cut at the middle until 2026-11-19) | installed; its Deck settings tested on the PC |
-| Crazy Taxi | runs past its start-up; no 3D scene found yet (picture not checked) | not tried |
+| Crazy Taxi | plays on the native renderer: title, its two start-up notices (autosave, Xbox LIVE leaderboards: ReXGlue's dialogs, one Confirm button each), the menus and an ARCADE run. Choosing ARCADE crashed until 2026-11-21: a 699-entry sound switch that codegen cut at 512 ([NOTES](NOTES.md)) | installed |
 | Dust: An Elysian Tail | prepared, does not boot yet | |
 | Top Spin 4 | not supported yet: `default.xex` is a loader, and both its XEX DLL modules (`Loader_DLL`, `Swing_DLL`) link their own D3D library, which the renderer's hooks (in the executable) cannot reach | |
 | Project Gotham Racing 4 | the renderer's origin, with its own copy ([pgr4-native](https://github.com/shaunsingh/pgr4-native)) | |

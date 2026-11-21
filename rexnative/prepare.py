@@ -380,6 +380,48 @@ def _shares_scanned(work, gen, mark=False):
     return os.path.exists(stamp) and open(stamp, encoding='utf-8').read().strip() == newest
 
 
+# The rules of functions.jump_tables, counted: a new rule makes every game's generated code
+# looked at again (tables.scanned).
+TABLE_RULES = 1
+
+
+def _tables_scanned(work, gen, mark=False):
+    """Whether functions.jump_tables, as its rules are now (TABLE_RULES), already looked at this
+    generated code (tables.scanned holds the rules' count and the newest generated file's
+    mtime); with mark, records that it did."""
+    files = glob.glob(os.path.join(gen, '*_recomp.*.cpp'))
+    newest = '%d %d' % (TABLE_RULES, max((os.path.getmtime(f) for f in files), default=0))
+    stamp = os.path.join(work, 'tables.scanned')
+    if mark:
+        with open(stamp, 'w', encoding='utf-8') as f:
+            f.write(newest)
+        return True
+    return os.path.exists(stamp) and open(stamp, encoding='utf-8').read().strip() == newest
+
+
+def _add_switch_tables(work, gen, log, rnd):
+    """The jump tables codegen cut short in this generated code, added to switch_tables.toml
+    (functions.jump_tables, project.write_switch_tables); True when there are new ones, for
+    codegen to run again. Only with the loaded image (run/image.bin, which `project
+    --find-functions` dumps), and once per generated tree. find_functions looks for them once,
+    over the code before its own hints: a table can show as cut short only in a later tree, and
+    a game prepared before a rule was learned never had it applied (Crazy Taxi, prepared before
+    the no-bound-check rule: its switch of 699 streamed sound names at 82229474, bounded by its
+    caller only, read as 512 entries; sound 673 trapped, ILLEGAL_INSTRUCTION, when ARCADE was
+    chosen; Spelunky's 534-entry 820ED328 the same)."""
+    image = os.path.join(work, 'run', 'image.bin')
+    if not os.path.exists(image) or _tables_scanned(work, gen):
+        return False
+    from . import functions, project
+    new = project.write_switch_tables(work, functions.jump_tables(gen, image))
+    _tables_scanned(work, gen, True)
+    if not new:
+        return False
+    log('  codegen round %d: %d jump tables codegen cut short, given whole: %s' % (
+        rnd, len(new), ' '.join('%08X (%d)' % (a, n) for a, n in new[:8])))
+    return True
+
+
 # XEX module flags (the header's second word): a DLL module, and a patch (an .xexp's).
 XEX_MODULE_DLL, XEX_MODULE_PATCH = 0x8, 0x10
 
@@ -675,9 +717,13 @@ def codegen(work, name, rexglue, max_rounds, log):
     # codegen tool.
     if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and
             os.path.exists(os.path.join(gen, '%s_init.h' % name))):
-        if not (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
-                _add_shares(work, _scan_shares(work, gen), log, 0)):
+        again = (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
+                 _add_shares(work, _scan_shares(work, gen), log, 0))
+        if not again:
             _shares_scanned(work, gen, True)
+            # Generated code from before a rule of functions.jump_tables gets its tables too.
+            again = _add_switch_tables(work, gen, log, 0)
+        if not again:
             return {'reused': True, 'rounds': 0}
         os.remove(done)
     for old in os.listdir(work):
@@ -746,6 +792,8 @@ def codegen(work, name, rexglue, max_rounds, log):
                 continue
             if OPTIONS['non_volatile_as_local'] and _add_shares(
                     work, _scan_shares(work, gen), log, rnd):
+                continue
+            if _add_switch_tables(work, gen, log, rnd):
                 continue
             drop_outside_functions(work, text, log)
             _shares_scanned(work, gen, True)
