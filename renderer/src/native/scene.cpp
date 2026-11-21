@@ -21,6 +21,11 @@ REXCVAR_DEFINE_INT32(rexnative_scene_auto, -1, "ReXNative",
                      "Learn the 3D scene's surface (for DLSS / DLAA / FSR and the MSAA option) from "
                      "the frames' resolves: 1 on, 0 off (game_layer.h's constants), -1 the game "
                      "layer's choice (REXNATIVE_SCENE_AUTO)");
+REXCVAR_DEFINE_BOOL(rexnative_scene_late_draws, false, "ReXNative",
+                    "Scene detection: an 8-bit surface without MSAA is the scene when 3D draws "
+                    "went into it before any of its full-size resolves, not only before its first "
+                    "(Iron Brigade resolves its scene's surface once after the depth prepass, "
+                    "before the scene's colour draws)");
 
 namespace rexnative {
 namespace {
@@ -95,6 +100,13 @@ void Init() {
   }
 }
 
+// The depth-tested draws into the surface so far this frame (SceneNoteDraw).
+uint32_t DepthDraws(uint32_t key) {
+  for (uint32_t i = 0; i < g.depth_draw_keys; ++i)
+    if (g.depth_draws[i].first == key) return g.depth_draws[i].second;
+  return 0;
+}
+
 bool Same(const Seen& a, const Seen& b) {
   return a.key == b.key && a.width == b.width && a.height == b.height;
 }
@@ -149,14 +161,15 @@ void SceneNoteResolve(const ResolveParams& p) {
     }
     s.width = std::max(s.width, w);
     s.height = std::max(s.height, h);
+    // --rexnative_scene_late_draws: the 3D draws before a later resolve of the surface count too.
+    if (REXCVAR_GET(rexnative_scene_late_draws))
+      s.depth_draws = std::max(s.depth_draws, DepthDraws(key));
     return;
   }
   if (p.x0 > 0) return;  // a corner of a surface: not the frame
   if (g.seen_count == g.seen.size()) return;
-  uint32_t draws = 0;
-  for (uint32_t i = 0; i < g.depth_draw_keys; ++i)
-    if (g.depth_draws[i].first == key) draws = g.depth_draws[i].second;
-  g.seen[g.seen_count++] = {key, w, h, (p.regs.color_info[p.source & 3] >> 16) & 0xF, order, draws};
+  g.seen[g.seen_count++] = {key, w, h, (p.regs.color_info[p.source & 3] >> 16) & 0xF, order,
+                            DepthDraws(key)};
 }
 
 void SceneNoteDraw(uint32_t surface_info) {

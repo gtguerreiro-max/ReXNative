@@ -13,7 +13,7 @@ no 3D scene yet, so neither the upscaler nor frame generation runs there (Open p
 | Game | On the PC | Steam Deck |
 |---|---|---|
 | From Dust | plays: menus, levels, HUD, 60 FPS | 60 FPS ([FromDustDeck](https://github.com/gtguerreiro-max/FromDustDeck)) |
-| Iron Brigade | plays: the intro and its video, the first mission with its scenery | its own 30 FPS ([IronBrigadeRecomp](https://github.com/gtguerreiro-max/IronBrigadeRecomp)) |
+| Iron Brigade | plays: the intro and its video, the first mission with its scenery; with the upscaler (FSR Native AA, the Deck's default) since 2026-11-21 ([NOTES](NOTES.md#a-scene-drawn-after-a-depth-prepass)) | its own 30 FPS ([IronBrigadeRecomp](https://github.com/gtguerreiro-max/IronBrigadeRecomp)) |
 | Jet Set Radio (TU 1) | plays: menus, the story intro, the first level; frame generation in its attract mode (2026-11-20) | 30 FPS |
 | Dungeons & Dragons: Chronicles of Mystara | plays: menus, chapter select, the first chapter, 60 FPS | 60 FPS |
 | Super Meat Boy (TU 1) | plays: menus, the world map, level 1-1 | 60 FPS |

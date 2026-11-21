@@ -103,6 +103,22 @@ pass that tests depth and writes none: the hero's pass was upscaled, and the her
 invisible with FSR and black with DLSS. `rexnative.upscaler_depth_test = true` (Diablo III's
 settings) counts the draws that test depth too, so the second pass is the one upscaled.
 
+## A scene drawn after a depth prepass
+
+With the upscaler on (the Steam Deck's default), FSR did nothing in Iron Brigade. It draws a depth
+prepass into the scene's surface (8-bit, no MSAA, 1280x646), resolves that surface once after a
+full-screen pass, and only then draws the scene's colour (about 800 draws, two targets), and its
+lighting and transparent passes. Scene detection takes an 8-bit surface without MSAA as the scene
+when 16 depth-tested colour draws went into it before its first resolve (`SceneNoteDraw`), so it
+never learned one. `rexnative.scene_late_draws = true` (Iron Brigade's settings) counts the draws
+before every full-size resolve of the surface. Then the upscaler took the prepass, the pass with
+the most draws writing depth, and the scene's colour and lighting were drawn after it at the
+output's size: green and yellow sparkles over the deck and streaks of light. With
+`rexnative.upscaler_depth_test = true` it takes the scene's colour pass. In FSR's Quality mode
+(853x431) a faint copy of the scene, offset, still shows: the lighting drawn at the output's size
+reads that pass's other targets and depth, resolved at the render size. Native AA (the Deck's
+default) is clean.
+
 ## Predicated tiles side by side
 
 Tetris Splash draws its 1280x720 frame with 2x MSAA in two tiles of 640x720, side by side, into a
