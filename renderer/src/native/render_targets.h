@@ -196,6 +196,10 @@ struct ClearParams {
   // EndTiling's resolve clears land at the base whatever the tile's position.
   std::vector<D3D12_RECT> edram_rects;
   bool tiling = false;  // the D3D's predicated tiling was on (its tile count above 1)
+  // A clear without rectangles of a surface smaller than the targets: `rects` holds the
+  // surface's extent (DecodeClear), and the clear is still a whole-surface one for the
+  // tiling's bookkeeping (RenderTarget::edram_rows).
+  bool surface_extent = false;
   // A clear the registers describe (DecodeRegisterClear): the D3D's Clear quad draws a 1x
   // surface as 4x MSAA of half its pitch and height, another view of the same EDRAM tiles. Its
   // color reaches the other targets there as an EDRAM fill; its depth and stencil clear the
@@ -210,6 +214,10 @@ struct ClearCall {
   uint32_t bound_colors = 0;  // bit i: a surface is bound as render target i
   bool depth_bound = false;
   uint32_t height = 0;
+  // A clear inside predicated tiling of a surface smaller than the targets (DecodeClear): `p`
+  // clears its rows at the base, and the rows from here to `height` are cleared only once
+  // another call in the tiling needs them (NativeRenderer::IssueTileClearRest). 0: none.
+  uint32_t rest_from = 0;
 };
 
 class RenderTargets {

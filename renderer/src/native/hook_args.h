@@ -87,7 +87,9 @@ enum class HookFn : uint32_t {
 // (fn_820EC610) clears through ClearF with the largest tile's extent at the EDRAM base, meaning
 // every tile; EndTiling (fn_820EC980) resolves each tile, its rectangle in surface pixels and
 // the EDRAM holding the tile from its origin (the tile list at device+12740, render_targets.h).
-enum class TilingCall : uint8_t { kNone, kBegin, kEnd };
+// kInside: a call made between BeginTiling and EndTiling, which the D3D records once and the GPU
+// runs for every tile (the device's tile count stays set after EndTiling, so it cannot tell).
+enum class TilingCall : uint8_t { kNone, kBegin, kEnd, kInside };
 
 // Raw PPC arguments of one hooked call. Integer arguments in r3..r10 and float arguments in
 // f1..f4 are captured at entry, before the guest function runs (it clobbers them).

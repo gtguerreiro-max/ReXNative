@@ -927,11 +927,38 @@ void NativeRenderer::QueueClear(const uint8_t* base, const HookArgs& args) {
   Queue& q = *queue_;
   Queue::Batch& b = *q.current;
   ClearCall& c = b.clears.emplace_back();
-  if (RenderTargets::DecodeClear(base, args, &c))
+  if (RenderTargets::DecodeClear(base, args, &c)) {
     q.Push(Queue::kClear, uint32_t(b.clears.size() - 1), TraceClear(c));
-  else
+    if (c.rest_from) KeepTileClearRest(c);
+  } else {
     b.clears.pop_back();
+  }
   q.AddHook(Ticks() - t0);
+}
+
+void NativeRenderer::KeepTileClearRest(const ClearCall& c) {
+  tile_clear_rest_ = std::make_unique<ClearCall>(c);
+  ClearCall& rest = *tile_clear_rest_;
+  const LONG right = c.p.rects.empty() ? 0 : c.p.rects[0].right;
+  rest.p.rects = {{0, LONG(c.rest_from), right, LONG(c.height)}};
+  rest.rest_from = 0;
+}
+
+void NativeRenderer::OnTilingEnd() { tile_clear_rest_.reset(); }
+
+void NativeRenderer::IssueTileClearRest() {
+  if (!tile_clear_rest_) [[likely]]
+    return;
+  ClearCall rest = std::move(*tile_clear_rest_);
+  tile_clear_rest_.reset();
+  if (queue_) {
+    Queue& q = *queue_;
+    Queue::Batch& b = *q.current;
+    b.clears.push_back(std::move(rest));
+    q.Push(Queue::kClear, uint32_t(b.clears.size() - 1), TraceClear(b.clears.back()));
+  } else if (!g_failed) {
+    ExecuteClear(rest);
+  }
 }
 
 void NativeRenderer::QueueResolve(const uint8_t* base, const HookArgs& args) {
@@ -1027,6 +1054,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
 
 void NativeRenderer::OnDraw(const uint8_t* base, const HookArgs& args) {
   ++frame_draw_calls_;
+  IssueTileClearRest();
   if (queue_) return QueueDraw(base, args);
   if (g_failed) [[unlikely]]
     return;
@@ -1041,13 +1069,18 @@ void NativeRenderer::OnDraw(const uint8_t* base, const HookArgs& args) {
 }
 
 void NativeRenderer::OnClear(const uint8_t* base, const HookArgs& args) {
+  IssueTileClearRest();
   if (queue_) return QueueClear(base, args);
   if (g_failed) [[unlikely]]
     return;
-  if (ClearCall c; RenderTargets::DecodeClear(base, args, &c)) ExecuteClear(c);
+  if (ClearCall c; RenderTargets::DecodeClear(base, args, &c)) {
+    ExecuteClear(c);
+    if (c.rest_from) KeepTileClearRest(c);
+  }
 }
 
 void NativeRenderer::OnResolve(const uint8_t* base, const HookArgs& args) {
+  IssueTileClearRest();
   if (queue_) return QueueResolve(base, args);
   if (g_failed) [[unlikely]]
     return;
@@ -1055,6 +1088,7 @@ void NativeRenderer::OnResolve(const uint8_t* base, const HookArgs& args) {
 }
 
 void NativeRenderer::OnRegisterResolve(const ResolveRegisters& regs) {
+  IssueTileClearRest();
   const uint8_t* physical = host::Memory()->GetPhysicalMembase();
   if (queue_) {
     const uint64_t t0 = Ticks();
@@ -1075,6 +1109,7 @@ void NativeRenderer::OnRegisterResolve(const ResolveRegisters& regs) {
 }
 
 void NativeRenderer::OnRegisterClear(const ResolveRegisters& regs) {
+  IssueTileClearRest();
   const uint8_t* physical = host::Memory()->GetPhysicalMembase();
   if (queue_) {
     const uint64_t t0 = Ticks();
@@ -1121,6 +1156,7 @@ uint64_t NativeRenderer::FrontEndLimit() {
 }
 
 void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
+  tile_clear_rest_.reset();
   if (!trace::PlayPath().empty()) [[unlikely]]
     PlayTrace(base);  // never returns
   if (queue_) return QueueSwap(base, args);

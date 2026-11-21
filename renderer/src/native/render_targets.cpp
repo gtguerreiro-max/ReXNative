@@ -12,6 +12,7 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -582,6 +583,35 @@ bool RenderTargets::DecodeClear(const uint8_t* base, const HookArgs& args, Clear
   for (const D3D12_RECT& r : p.rects)
     height = std::max(height, uint32_t(std::max<LONG>(r.bottom, 0)));
   out->height = height;
+  // Without rectangles the D3D's ClearF clears {0, 0, width, height} of the surface bound as
+  // target 0 (the depth surface when none is): its own size, from the descriptor at +36
+  // (width - 1 in bits 18-31, height - 1 in bits 3-17), not the viewport. Between BeginTiling
+  // and EndTiling (TilingCall::kInside: the device's tile count stays set after EndTiling) the
+  // GPU runs the clear for each tile, every tile at the EDRAM base: the host surface, all the
+  // tiles side by side, is cleared whole for the calls after it in the tiling, but the EDRAM
+  // below a tile's rows is never cleared, and a pass after the tiling sees what it held. The
+  // Bureau clears the depth of its tiled G-buffer's 1280x256 surfaces as the tiling's last call,
+  // then restores the top 256 rows from the resolved depth and counts on the rows below still
+  // holding its depth prepass: cleared whole, its translucent draws (fog, the windows, the sky
+  // outside) showed through the walls and the player there. So the tile's rows are cleared
+  // now and the rest only if another call of the tiling comes (`rest_from`). The descriptor is
+  // taken only when its width is the registers' pitch.
+  if (p.rects.empty() && args.tiling == TilingCall::kInside) {
+    uint32_t surface = Load32(base, device + kDevColorSurfaces);
+    if (!surface) surface = Load32(base, device + kDevDepthSurface);
+    const uint32_t size = surface ? Load32(base, surface + 36) : 0;
+    const uint32_t w = (size >> 18) + 1, h = ((size >> 3) & 0x7FFF) + 1;
+    if (size && w == (out->regs.surface_info & 0x3FFF) && h < height) {
+      p.rects.push_back({0, 0, LONG(w), LONG(h)});
+      p.surface_extent = true;
+      out->rest_from = h;
+      static std::atomic<uint32_t> logged{0};
+      if (logged.fetch_add(1, std::memory_order_relaxed) < 4)
+        REXLOG_INFO("ReXNative RT: a clear in predicated tiling of a {}x{} surface, the targets "
+                    "{} rows: the rows below its own wait for the tiling's next call",
+                    w, h, height);
+    }
+  }
   return true;
 }
 
@@ -636,7 +666,7 @@ void RenderTargets::Clear(CommandStream* list, const SurfaceRegs& regs, uint32_t
     // row 368, a brighter lower half).
     if (!p.edram_rects.empty())
       rt->edram_rows = edram_rows(*rt);
-    else if (p.rects.empty() && !p.tiling)
+    else if ((p.rects.empty() || p.surface_extent) && !p.tiling)
       rt->edram_rows = 0;
     rt->fill_seq = fill_seq_;
   }

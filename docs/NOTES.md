@@ -114,6 +114,24 @@ resolve from the top that continues a seen surface past its pitch now widens the
 (`SceneNoteResolve`), and for a scene wider than its pitch each tile of its whole height copies
 its part of the upscaled output (`Upscaler::IsSceneResolve`).
 
+## A clear inside predicated tiling
+
+The GPU runs the calls between BeginTiling and EndTiling once for each tile, every tile at the
+EDRAM base, while the host surface holds all the tiles side by side. A ClearF without a
+rectangle clears the bound surface's own size (the descriptor at surface+36), a tile's, so the
+EDRAM below the tile's rows is never cleared. The Bureau (2026-11-21) clears the depth of its
+tiled G-buffer's 1280x256 surfaces as the tiling's last call, then, after EndTiling, restores
+only the top 256 rows of the 720 from the resolved depth: the rows below still hold its depth
+prepass in the EDRAM. The renderer cleared the whole host depth, the rows below the first tile
+read as far, and the translucent draws there (fog, the windows, the sky outside, a light's
+billboard over the player's head) showed through the walls. Such a clear now clears the tile's
+rows at once and the rest only before the next draw, clear or resolve of the same tiling
+(NativeRenderer::IssueTileClearRest); at EndTiling the rest is dropped. The device's tile count
+stays set after EndTiling, so the hooks follow the bracket themselves (TilingCall::kInside).
+Found from the draw log (the restore's rectangle ended at 0.3555 of the height, 256 rows), a
+snapshot of the depth after it (rows 256-720 at 0) and a push-buffer trace (the clear's three
+bin-masked quads before EndTiling).
+
 ## Fibers
 
 Double Dragon Neon and Dungeons & Dragons: Chronicles of Mystara use XAPI fibers. Their five fiber

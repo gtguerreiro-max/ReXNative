@@ -280,7 +280,7 @@ uint32_t Clear(const ClearCall& c, const uint32_t* all, const RegWrite* regs, si
   std::memcpy(f.color, c.p.color, sizeof(f.color));
   f.depth = c.p.depth;
   f.stencil = c.p.stencil;
-  f.tiling = c.p.tiling;
+  f.tiling = uint8_t(c.p.tiling | c.p.surface_extent << 1);  // bit 1: rects is the surface's extent
   f.edram_alias = c.p.edram_alias;
   f.depth_bound = c.depth_bound;
   f.regs = c.regs;
@@ -513,7 +513,8 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
           std::memcpy(c.p.color, f.color, sizeof(f.color));
           c.p.depth = f.depth;
           c.p.stencil = f.stencil;
-          c.p.tiling = f.tiling;
+          c.p.tiling = f.tiling & 1;
+          c.p.surface_extent = f.tiling >> 1 & 1;
           c.p.edram_alias = f.edram_alias;
           c.depth_bound = f.depth_bound;
           c.regs = f.regs;

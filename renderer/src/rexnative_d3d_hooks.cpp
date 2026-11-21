@@ -1398,6 +1398,7 @@ thread_local bool t_pending_vertices = false;
 thread_local rexnative::HookArgs t_pending_args;
 thread_local uint32_t t_original_depth = 0;  // hooked originals running (profiler on)
 thread_local rexnative::TilingCall t_tiling_call = rexnative::TilingCall::kNone;
+thread_local bool t_tiling_open = false;  // between BeginTiling and EndTiling (TilingCall::kInside)
 // The device of this thread's last hooked call that takes one (kFollowSwapDeviceOnly): the
 // queries' (OnHook).
 thread_local uint32_t t_device = 0;
@@ -1563,7 +1564,9 @@ inline rexnative::HookArgs EntryArgs(uint32_t fn, const PPCContext& ctx) {
   a.f[2] = ctx.f3.f64;
   a.f[3] = ctx.f4.f64;
   a.ret = 0;
-  a.tiling = t_tiling_call;
+  a.tiling = t_tiling_call != rexnative::TilingCall::kNone ? t_tiling_call
+             : t_tiling_open                                  ? rexnative::TilingCall::kInside
+                                                              : rexnative::TilingCall::kNone;
   // An LTCG Resolve that passes ClearStencil in a register (game_layer.h; older layers have
   // none: on the stack).
 #if defined(REXNATIVE_RESOLVE_STENCIL_REG) && REXNATIVE_RESOLVE_STENCIL_REG >= 3 && \
@@ -1738,6 +1741,9 @@ inline void OnHookInner(PPCContext& ctx, uint8_t* base) {
       t_tiling_call = kId == kFnBeginTiling ? nat::TilingCall::kBegin : nat::TilingCall::kEnd;
       OnCall<kId>(ctx, base, run);
       t_tiling_call = outer;
+      t_tiling_open = kId == kFnBeginTiling;
+      if constexpr (kId == kFnEndTiling)
+        if (nat::NativeRenderer* const live = nat::NativeRenderer::Live()) live->OnTilingEnd();
     } else if constexpr (kId == kFnRunCommandBuffer) {
       // After OnCall: after AfterCall copied Run's inherited flush and after the tap's exit
       // Sync, so the tap, like the GPU, sees that flush before the buffer's own writes.

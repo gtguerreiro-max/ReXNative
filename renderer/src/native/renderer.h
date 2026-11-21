@@ -145,6 +145,9 @@ class NativeRenderer {
   // draw packet (DecodeRegisterClear).
   void OnRegisterClear(const ResolveRegisters& regs);
   void OnSwap(uint8_t* base, const HookArgs& args);
+  // After EndTiling returned: a clear's rows below its tile (ClearCall::rest_from) that no call
+  // of the tiling needed are left as they are, as the EDRAM keeps them.
+  void OnTilingEnd();
   // Occlusion queries (occlusion.h), primary mode: after QueryIssue returned, and at the entry
   // of GetData.
   void OnQueryIssue(const uint8_t* base, const HookArgs& args);
@@ -354,6 +357,11 @@ class NativeRenderer {
   std::unique_ptr<DrawRenderer> draw_;
   std::unique_ptr<Presenter> present_;
   std::unique_ptr<OcclusionQueries> occlusion_;  // primary mode with --rexnative_occlusion
+  // The guest thread's pending rows of a tiled clear (ClearCall::rest_from), issued before the
+  // tiling's next draw, clear or resolve (IssueTileClearRest), dropped at EndTiling.
+  std::unique_ptr<ClearCall> tile_clear_rest_;
+  void KeepTileClearRest(const ClearCall& c);
+  void IssueTileClearRest();
   std::unique_ptr<Upscaler> upscaler_;
   std::unique_ptr<FrameGeneration> frame_generation_;  // with the pacer
   bool frame_generation_on_ = false;  // --rexnative_frame_generation at this frame's start
