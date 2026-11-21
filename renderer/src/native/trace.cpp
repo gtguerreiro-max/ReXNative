@@ -406,6 +406,18 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
   }
   // The captures' Xenos copy is the plugin's frame of the game, which is not running.
   rex::cvar::SetFlagByName("rexnative_capture_xenos", "false");
+  // The game stopped at its first Swap, so the memory it allocated later in the recorded run
+  // (textures streamed in, resolve targets) is not allocated here: guest physical memory is all
+  // committed with its section, but those pages keep no host access. A texture the trace samples
+  // without having recorded it (one a resolve made before the trace's first frame) was then read
+  // through a page with no access, and Tetris Splash and Double Dragon Neon crashed in
+  // UntileTexture at their first frame. The renderer's view of physical memory is made readable
+  // and writable: such a texture reads empty the first time through, as documented.
+  if (uint8_t* physical = host::Memory()->GetPhysicalMembase()) {
+    DWORD old = 0;
+    if (!VirtualProtect(physical, kPhysicalSize, PAGE_READWRITE, &old))
+      REXLOG_WARN("ReXNative trace: physical memory not made accessible (error {})", GetLastError());
+  }
   // Guest memory through a CPU view, as the game writes it: the page watches see the writes
   // (textures and shared memory pages are read again).
   // ... and the renderer is told as well: a page copied a moment ago has no watch yet.
