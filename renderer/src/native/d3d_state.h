@@ -270,6 +270,12 @@ class GuestStateTracker {
   // A draw of the stream between two hooked calls (cmd_replay ReplayGap) used the immediate
   // vertex shader an ImmediateVs call made for it: no later draw takes it.
   void DropPendingImmediateVs() { vs_imm_pending_valid_ = false; }
+  // PA_SC_WINDOW_OFFSET/SCISSOR_TL/BR (0x2080-0x2082) as a hooked call that flushes nothing
+  // wrote them straight into the stream (rexnative_d3d_hooks.cpp TrackCallScissor): the GPU
+  // has them from there, for the stream's own draws after the call. Other registers: ignored.
+  void PutStreamScissor(uint32_t reg, uint32_t value) {
+    if (reg >= 0x2080 && reg <= 0x2082) Put(reg, value);
+  }
 
   // For the trace tap (--rexnative_d3d_tap): compares the registers the tap has seen written in the
   // push buffer (`tap_written[r] != 0`) with this view at the current draw. Returns the number

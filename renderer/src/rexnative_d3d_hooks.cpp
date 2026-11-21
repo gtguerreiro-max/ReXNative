@@ -1979,6 +1979,56 @@ constexpr size_t kMaxForeign = 4096;
   if (from < push) rexnative::cmdbuf::ReplayGap(base, rc, from + 4, push + 4);
 }
 
+// The packets an outer hooked call that flushes nothing wrote, (entry, exit] push values: the
+// window scissor among them goes to the tracker. Such a call bounds the walk's gaps, so its own
+// packets are walked by no one, and the tracker writes the scissor only after flushing calls
+// (PutWindowScissor). Forza Horizon's SetViewport (XDK 21119) writes PA_SC_WINDOW_OFFSET and
+// SCISSOR_TL/BR into the stream itself (through the SetScissorRect it calls): after a 640x360
+// 4x MSAA draw over its 1280x720 depth, the sun's shadow cascades, the game's own draws in the
+// next gap, kept that 640x360 scissor, and the screen's shadow mask was cut at x 640. Only when
+// the packets parse whole, type-0 writes alone taken.
+[[gnu::noinline]] void TrackCallScissor(const uint8_t* base, uint32_t device, uint32_t entry,
+                                        uint32_t exit) {
+  if (exit <= entry || exit - entry > 4096 || ((exit - entry) & 3)) return;
+  rexnative::GuestStateTracker& gs = rexnative::GuestState();
+  if (gs.device() != device) return;
+  uint32_t value[3] = {};
+  bool set[3] = {};
+  const uint32_t end = exit + 4;
+  uint32_t a = entry + 4;
+  while (a < end) {
+    const uint32_t h = Load32(base, a);
+    const uint32_t n = ((h >> 16) & 0x3FFF) + 1;
+    switch (h >> 30) {
+      case 0: {  // type 0: n registers from h & 0x7FFF (bit 15: all into that one)
+        if (a + 4 * n >= end) return;
+        const uint32_t reg = h & 0x7FFF;
+        for (uint32_t i = 0; i < n; ++i) {
+          const uint32_t r = (h & 0x8000) ? reg : reg + i;
+          if (r >= 0x2080 && r <= 0x2082) {
+            value[r - 0x2080] = Load32(base, a + 4 + 4 * i);
+            set[r - 0x2080] = true;
+          }
+        }
+        a += 4 * (n + 1);
+        break;
+      }
+      case 1:  // two registers, a dword each
+        a += 12;
+        break;
+      case 2:  // padding
+        a += 4;
+        break;
+      default:  // type 3: n dwords after the header
+        a += 4 * (n + 1);
+        break;
+    }
+  }
+  if (a != end) return;
+  for (uint32_t i = 0; i < 3; ++i)
+    if (set[i]) gs.PutStreamScissor(0x2080 + i, value[i]);
+}
+
 // rexnative.inline_draws_auto: the hooked draw calls of the frame so far, on the Swap thread,
 // and the walk's generation (a cursor from before a trial is not walked from).
 uint32_t g_auto_draws = 0;
@@ -2178,10 +2228,21 @@ inline void OnHook(PPCContext& ctx, uint8_t* base) {
     Native(kFns[kId].name, [&] { GapEntry(base, device); });
   }
   const uint32_t begin_count = ctx.r5.u32, begin_stride = ctx.r6.u32;
+  // A pass-through call's own packets (TrackCallScissor); not the push buffer's functions.
+  constexpr bool kScanCall = IsPassThrough(kId) && kFns[kId].cat != kPush;
+  [[maybe_unused]] const uint32_t call_entry =
+      kScanCall && outer ? Load32(base, device + rexnative::dev::kPush) : 0;
   ++t_gap_depth;
   OnHookInner<kId, kOriginal>(ctx, base);
   --t_gap_depth;
   if (outer) {
+    if constexpr (kScanCall) {
+      const uint32_t call_exit = Load32(base, device + rexnative::dev::kPush);
+      if (call_exit != call_entry && !t_tiling_open &&
+          !g_gap_probe.load(std::memory_order_relaxed) &&
+          TrackState(rexnative::NativeRenderer::Live()))
+        Native(kFns[kId].name, [&] { TrackCallScissor(base, device, call_entry, call_exit); });
+    }
     t_gap_cursor = Load32(base, device + rexnative::dev::kPush);
     t_gap_cursor_device = device;
     t_gap_epoch = g_gap_epoch.load(std::memory_order_relaxed);
