@@ -1106,7 +1106,7 @@ bool RenderTargets::AliasDepth(CommandStream* list, RenderTarget* rt) {
 }
 
 bool RenderTargets::CopyDepth(CommandStream* list, RenderTarget* src, RenderTarget* dst) {
-  if (!src || !dst || src == dst || !src->depth || !dst->depth || dst->samples != 1) return false;
+  if (!src || !dst || src == dst || !src->depth || !dst->depth || src->samples != 1) return false;
   Transition(list, dst, D3D12_RESOURCE_STATE_DEPTH_WRITE);
   if (dst->pending_count) Flush(list, dst);
   if (!DepthPass(list, src, dst, 1, 1)) return false;

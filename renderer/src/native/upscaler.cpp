@@ -682,9 +682,12 @@ bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const
     std::memcpy(cp.color, resolve_clear_color_, sizeof(cp.color));
     targets.Clear(list, regs, 1, false, height, cp);
   } else if (RenderTarget* color = targets.GetColor(regs, 0, height);
-             color && color->samples == 1 && CreateCopyPass()) {
+             color && CreateCopyPass()) {
+    // An MSAA surface (Marble Blast Ultra's 2x scene, in two tiles side by side): the copy
+    // writes each pixel's samples alike. Left out, the draws after the resolve (the marble, the
+    // HUD) went over a full-size target that never had the scene: the level was black.
     RenderTarget& source = *Result();
-    ComPtr<ID3D12PipelineState>& pso = copy_pso_[color->view_format];
+    ComPtr<ID3D12PipelineState>& pso = copy_pso_[uint32_t(color->view_format) << 4 | color->samples];
     if (!pso) {
       D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {};
       pd.pRootSignature = copy_signature_.Get();
@@ -697,7 +700,7 @@ bool Upscaler::EnterPostScene(CommandStream* list, RenderTargets& targets, const
       pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
       pd.NumRenderTargets = 1;
       pd.RTVFormats[0] = color->view_format;
-      pd.SampleDesc.Count = 1;
+      pd.SampleDesc.Count = color->samples;
       Failed(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "upscaler copy PSO");
     }
     if (pso) {

@@ -317,11 +317,12 @@ class Upscaler {
   float resolve_clear_color_[4] = {};
   float resolve_clear_depth_ = 1.0f;
   uint8_t resolve_clear_stencil_ = 0;
-  // EnterPostScene's copy of the output into the full-size target: per RTV format.
+  // EnterPostScene's copy of the output into the full-size target: per RTV format (bits 4 up)
+  // and sample count (bits 0-3).
   bool CreateCopyPass();
   ComPtr<ID3D12RootSignature> copy_signature_;
   ComPtr<ID3DBlob> copy_vs_, copy_ps_;
-  std::unordered_map<DXGI_FORMAT, ComPtr<ID3D12PipelineState>> copy_pso_;
+  std::unordered_map<uint32_t, ComPtr<ID3D12PipelineState>> copy_pso_;
   const FfxApi* api_ = nullptr;
   FrameGeneration* frame_generation_ = nullptr;
   const FfxCamera* camera_ = nullptr;  // the renderer's

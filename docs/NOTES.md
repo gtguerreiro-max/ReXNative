@@ -826,6 +826,12 @@ slope on either side of its own depth; those draws (testing depth without writin
 slope's worth of depth bias toward passing (draw.cpp), so that a surface is not lost on part
 of its slopes.
 
+Both copies were for a 1x full-size target alone. Marble Blast Ultra draws its scene in 2x MSAA
+(two predicated tiles side by side), then the marble, its ring and the HUD over it after the
+upscaled resolve: with the upscaler on (the Steam Deck's settings), the full-size MSAA target
+never had the scene, and the level was black around the marble. The copies now write each
+pixel's samples alike into an MSAA target.
+
 The same game also showed, on the Steam Deck only, a few seconds of rainbow-speckled noise at
 the start of its first gameplay (a photo of the Deck), then a clean picture. Its scene is drawn
 in 2_10_10_10_FLOAT (7e3) and resolved as 2_10_10_10: the post-processing reads the 7e3 bits

@@ -263,8 +263,8 @@ class RenderTargets {
   // outside the EDRAM (the upscaler's output). Returns whether it recorded calls.
   bool ConvertColor(CommandStream* list, RenderTarget* src, uint32_t src_format, RenderTarget* dst,
                     uint32_t dst_format);
-  // Copies `src`'s depth into `dst` (1x, both at their own scales over the same guest pixels;
-  // stencil is left) after `dst`'s pending clears, which are older: the upscaler's scene depth
+  // Copies `src`'s depth into `dst` (`src` 1x, `dst` 1x or MSAA with each pixel's samples
+  // alike, both at their own scales over the same guest pixels; stencil is left) after `dst`'s pending clears, which are older: the upscaler's scene depth
   // into the surface's full-size target (Upscaler::EnterPostScene). Returns whether it recorded
   // calls.
   bool CopyDepth(CommandStream* list, RenderTarget* src, RenderTarget* dst);
