@@ -76,6 +76,7 @@ param(
     [string]$Dir = '',
     [string]$Exe = '',
     [string]$Extra = '',
+    [string]$Title = '',
     [string]$Route = '',
     [switch]$Pulse,
     [switch]$Force,
@@ -299,8 +300,17 @@ switch ($Command) {
             $native += @('--rexnative=false', '--rexnative_beside_xenos=true', '--rexnative_render_thread=false',
                          '--rexnative_hdr=false')
         }
+        # The window says it is a test (ui.title): someone at the PC can tell it from a game they
+        # opened themselves, and leaves its keys and menus alone. -Title names it (the ReXNative
+        # Manager passes the game's title); quoted inside the argument, as Start-Process joins
+        # them with spaces.
+        if (-not $Title) {
+            $what = if ($more) { 'plays a frame trace' } else { 'live test' }
+            $Title = '{0} - {1} (scripts\live.ps1): please do not play in this window' -f ([IO.Path]::GetFileNameWithoutExtension($Exe)), $what
+        }
+        $title_arg = '"--ui.title={0}"' -f ($Title -replace '"', "'")
         $args = @('--log_file=live\live.log', '--mnk_mode=true', '--fullscreen=false',
-                  '--window_width=1280', '--window_height=720') + $native + $more +
+                  '--window_width=1280', '--window_height=720', $title_arg) + $native + $more +
                 ($Extra -split ' ' | Where-Object { $_ })
         $p = Start-Process $exePath -ArgumentList $args -WorkingDirectory $Dir -PassThru
         New-Item -ItemType Directory -Force $stateDir | Out-Null
