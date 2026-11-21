@@ -822,6 +822,14 @@ guest memory when the game issues it, as Iron Brigade's: `--rexnative_gpu_memcpy
 both shaders (kGpuMemcpyShaders: the hash and the constant of the first element). The opening
 cutscene is the same from run to run since, with no readback left to wait for.
 
+Asura's Wrath (Unreal Engine 3) has the same copy again (its first element at c7.x): its texture
+pool's moves, about 260 draws in a second while a menu or an episode loads, a few of them over
+their own source closer than one vertex's chunk ("too closely to split: one draw", so they raced
+on the GPU), and a Swap that waited 9 ms for each readback. On the Steam Deck its episode menu,
+whose text and pictures arrive by these moves, showed wrong text (2026-11-21). The third entry
+of kGpuMemcpyShaders does them in guest memory; the opening cutscene's textures then match guest
+memory (`live.ps1 audit`: 0 stale, 0 different) with no memexport readback left.
+
 ## EDRAM aliasing
 
 - **Across MSAA:** a 4x (or 2x) depth surface over a 1x one at the same base takes its depth

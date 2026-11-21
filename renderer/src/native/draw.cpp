@@ -3834,6 +3834,12 @@ void DrawRenderer::Impl::MemexportFrame(uint64_t completed_fence) {
 // (see MemexportChunk) and reached guest memory only through readbacks: textures of colored
 // noise or zeros. Done in guest memory, in the order the game issues them, they are what the
 // console's in-order GPU leaves (memmove: a block moved down copies forward).
+//
+// Asura's Wrath (Unreal Engine 3) moves its texture pool with it too (c7), 260 draws in a
+// second while a menu or an episode loads, some overlapping their own source by less than a
+// vertex's chunk ("too closely to split", so they raced on the GPU) and every Swap after them
+// waited for the readback (9 ms on the PC). The Steam Deck's episode menu, whose text and
+// pictures are textures moved this way as it opens, showed wrong text.
 struct GpuMemcpyShader {
   uint64_t ucode_hash;
   uint32_t first_element_constant;  // c<n>.x: the vertex index of element 0
@@ -3841,6 +3847,7 @@ struct GpuMemcpyShader {
 constexpr GpuMemcpyShader kGpuMemcpyShaders[] = {
     {0x71B69663FD98B9E5ull, 9},  // Iron Brigade
     {0x9E10D1C39A24E18Bull, 1},  // Halo: Combat Evolved Anniversary
+    {0x896985CCFAF3C47Aull, 7},  // Asura's Wrath
 };
 
 bool DrawRenderer::Impl::EmulateGpuMemcpy(const DrawState& s, const DxbcShader& vs) {
