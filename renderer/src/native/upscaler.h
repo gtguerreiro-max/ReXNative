@@ -122,24 +122,27 @@ class Upscaler {
   // it, where a count stopped at the upscaled resolve kept it early for good. A frame with fewer
   // passes than the last upscales none (its resolves copy the render-size scene); one with more
   // upscales an earlier one, and the next frame expects the new count.
-  // A scene draw that writes depth into several colour targets (a G-buffer): the scene is lit in
-  // later passes that only test depth, which count as the scene's from then on (deferred()).
-  void NoteGBufferDraw() {
-    if (!deferred_)
-      REXLOG_INFO("ReXNative upscaler: the scene fills a G-buffer (depth and several colour "
-                  "targets): its lit passes, which only test depth, are the scene's");
-    deferred_ = true;
-  }
+  // gbuffer: the draw writes depth into several colour targets, a G-buffer (Overlord II). The
+  // scene is lit in later passes that only test depth: from then on those count (deferred()),
+  // and a G-buffer pass is never the one upscaled, nor weighed against the lit passes (its 220
+  // draws left a gameplay light pass of 39 out, and FSR ran on the normals' target).
   bool deferred() const { return deferred_; }
-  void NoteSceneDraw(bool writes_depth) {
+  void NoteSceneDraw(bool writes_depth, bool gbuffer = false) {
     pass_drawn_ = true;
     pass_depth_draws_ += writes_depth;
+    if (gbuffer) {
+      pass_gbuffer_ = true;
+      if (!deferred_)
+        REXLOG_INFO("ReXNative upscaler: the scene fills a G-buffer (depth and several colour "
+                    "targets): its lit passes, which only test depth, are the scene's");
+      deferred_ = true;
+    }
   }
   bool SceneResolveDue() {
     if (pass_drawn_ || !scene_passes_) {
       ++scene_passes_;
-      resolved_depth_ = pass_depth_draws_ != 0;
-      if (pass_depth_draws_) {
+      resolved_depth_ = pass_depth_draws_ != 0 && !pass_gbuffer_;
+      if (pass_depth_draws_ && !pass_gbuffer_) {
         most_depth_draws_ = std::max(most_depth_draws_, pass_depth_draws_);
         if (pass_depth_draws_ * 4 >= most_depth_draws_) {
           depth_pass_ = scene_passes_;
@@ -151,6 +154,7 @@ class Upscaler {
         }
       }
       pass_drawn_ = false;
+      pass_gbuffer_ = false;
       pass_depth_draws_ = 0;
     }
     return scene_passes_ >= expected_pass_ && (resolved_depth_ || !expect_depth_);
@@ -334,7 +338,8 @@ class Upscaler {
   std::optional<DynamicResolution> dynamic_;  // with --rexnative_upscaler_target_fps
   uint32_t mip_bias_quarters_ = 0;
   uint64_t frame_ = 0;
-  bool deferred_ = false;  // NoteGBufferDraw seen: depth-tested scene draws count
+  bool deferred_ = false;  // a G-buffer draw seen (NoteSceneDraw): depth-tested draws count
+  bool pass_gbuffer_ = false;  // this pass has a G-buffer draw: not the scene's colour
   // SceneResolveDue's: this frame's passes and its last that wrote depth, the last frame's one.
   uint32_t scene_passes_ = 0, depth_pass_ = 0, expected_pass_ = 1;
   uint32_t most_depth_draws_ = 0;  // the frame's largest count of a pass's draws writing depth

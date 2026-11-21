@@ -4822,15 +4822,17 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     // A draw writing depth into two or more colour targets fills a G-buffer (Overlord II): the
     // lighting passes after it test depth without writing it, and they are the scene's colour,
     // so from then on depth-tested draws count as --rexnative_upscaler_depth_test makes them.
-    if (depth_control.z_enable && depth_control.z_write_enable && ps && !up->deferred()) {
+    bool gbuffer = false;
+    if (depth_control.z_enable && depth_control.z_write_enable && ps) {
       const uint32_t cm = GetNormalizedColorMask(regs, ps->GetWritesColorTargets());
       uint32_t targets = 0;
       for (uint32_t i = 0; i < 4; ++i) targets += ((cm >> (4 * i)) & 0xFu) != 0;
-      if (targets >= 2) up->NoteGBufferDraw();
+      gbuffer = targets >= 2;
     }
     up->NoteSceneDraw(depth_control.z_enable &&
-                      (depth_control.z_write_enable || REXCVAR_GET(rexnative_upscaler_depth_test) ||
-                       up->deferred()));
+                          (depth_control.z_write_enable ||
+                           REXCVAR_GET(rexnative_upscaler_depth_test) || up->deferred()),
+                      gbuffer);
     if (up->upscaled_this_frame() && !up->post_scene())
       up->EnterPostScene(list, r.render_targets(), SurfaceRegsFromRegisters(s.regs));
   }

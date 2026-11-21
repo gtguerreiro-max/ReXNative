@@ -109,8 +109,11 @@ depth without writing it. The last pass writing depth was the G-buffer's, so its
 upscaled on its own; the lighting then took that FSR output with the other targets as rendered,
 and on the Steam Deck (FSR Native AA by default) the menu's rocks came out white and speckled,
 "wet". A scene draw writing depth into two or more colour targets now marks the scene as deferred
-(`Upscaler::NoteGBufferDraw`, logged once), and from then on depth-tested draws count as
-`upscaler_depth_test` makes them: the lit pass is the one upscaled, as in Xenia's look.
+(logged once), and from then on depth-tested draws count as `upscaler_depth_test` makes them.
+A pass with a G-buffer draw is never the one upscaled, nor weighed against the others: in
+gameplay its 220 draws left the light pass (39 draws) under the quarter rule above, so the
+G-buffer pass was upscaled again, at its first resolve, the normals' target, and the lit scene
+came out white. Now the light pass is upscaled, in the menu and in gameplay.
 
 ## A scene drawn after a depth prepass
 
