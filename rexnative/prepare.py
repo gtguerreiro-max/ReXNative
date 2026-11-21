@@ -915,9 +915,15 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
         status['steps']['extract'] = stage_game(source, work, log)
         # The newest title update, before codegen (title_update.py): codegen recompiles the
         # patched image.
+        # XboxUnity out of reach (after its retries): recorded, and the game is prepared from
+        # the image it has; a later --title-update run installs it and starts codegen again.
         if title_update:
             from . import title_update as tu
-            status['steps']['title_update'] = tu.update(work, log)
+            try:
+                status['steps']['title_update'] = tu.update(work, log)
+            except tu.Unreachable as e:
+                status['steps']['title_update'] = {'error': str(e)}
+                log('  title update: %s; going on without it' % e)
             save()
         # Its downloadable content from archive.org's collection (dlc.py). Content, not code:
         # a failure (no archive.org login) is recorded and the game goes on.

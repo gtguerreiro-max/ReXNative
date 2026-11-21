@@ -20,7 +20,10 @@ import glob
 import hashlib
 import json
 import os
+import http.client
 import shutil
+import time
+import urllib.error
 import urllib.request
 
 from . import stfs, xex
@@ -31,20 +34,47 @@ USER_AGENT = 'rexnative/1.0 (+https://github.com/gtguerreiro-max/ReXNative)'
 TITLE_UPDATE = 0x000B0000
 
 
-def _get(url, timeout=60):
-    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+# XboxUnity answers 503 (and 502/504, or drops the connection) for a while at times: the
+# request is made again after these pauses before it counts as failed.
+RETRY_PAUSES = (5, 20, 60)
+
+
+def _transient(e):
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code in (429, 500, 502, 503, 504)
+    return isinstance(e, (OSError, http.client.HTTPException))
+
+
+def _get(url, timeout=60, log=None):
+    for pause in RETRY_PAUSES + (None,):
+        req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except (OSError, http.client.HTTPException) as e:
+            if pause is None or not _transient(e):
+                raise
+            if log:
+                log('  %s: %s; again in %d s' % (url, e, pause))
+            time.sleep(pause)
+
+
+class Unreachable(RuntimeError):
+    """XboxUnity did not answer (after the retries): prepare goes on without a title update."""
 
 
 def game_xex(work):
     return os.path.join(work, 'game-data', 'default.xex')
 
 
-def available(title_id, media_id):
+def available(title_id, media_id, log=None):
     """The title updates XboxUnity lists for this media id, newest first:
     [{'tuid', 'version' (int), 'base_version', 'sha1', 'size' (int, KB), 'date'}]."""
-    data = json.loads(_get(INFO_URL % title_id).decode('utf-8', 'replace'))
+    try:
+        raw = _get(INFO_URL % title_id, log=log)
+    except (OSError, http.client.HTTPException) as e:
+        raise Unreachable('the XboxUnity title update listing: %s' % e) from None
+    data = json.loads(raw.decode('utf-8', 'replace'))
     out = []
     for m in data.get('MediaIDS') or []:
         if str(m.get('MediaID', '')).upper() != media_id.upper():
@@ -93,7 +123,10 @@ def fetch(work, update, log=print):
         return path
     log('  downloading title update %d (%d KB) from %s' % (
         update['version'], update['size'], FILE_URL % update['tuid']))
-    data = _get(FILE_URL % update['tuid'], timeout=3600)
+    try:
+        data = _get(FILE_URL % update['tuid'], timeout=3600, log=log)
+    except (OSError, http.client.HTTPException) as e:
+        raise Unreachable('title update %s: %s' % (update['tuid'], e)) from None
     part = path + '.part'
     with open(part, 'wb') as f:
         f.write(data)
@@ -194,7 +227,7 @@ def update(work, log=print, version=None):
     title update `version`), unless it is the one installed; then resets what was derived from
     the old image (reset). Returns the step's status for prepare.json."""
     info = xex.read(game_xex(work))
-    ups = [u for u in available(info['title_id'], info['media_id'])
+    ups = [u for u in available(info['title_id'], info['media_id'], log)
            if not u['base_version'] or u['base_version'] == info['version']]
     if version is not None:
         ups = [u for u in ups if u['version'] == version]
