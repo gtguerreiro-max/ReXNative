@@ -51,9 +51,11 @@ change it.
   0 keeps the game's hues).
   Its speed (`rexnative.dlss5_reuse`: 0 every frame, 1 every 2nd, 2 every 3rd) runs the model
   on fewer frames: a frame between carries the last change along the scene's motion, rejected
-  where the depth disagrees (what the camera uncovers then shows the game's picture for a frame),
+  where the depth disagrees or where the game's picture there does not match the one it came from
+  (what the camera uncovers, or the road beside a car, then shows the game's picture for a frame),
   and the model gets the motion chained back to the frame it last ran on. 1 nearly halves DLSS
-  5's cost. `rexnative.dlss5_colour_space = "oklab"` mixes the game's colour and the model's in
+  5's cost; the fastest surfaces then pulse at half the frame rate, so a racing game is better
+  on every frame (NOTES.md, DLSS 5 on fewer frames). `rexnative.dlss5_colour_space = "oklab"` mixes the game's colour and the model's in
   Oklab when the colour strength is between 0 and 1 (Natural's 0.65, or Custom), keeping the
   saturation a mix in RGB loses between two hues; `rgb` (the default) as before.
   Its still hold (`rexnative.dlss5_hold`: 0 off, 0.8 gentle, 0.95 strong; 1 held until the

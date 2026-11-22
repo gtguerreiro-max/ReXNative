@@ -324,7 +324,8 @@ std::vector<Option> MakeOptions() {
                [](const std::string& v) { return Assignments{{"rexnative_dlss5_reuse", v}}; },
                nullptr,
                "How often DLSS 5 runs. Between, its last change follows the scene's motion: every "
-               "2nd frame nearly halves its cost, at a frame's lag on what the camera uncovers.",
+               "2nd frame nearly halves its cost, but what the camera uncovers and the fastest "
+               "surfaces show the game's picture on the frames between (best for slower games).",
                NvidiaGpu});
   o.push_back({"DLSS 5", "dlss5_mv_check", "DLSS 5 motion check", on_off, false,
                [] { return Flag("rexnative_dlss5_mv_check"); },

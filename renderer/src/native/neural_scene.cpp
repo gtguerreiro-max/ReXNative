@@ -21,10 +21,12 @@
 //
 // --rexnative_dlss5_reuse runs the model on one frame in two or three: a frame in between does
 // not infer and carries the last inferred change along the scene's own motion, rejected where the
-// depth there disagrees (a disocclusion, a cut), where the frame shows the game's picture as it is
-// (the idea of Veyra's NR inference reuse, github.com/Likely7/Veyra-NRVideo, written here for a
-// game's depth and motion; no code taken). The model, whose history is then that inferred frame,
-// gets the motion chained back to it.
+// depth there disagrees (a disocclusion, a cut) or where the last frame's input it comes from is
+// outside this frame's 3x3 input range (a surface touching another at the same depth: Blur's car
+// on the road smeared its change and its lights onto the road beside it), where the frame shows
+// the game's picture as it is (the idea of Veyra's NR inference reuse,
+// github.com/Likely7/Veyra-NRVideo, written here for a game's depth and motion; no code taken).
+// The model, whose history is then that inferred frame, gets the motion chained back to it.
 //
 // --rexnative_dlss5_mv_check checks the scene's motion before the model gets it. DLSS 5 ignores
 // its depth input (Veyra's controlled test: no output texel changed with any depth) but follows
@@ -159,7 +161,8 @@ cbuffer Constants : register(b0) {
                       // 32: no history for the stabilisation (a reset),
                       // 64: chain the motion through t1 (the frame before did not infer),
                       // 128: no model this frame, the history carried (--rexnative_dlss5_reuse),
-                      // 256: the colour mixed in Oklab, 512: the last frame's proxy in t1
+                      // 256: the colour mixed in Oklab, 512: the last frame's proxy in t1,
+                      // 1024: a carried change tested against the last frame's proxy in t1
   uint2 work;         // the model's working size (proxy, model, depth and motion)
   uint2 render;       // the scene's depth and motion size
   float tau_up;       // the meter's time constants (seconds) and dead band (stops)
@@ -230,6 +233,30 @@ float3 OklabMix(float3 a, float3 b, float k, float Lt) {
   }
   float Lr = Luma(rgb);
   return Lr > 1e-6 ? rgb * (Lt / Lr) : lerp(a, b, k);
+}
+
+// The history's rgb at uv, Catmull-Rom from 9 filtered taps (TAA's history read): a carried
+// change keeps the model's fine detail, which a filtered read halves on every frame it carries.
+float3 HistoryCatmullRom(Texture2D<float4> t, float2 uv, float2 size) {
+  float2 pos = uv * size;
+  float2 t1 = floor(pos - 0.5) + 0.5;
+  float2 f = pos - t1;
+  float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  float2 w3 = f * f * (-0.5 + 0.5 * f);
+  float2 w12 = w1 + w2;
+  float2 p0 = (t1 - 1.0) / size, p3 = (t1 + 2.0) / size, p12 = (t1 + w2 / w12) / size;
+  float3 r = t.SampleLevel(lin, float2(p0.x, p0.y), 0).rgb * (w0.x * w0.y) +
+             t.SampleLevel(lin, float2(p12.x, p0.y), 0).rgb * (w12.x * w0.y) +
+             t.SampleLevel(lin, float2(p3.x, p0.y), 0).rgb * (w3.x * w0.y) +
+             t.SampleLevel(lin, float2(p0.x, p12.y), 0).rgb * (w0.x * w12.y) +
+             t.SampleLevel(lin, float2(p12.x, p12.y), 0).rgb * (w12.x * w12.y) +
+             t.SampleLevel(lin, float2(p3.x, p12.y), 0).rgb * (w3.x * w12.y) +
+             t.SampleLevel(lin, float2(p0.x, p3.y), 0).rgb * (w0.x * w3.y) +
+             t.SampleLevel(lin, float2(p12.x, p3.y), 0).rgb * (w12.x * w3.y) +
+             t.SampleLevel(lin, float2(p3.x, p3.y), 0).rgb * (w3.x * w3.y);
+  return r;
 }
 
 groupshared float gs_sum[64];
@@ -348,7 +375,11 @@ void chain_main(uint2 p : SV_DispatchThreadID) {
   float2 o = f;
   if ((flags & 64u) != 0u) {
     float2 puv = (float2(p) + 0.5) / float2(work) + f;
-    if (all(puv >= 0.0) && all(puv <= 1.0)) o = f + model.SampleLevel(lin, puv, 0).rg;
+    // The nearest texel, not a filtered one: across an edge (a car on a moving road) a filtered
+    // read mixes two surfaces' vectors into one that matches neither, and the model's history
+    // there ghosts.
+    if (all(puv >= 0.0) && all(puv <= 1.0))
+      o = f + model.Load(int3(clamp(int2(puv * float2(work)), int2(0, 0), int2(work) - 1), 0)).rg;
   }
   if (any(isnan(o)) || any(isinf(o))) o = f;
   motion_out[p] = o;
@@ -366,13 +397,15 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
   // This frame's change and its 3x3 range (TAA's neighbourhood clamp: the history may smooth
   // the model's flicker but never carry a change this neighbourhood does not have, which is what
   // trails would be).
-  float3 d = 0.0, dmin = 1e9, dmax = -1e9, box = 0.0;
+  float3 d = 0.0, dmin = 1e9, dmax = -1e9, box = 0.0, pmin = 1e9, pmax = -1e9;
   float zmin = 1e9, zmax = -1e9;
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       int3 q = int3(clamp(int2(p) + int2(x, y), int2(0, 0), int2(work) - 1), 0);
       float3 pq = proxy.Load(q).rgb;
       box += pq;
+      pmin = min(pmin, pq);
+      pmax = max(pmax, pq);
       float3 v = carry ? float3(0.0, 0.0, 0.0) : model.Load(q).rgb - pq;
       dmin = min(dmin, v);
       dmax = max(dmax, v);
@@ -395,7 +428,18 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
       int2 hp = clamp(int2(puv * float2(work)), int2(0, 0), int2(work) - 1);
       float zh = scene.Load(int3(hp, 0)).a;
       if (zh >= zmin * 0.75 && zh <= zmax * 1.25 + 1e-5) {
-        float3 h = scene.SampleLevel(lin, puv, 0).rgb;
+        float3 h = carry ? HistoryCatmullRom(scene, puv, float2(work))
+                         : scene.SampleLevel(lin, puv, 0).rgb;
+        if (carry && (flags & 1024u) != 0u) {
+          // A carried change has no model output to clamp it to, and the depth test lets
+          // through a surface that touches another (a car on the road: its change, its lights,
+          // smeared onto the road). The game's own picture tells them apart: the last frame's
+          // input where the change comes from (t1) against this frame's 3x3 input range. Kept
+          // within 0.02 of the range, gone 0.08 outside it (the game's picture shows there).
+          float3 ph = model.SampleLevel(lin, puv, 0).rgb;
+          float3 out3 = max(pmin - ph, ph - pmax);
+          h *= saturate(1.0 - (max(out3.r, max(out3.g, out3.b)) - 0.02) / 0.06);
+        }
         o = carry ? h : lerp(d, clamp(h, dmin, dmax), saturate(stability));
       }
     }
@@ -912,8 +956,8 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   scene_guides_state_ = kRead;
   flush();
 
-  // The motion checked against the picture (--rexnative_dlss5_mv_check), then the last frame's
-  // proxy replaced with this one's for the next frame's check.
+  // The motion checked against the picture (--rexnative_dlss5_mv_check), against the last
+  // frame's proxy (copied after the stabilisation, which also tests carried changes with it).
   ID3D12Resource* scene_motion = scene_motion_w_.Get();
   if (REXCVAR_GET(rexnative_dlss5_mv_check)) {
     SceneConstants kc = c;
@@ -929,21 +973,12 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     SceneDispatch(list, frame, kCheckTable, scene_check_pso_.Get(), mc, (work_width + 7) / 8,
                   (work_height + 7) / 8, &kc);
     to(scene_motion_checked_.Get(), &scene_motion_checked_state_, kRead);
-    to(scene_proxy_.Get(), &scene_proxy_state_, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, D3D12_RESOURCE_STATE_COPY_DEST);
     flush();
-    list->CopyResource(scene_proxy_prev_.Get(), scene_proxy_.Get());
-    to(scene_proxy_.Get(), &scene_proxy_state_, kRead);
-    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, kRead);
-    flush();
-    scene_proxy_prev_valid_ = true;
     scene_motion = scene_motion_checked_.Get();
     if (!scene_mv_check_logged_) {
       scene_mv_check_logged_ = true;
       REXLOG_INFO("ReXNative DLSS 5 (scene): the motion checked against the picture");
     }
-  } else {
-    scene_proxy_prev_valid_ = false;
   }
 
   // With reuse: this frame's motion chained back to the last frame that ran the model (every
@@ -1056,6 +1091,13 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     st.anchor_out = scene_anchor_[cur].Get();
     st.srv[0] = scene_history_[prev].Get();
     st.srv[1] = result;
+    // A carried change (no model output to read) is tested against the last frame's input.
+    if (!infer && scene_proxy_prev_valid_ && !nf.reset) {
+      to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, kRead);
+      flush();
+      st.srv[1] = scene_proxy_prev_.Get();
+      sc.flags |= 1024u;
+    }
     st.srv[2] = scene_proxy_.Get();
     st.srv[3] = scene_depth_w_.Get();
     st.srv[4] = scene_motion;
@@ -1067,6 +1109,20 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     flush();
     scene_history_valid_ = true;
     result = scene_history_[cur].Get();
+  }
+
+  // This frame's proxy kept for the next frame: the motion check and the carry test read it.
+  if (REXCVAR_GET(rexnative_dlss5_mv_check) || reuse > 0) {
+    to(scene_proxy_.Get(), &scene_proxy_state_, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+    flush();
+    list->CopyResource(scene_proxy_prev_.Get(), scene_proxy_.Get());
+    to(scene_proxy_.Get(), &scene_proxy_state_, kRead);
+    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, kRead);
+    flush();
+    scene_proxy_prev_valid_ = true;
+  } else {
+    scene_proxy_prev_valid_ = false;
   }
 
   // Compare mode: the frames not shown keep the scene as DLAA made it (the model still ran, for

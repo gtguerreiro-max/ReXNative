@@ -1064,3 +1064,32 @@ of 1023). The difference was all in the presentation:
   mode changes (and takes a new SDR brightness).
 
 The log's `HDR10 output` line gives the levels.
+
+## DLSS 5 on fewer frames
+
+`--rexnative_dlss5_reuse` runs the model on one frame in two or three and carries its last change
+along the scene's motion between. Tested on Blur (RTX 5060 Ti, the Cinematic two-pass look,
+1280x720, the model at 1024x576): the model's GPU time went from 3.54 ms a frame to 1.85 ms (one
+in two) and 1.29 ms (one in three). Frame traces of a race replayed with each setting (the same
+frames, compared texel by texel) showed two things.
+
+A carried change smeared a car onto the road beside it. The depth test lets a surface through
+where it touches another at nearly the same depth, and a carried change has no model output to
+clamp it to: the road at the car's rear wheel took the car's change and its blue underglow, a
+stain on every carried frame (a blue excess of 4.5 there, 8.8 with one frame in three, against
+0.2 with the model on every frame), growing over consecutive carried frames. The carry now also
+tests the game's own picture: the last frame's input where the change comes from against this
+frame's 3x3 input range, the change fading out from 0.02 to 0.08 outside it (0.6 and 1.4 since).
+The last frame's input is kept for this and the motion check alike. Reading the chained motion
+at the nearest texel instead of a filtered one, and the carried change with a Catmull-Rom read
+instead of a bilinear one, changed little on their own.
+
+The carried frames still show less change: at 85 mph, 15 against 19 (mean texel difference from
+the game's picture), a pulse at half the frame rate where the surfaces move fastest (the wall
+beside the car, the road under the camera). There the carry is rejected and the game's picture
+shows: by the depth or the screen's edge without the picture test (15.4), and also where motion
+blur changes the input's colour with it (14.9). Carrying the change where the picture does not
+match brings the stain back, so a racing game keeps the model on every frame; slower scenes lose
+less. An 8-frame trace looped every 8 frames is not a fair test of this setting: whether the
+model runs on the frame after the loop's cut decided between two results (27 or 42), so the
+comparison used a 60-frame trace, the first 20 frames of the last time through left out.
