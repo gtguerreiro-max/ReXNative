@@ -155,17 +155,42 @@ def find_packages(root):
     return out
 
 
+def _fresh(path):
+    """An empty folder at path (what an interrupted run left there goes)."""
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    elif os.path.exists(path):
+        os.remove(path)
+    os.makedirs(path)
+    return path
+
+
 def stage_game(source, work, log):
-    """<work>/game-data with default.xex; returns facts about where it came from."""
-    data = os.path.join(work, 'game-data')
-    if entry_xex(data):
+    """<work>/game-data with default.xex; returns facts about where it came from.
+
+    The archive is extracted into archive.part/ and the game into game-data.part/, each renamed only
+    when complete: a run stopped half way (the Deck's battery, a cancel) never leaves a half-extracted
+    folder that the next run would take as done."""
+    final = os.path.join(work, 'game-data')
+    if entry_xex(final):
         return {'reused': True}
+    facts = _stage(source, work, _fresh(final + '.part'), log)
+    if os.path.exists(final):
+        shutil.rmtree(final)  # an older run's, without default.xex
+    os.replace(final + '.part', final)
+    return facts
+
+
+def _stage(source, work, data, log):
     facts = {}
     root = source
     if os.path.isfile(source) and source.lower().endswith(ARCHIVES):
         root = os.path.join(work, 'archive')
         if not os.path.isdir(root) or not os.listdir(root):
-            extract_archive(source, root, log)
+            extract_archive(source, _fresh(root + '.part'), log)
+            if os.path.exists(root):
+                shutil.rmtree(root)
+            os.replace(root + '.part', root)
     # A disc game: its image, given or in the archive (xiso.py).
     image = root if os.path.isfile(root) and root.lower().endswith(IMAGES) else None
     if image is None and os.path.isdir(root) and not find_xex(root):
