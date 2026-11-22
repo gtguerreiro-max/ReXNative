@@ -64,7 +64,11 @@ class Unreachable(RuntimeError):
 
 
 def game_xex(work):
-    return os.path.join(work, 'game-data', 'default.xex')
+    """game-data's default.xex as the game names it (a disc's DEFAULT.XEX, a package's Default.xex:
+    Linux tells the names apart), else the usual name."""
+    from .prepare import entry_xex
+    data = os.path.join(work, 'game-data')
+    return entry_xex(data) or os.path.join(data, 'default.xex')
 
 
 def available(title_id, media_id, log=None):
