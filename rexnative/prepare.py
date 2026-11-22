@@ -121,6 +121,18 @@ def extract_archive(src, dst, log):
         raise RuntimeError('7-Zip failed on %s: %s' % (src, r.stdout[-500:] + r.stderr[-500:]))
 
 
+def entry_xex(data):
+    """game-data's default.xex as it is named there, or None: a package's can be Default.xex and a
+    disc's DEFAULT.XEX, and Linux (the Steam Deck) tells names apart where Windows does not."""
+    try:
+        for f in sorted(os.listdir(data)):
+            if f.lower() == 'default.xex' and os.path.isfile(os.path.join(data, f)):
+                return os.path.join(data, f)
+    except OSError:
+        pass
+    return None
+
+
 def find_xex(root):
     """The shallowest default.xex under root, or None."""
     best = None
@@ -146,7 +158,7 @@ def find_packages(root):
 def stage_game(source, work, log):
     """<work>/game-data with default.xex; returns facts about where it came from."""
     data = os.path.join(work, 'game-data')
-    if os.path.exists(os.path.join(data, 'default.xex')):
+    if entry_xex(data):
         return {'reused': True}
     facts = {}
     root = source
@@ -164,7 +176,7 @@ def stage_game(source, work, log):
         with xiso.Image(image) as im:
             im.extract(data, log=log)
         facts['from'] = 'disc image'
-        if not os.path.exists(os.path.join(data, 'default.xex')):
+        if not entry_xex(data):
             raise RuntimeError('no default.xex in the disc image %s' % image)
         return facts
     if os.path.isfile(root) and stfs.is_package(root):
@@ -191,7 +203,7 @@ def stage_game(source, work, log):
         finally:
             pkg.close()
     facts['packages'] = titles
-    if not os.path.exists(os.path.join(data, 'default.xex')):
+    if not entry_xex(data):
         raise RuntimeError('no default.xex in %s (packages: %s)' % (source, titles))
     return facts
 
@@ -568,7 +580,7 @@ def _function_lines(entries):
 def _write_manifest(work, name):
     lines = ['# ReXGlue codegen manifest written by ReXNative (rexnative prepare): edit hints.txt,',
              '# not this file.', '', '[project]', 'name = "%s"' % name, 'sdk_version = "0.11.0"',
-             'game_root = "game-data"', '', '[entrypoint]', 'file_path = "game-data/default.xex"',
+             'game_root = "game-data"', '', '[entrypoint]', 'file_path = "game-data/%s"' % os.path.basename(entry_xex(os.path.join(work, 'game-data')) or 'default.xex'),
              'out_directory_path = "generated/default"']
     # Jump tables codegen cut short, given whole ([[switch_tables]]), the setjmp / longjmp the
     # game calls (setjmp_address, longjmp_address) and its XAPI fiber functions ([shim]), all
@@ -974,7 +986,7 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
                 status['steps']['dlc'] = {'error': str(e)}
                 log('  DLC: %s' % e)
             save()
-        info = xex.read(os.path.join(work, 'game-data', 'default.xex'))
+        info = xex.read(entry_xex(os.path.join(work, 'game-data')) or os.path.join(work, 'game-data', 'default.xex'))
         lib, ver = xex.d3d_library(info)
         status['xex'] = {'title_id': info['title_id'], 'version': info['version'],
                          'pe_name': info['pe_name'], 'd3d': [lib, ver], 'libs': info['libs']}
@@ -991,7 +1003,7 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
         # The title (the settings menu's): the archive's name, as the Deck's shortcut has it.
         from .deck import title_of
         target = {'name': name, 'title': title_of(work) or name,
-                  'xex': os.path.join(work, 'game-data', 'default.xex'),
+                  'xex': entry_xex(os.path.join(work, 'game-data')) or os.path.join(work, 'game-data', 'default.xex'),
                   'generated': os.path.join(work, 'generated', 'default')}
         res = run_adapt(target, refs, os.path.join(work, 'layer'), log=lambda *a: None)
         found = {k: '%08X' % v['address'] for k, v in res['functions'].items() if v.get('address')}

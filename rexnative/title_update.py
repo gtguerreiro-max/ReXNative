@@ -172,6 +172,14 @@ def install(work, package, title_id, log=print):
             if not info['patch']:
                 raise RuntimeError('%s: not an XEX patch' % rel)
             dst = os.path.join(game, rel)
+            # Named after the image it patches as that one is named (Default.xex: Default.xexp):
+            # the loader looks for the image's name + "p", and Linux tells the cases apart.
+            folder = os.path.dirname(dst)
+            if os.path.isdir(folder):
+                for f in os.listdir(folder):
+                    if (f + 'p').lower() == os.path.basename(dst).lower() and f.lower().endswith('.xex'):
+                        dst = os.path.join(folder, f + 'p')
+                        break
             if not os.path.realpath(dst).startswith(os.path.realpath(game) + os.sep):
                 raise RuntimeError('%s: outside the game folder' % rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
