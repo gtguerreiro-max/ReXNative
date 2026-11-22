@@ -32,6 +32,7 @@ import os
 import posixpath
 import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 import time
@@ -169,12 +170,11 @@ class Deck:
                 have[parts[0]] = (int(parts[1]), int(float(parts[2])))
         return have
 
-    def send(self, dest, items, log=print):
-        """items: [(local path, relative path on the Deck)]; those the Deck has (same size and
-        time) are left out, and what an older install left there that would be taken for the
+    def _plan(self, dest, items, log):
+        """(what the Deck has, [(local, relative, size)] to send): those the Deck has (same size
+        and time) are left out, and what an older install left there that would be taken for the
         game's goes (another executable, which play.sh could start, or its deck settings; an
-        older title update's files, mounted as update:). Sent as one tar stream; returns the
-        bytes sent."""
+        older title update's files, mounted as update:)."""
         have = self.files(dest)
         wanted = {rel for _, rel in items}
         from .project import COMMON_DLLS
@@ -191,6 +191,12 @@ class Deck:
             st = os.stat(src)
             if have.get(rel) != (st.st_size, int(st.st_mtime)):
                 todo.append((src, rel, st.st_size))
+        return have, todo
+
+    def send(self, dest, items, log=print):
+        """items: [(local path, relative path on the Deck)], copied into dest as _plan says, as
+        one tar stream; returns the bytes sent."""
+        have, todo = self._plan(dest, items, log)
         if not todo:
             return 0
         total = sum(t[2] for t in todo)
@@ -247,6 +253,62 @@ class Deck:
         if p.wait() != 0:
             raise SystemExit('the Deck: copying into %s failed: %s' % (dest, err[-600:]))
         log('  copied %d of %d MB' % (total // 1000000, total // 1000000))
+        return total
+
+
+class LocalDeck(Deck):
+    """This machine as the Deck: the tool runs on the Steam Deck itself (ReXNativeDeck). The same
+    commands run in a local shell from the home folder, and the game's files are linked or copied
+    into its folder instead of sent over SSH."""
+    # The game's own files (its disc or package, its title update) never change once there: they
+    # are hard links to the work folder's copy where both are on one file system, so a game the
+    # Deck prepared for itself does not take its space twice. The rest (the executable, the DLLs,
+    # the settings) is copied: a build rewrites those in place.
+    LINKED = ('game/', 'title-update/')
+
+    def __init__(self):
+        self.host, self.port, self.key = 'localhost', None, None
+
+    def ssh_cmd(self, command):
+        return ['bash', '-c', 'cd ~ && ' + command]
+
+    def send(self, dest, items, log=print):
+        have, todo = self._plan(dest, items, log)
+        if not todo:
+            return 0
+        root = dest if dest.startswith('/') else os.path.join(os.path.expanduser('~'), dest)
+        copied = [t for t in todo if not t[1].startswith(self.LINKED)]
+        total = sum(t[2] for t in todo)
+        need = sum(t[2] for t in copied) - sum(have[rel][0] for _, rel, _ in copied if rel in have)
+        free = shutil.disk_usage(root if os.path.isdir(root) else os.path.dirname(root)).free
+        if need > free - (256 << 20):
+            raise SystemExit('this Deck: %.2f GB to copy into %s and %.2f GB free there: remove '
+                             'games, or --root sd for the microSD card' % (need / 1e9, root,
+                                                                           free / 1e9))
+        log('  %d files, %.0f MB' % (len(todo), total / 1e6))
+        done, said, linked = 0, time.time(), 0
+        for src, rel, size in todo:
+            dst = os.path.join(root, *rel.split('/'))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.lexists(dst):
+                os.remove(dst)  # a link to the old file: never write through it
+            if rel.startswith(self.LINKED):
+                try:
+                    os.link(src, dst)
+                    linked += size
+                except OSError:  # another file system (the microSD card)
+                    shutil.copy2(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            if rel.endswith('.sh'):
+                os.chmod(dst, 0o755)
+            done += size
+            if time.time() - said >= 3:
+                said = time.time()
+                log('  copied %d of %d MB' % (done // 1000000, total // 1000000))
+        log('  copied %d of %d MB%s' % (total // 1000000, total // 1000000,
+                                        ' (%d MB of it linked, not copied)' % (linked // 1000000)
+                                        if linked >= 1000000 else ''))
         return total
 
 

@@ -102,8 +102,35 @@ def _parse(files):
     return funcs
 
 
+PACK = 'listing.json.xz'  # a reference pack's listings (save_pack): JSON, never code to run
+
+
+def save_pack(tree, folder):
+    """Writes the tree's listings to <folder>/listing.json.xz: a reference for adapt on a machine
+    that does not have the reference game's generated code (the Steam Deck). The listings are the
+    game's own instructions: such a pack stays with whoever owns the game."""
+    import json
+    import lzma
+    os.makedirs(folder, exist_ok=True)
+    data = {'version': CACHE_VERSION,
+            'funcs': {'%08X' % f: [[a, t] for a, t in insns] for f, insns in tree.funcs.items()}}
+    with lzma.open(os.path.join(folder, PACK), 'wt', encoding='utf-8', preset=6) as f:
+        json.dump(data, f, separators=(',', ':'))
+
+
+def _load_pack(path):
+    import json
+    import lzma
+    with lzma.open(path, 'rt', encoding='utf-8') as f:
+        data = json.load(f)
+    return {int(k, 16): [(a, t) for a, t in v] for k, v in data['funcs'].items()}
+
+
 def load(tree):
-    """Tree of a generated/default directory (cached)."""
+    """Tree of a generated/default directory (cached), or of a reference pack (save_pack)."""
+    pack = os.path.join(tree, PACK)
+    if os.path.exists(pack):
+        return Tree(tree, _load_pack(pack))
     files = sorted(glob.glob(os.path.join(tree, '*_recomp.*.cpp')))
     if not files:
         sys.exit('rexnative: no ReXGlue generated code (*_recomp.*.cpp) in %s' % tree)

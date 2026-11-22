@@ -66,6 +66,25 @@ def cmd_extract(a):
             os.path.join(a.out, n + '.json')))
 
 
+def cmd_refs_pack(a):
+    """Each port's profile and listings in <out>/<port>/, and <out>/ports.json naming them as
+    packs: copied to another machine, it is that machine's ports.json (--ports)."""
+    ports = prof.load_ports(a.ports)
+    os.makedirs(a.out, exist_ok=True)
+    listed = {'_comment': 'Reference packs (rexnative refs-pack): profiles and listings derived '
+                          'from the games. For this machine only, never for publishing.'}
+    for n in a.names or ports:
+        folder = os.path.join(a.out, n)
+        p = prof.save_pack(ports[n], n, folder)
+        listed[n] = {'title': p.get('title', n), 'pack': n}
+        size = sum(os.path.getsize(os.path.join(folder, f)) for f in os.listdir(folder))
+        print('%s: %d functions found, %.1f MB -> %s' % (
+            n, sum(1 for v in p['functions'].values() if v), size / 1e6, folder))
+    with open(os.path.join(a.out, 'ports.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(listed, f, indent=1)
+        f.write('\n')
+
+
 def run_adapt(target, refs, out, log=print):
     res = adaptmod.adapt(target, refs, adaptmod.load_overrides(out), log=log)
     layer = emit.from_result(res)
@@ -242,7 +261,7 @@ def cmd_project(a):
 
 def cmd_deck(a):
     from . import deck
-    d = deck.Deck(a.host, a.key)
+    d = deck.LocalDeck() if a.local else deck.Deck(a.host, a.key)
     root = deck.REMOTE_ROOT
     if a.root:
         root = deck.sd_root(d) if a.root.lower() == 'sd' else a.root.rstrip('/')
@@ -365,6 +384,11 @@ def main(argv=None):
     s.add_argument('names', nargs='*')
     s.add_argument('--out', default=os.path.join(HERE, 'references'))
     s.set_defaults(fn=cmd_extract)
+    s = sub.add_parser('refs-pack', help='reference packs of the known ports, for a machine '
+                       'without their sources or generated code (the Steam Deck)', parents=[lang_opt])
+    s.add_argument('out', help='folder: one sub-folder per port and a ports.json naming them')
+    s.add_argument('names', nargs='*')
+    s.set_defaults(fn=cmd_refs_pack)
     s = sub.add_parser('adapt', help='generate a game layer for a new game', parents=[lang_opt])
     s.add_argument('--generated', required=True, help='the game\'s ReXGlue generated/default')
     s.add_argument('--xex', required=True, help='its default.xex')
@@ -438,6 +462,9 @@ def main(argv=None):
     s.add_argument('work', nargs='+', help="a game's folder in prepare's --work (built)")
     s.add_argument('--host', help='deck@ADDRESS[:PORT] (or REXNATIVE_DECK)')
     s.add_argument('--key', help='SSH key (or REXNATIVE_DECK_KEY)')
+    s.add_argument('--local', action='store_true',
+                   help='this machine is the Deck (the tool runs on it): no SSH; the game\'s '
+                        'files are hard links to the work folder\'s where they can be')
     s.add_argument('--root', metavar='FOLDER|sd',
                    help="the Deck's folder for the games (absolute, or under the deck user's "
                         "home; default Games/ReXNative); sd: ReXNative/ on the microSD card")

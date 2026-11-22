@@ -351,6 +351,60 @@ def _need(path, what, env):
     return os.path.abspath(path)
 
 
+def _lower_priority():
+    """A build or a game run on Linux (the Steam Deck) at a lower priority: the Deck stays
+    responsive while it works (Windows uses BELOW_NORMAL_PRIORITY_CLASS for the same)."""
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+
+
+def game_command(exe, args):
+    """The command that starts a game's Windows executable: itself on Windows; elsewhere through
+    $REXNATIVE_RUNNER, a command that runs Windows programs (on the Deck: Proton, with a prefix
+    of its own; ReXNativeDeck's kit/bin/rexdeck-run)."""
+    if os.name == 'nt':
+        return [exe] + list(args)
+    runner = os.environ.get('REXNATIVE_RUNNER', '')
+    if not runner:
+        raise SystemExit('set REXNATIVE_RUNNER to a command that runs Windows programs '
+                         '(on Linux the game runs under Proton or Wine)')
+    import shlex
+    return shlex.split(runner) + [exe] + list(args)
+
+
+def start_game(exe, args, cwd, **kw):
+    """Starts the game (game_command) in a process group of its own on Linux, so stop_game ends
+    the runner and what it started."""
+    if os.name != 'nt':
+        kw.setdefault('start_new_session', True)
+    return subprocess.Popen(game_command(exe, args), cwd=cwd, **kw)
+
+
+def stop_game(p, grace=10):
+    """Ends a game start_game started: on Linux the runner first gets SIGTERM (it ends what it
+    started under Proton), then the whole group SIGKILL."""
+    if p.poll() is not None:
+        return
+    if os.name == 'nt':
+        p.kill()
+        p.wait()
+        return
+    import signal
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, None)):
+        try:
+            os.killpg(p.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        try:
+            p.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    p.wait()
+
+
 # The runtime DLLs every game shares (renderer/src/native/common_dir.h): NVIDIA's DLSS and DLSS 5,
 # AMD's FidelityFX. One copy in <work>/common (beside the games' folders) instead of one in each
 # game's build/ and run/ (413 MB each).
@@ -415,8 +469,18 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     fidelityfx = _need(fidelityfx, 'the FidelityFX SDK', 'REXNATIVE_FIDELITYFX')
     dlss_sdk = _need(dlss_sdk, 'the DLSS SDK', 'REXNATIVE_DLSS_SDK')
     dlss_nr = _need(dlss_nr, 'the DLSS 5 headers', 'REXNATIVE_DLSS_NR')
-    vcenv = os.path.join(HERE, 'scripts', 'vcenv.cmd')
-    llvm = llvm_dir()
+    if os.name == 'nt':
+        vcenv = os.path.join(HERE, 'scripts', 'vcenv.cmd')
+        llvm = llvm_dir()
+        compilers = '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
+    else:
+        # A Windows build made on Linux (the Steam Deck): clang for the MSVC ABI with the MSVC
+        # CRT and the Windows SDK, as the toolchain file sets them up (ReXNativeDeck's kit).
+        toolchain = os.environ.get('REXNATIVE_TOOLCHAIN_FILE', '')
+        if not os.path.isfile(toolchain):
+            raise SystemExit('the CMake toolchain file for Windows builds not found (%r): set '
+                             'REXNATIVE_TOOLCHAIN_FILE' % toolchain)
+        compilers = '"-DCMAKE_TOOLCHAIN_FILE=%s" ' % os.path.abspath(toolchain)
     bdir = os.path.join(work, 'build')
     jobs = jobs or max(1, (os.cpu_count() or 2) - 2)
     # A build folder of the old SDK (clang-cl, generated/rexglue.cmake) cannot be reused.
@@ -435,8 +499,7 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     sdl3 = os.path.join(sdk_install, 'cmake')
     sdl3_dir = ('"-DSDL3_DIR=%s" ' % sdl3.replace('\\', '/')
                 if os.path.exists(os.path.join(sdl3, 'SDL3Config.cmake')) else '')
-    configure = ('cmake -S "{w}" -B "{b}" -G Ninja -DCMAKE_BUILD_TYPE=Release '
-                 '-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ '
+    configure = ('cmake -S "{w}" -B "{b}" -G Ninja -DCMAKE_BUILD_TYPE=Release ' + compilers +
                  '"-DCMAKE_PREFIX_PATH={sdk}" -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF '
                  '"-Drexglue_DIR={pkg}" ' + sdl3_dir +
                  '"-DREXNATIVE_DIR={rx}" '
@@ -463,15 +526,22 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     os.makedirs(bdir, exist_ok=True)
     for what, cmd in steps:
         logf = os.path.join(bdir, '%s.log' % what)
-        # A batch file: cmd's own quoting rules, not Python's argument escaping.
-        script = os.path.join(bdir, '%s.cmd' % what)
-        with open(script, 'w', encoding='utf-8', newline='\r\n') as f:
-            f.write('@echo off\ncall "%s" >nul || exit /b 1\nset "PATH=%s;%%PATH%%"\n'
-                    'set "CFLAGS=%s"\nset "CXXFLAGS=%s"\n%s\n' % (vcenv, llvm, FLAGS, FLAGS, cmd))
         log('%s: %s (log: %s)' % (name, what, logf))
         t0 = time.time()
+        if os.name == 'nt':
+            # A batch file: cmd's own quoting rules, not Python's argument escaping.
+            script = os.path.join(bdir, '%s.cmd' % what)
+            with open(script, 'w', encoding='utf-8', newline='\r\n') as f:
+                f.write('@echo off\ncall "%s" >nul || exit /b 1\nset "PATH=%s;%%PATH%%"\n'
+                        'set "CFLAGS=%s"\nset "CXXFLAGS=%s"\n%s\n' % (vcenv, llvm, FLAGS, FLAGS, cmd))
+            args, env, nice = ['cmd', '/d', '/c', script], None, None
+        else:
+            import shlex
+            args, env = shlex.split(cmd), dict(os.environ, CFLAGS=FLAGS, CXXFLAGS=FLAGS)
+            nice = _lower_priority
         with open(logf, 'w', encoding='utf-8', errors='replace') as out:
-            r = subprocess.run(['cmd', '/d', '/c', script], stdout=out, stderr=subprocess.STDOUT)
+            r = subprocess.run(args, stdout=out, stderr=subprocess.STDOUT, env=env,
+                               preexec_fn=nice)
         from . import prepare
         prepare.spent('build', time.time() - t0, 1 if what == 'build' else 0)  # configure: its time only
         if r.returncode:
@@ -766,9 +836,9 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print, before_buil
     image = os.path.join(run, 'image.bin')
     if os.path.exists(image):
         os.remove(image)
-    p = subprocess.Popen([os.path.join(run, '%s.exe' % name), '--rexnative_dump_image=' + image,
-                          '--fullscreen=false', '--window_width=1280', '--window_height=720'],
-                         cwd=run, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = start_game(os.path.join(run, '%s.exe' % name), [
+        '--rexnative_dump_image=' + image, '--fullscreen=false', '--window_width=1280',
+        '--window_height=720'], cwd=run, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     t0 = time.time()
     try:
         while time.time() - t0 < seconds and p.poll() is None:
@@ -777,9 +847,7 @@ def find_functions(work, rexglue, build_args, seconds=60, log=print, before_buil
                 break
             time.sleep(0.5)
     finally:
-        if p.poll() is None:
-            p.kill()
-            p.wait()
+        stop_game(p)
         prepare.spent('game', time.time() - t0)
     if not os.path.exists(image):
         raise SystemExit('%s: no image written (%s)' % (name, image))
@@ -980,14 +1048,13 @@ def discover(work, rexglue, build_args, rounds=30, seconds=40, log=print):
         if os.path.exists(logf):
             os.remove(logf)
         t0 = time.time()
-        p = subprocess.Popen([exe, '--log_file=' + logf, '--fullscreen=false',
-                              '--window_width=1280', '--window_height=720'], cwd=run,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = start_game(exe, ['--log_file=' + logf, '--fullscreen=false', '--window_width=1280',
+                             '--window_height=720'], cwd=run, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
         try:
             code = p.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
-            p.kill()
-            p.wait()
+            stop_game(p)
             code = None
         prepare.spent('game', time.time() - t0)
         text = ''

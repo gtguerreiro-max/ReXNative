@@ -75,7 +75,12 @@ def _code(text):
 def load_ports(path):
     with open(path, encoding='utf-8') as f:
         ports = json.load(f)
-    return {k: v for k, v in ports.items() if not k.startswith('_')}
+    ports = {k: v for k, v in ports.items() if not k.startswith('_')}
+    # A reference pack's folder may be relative to the ports.json naming it (refs-pack writes so).
+    for v in ports.values():
+        if v.get('pack') and not os.path.isabs(v['pack']):
+            v['pack'] = os.path.join(os.path.dirname(os.path.abspath(path)), v['pack'])
+    return ports
 
 
 def port_paths(port):
@@ -163,7 +168,12 @@ def extract_layer(port, name=None):
 
 def extract(port, name=None):
     """Profile of a port (ports.json entry): from its ReXNative layer when it has one ("layer"),
-    else from its hand-made sources."""
+    else from its hand-made sources; or from a reference pack ("pack": a folder save_pack wrote,
+    the profile and the listings without the port's sources or generated code)."""
+    if port.get('pack'):
+        folder = os.path.abspath(port['pack'])
+        p = load(os.path.join(folder, 'profile.json'))
+        return dict(p, name=name or p.get('name'), generated=folder)
     p = port_paths(port)
     if 'layer' in p:
         return extract_layer(port, name)
@@ -328,6 +338,17 @@ def as_reference(p):
         funcs[n] = None
     surface = [e for e in p['surface'] if e[0] not in drop and e[1] not in POSITION_ONLY]
     return dict(p, functions=funcs, surface=surface)
+
+
+def save_pack(port, name, folder):
+    """A reference pack of a port, for a machine without its sources or generated code (the Steam
+    Deck): <folder>/profile.json and the listings of its generated code (listing.save_pack).
+    ports.json there names it {"pack": "<folder>"}. Derived from the game: not for publishing."""
+    from . import listing
+    p = extract(port, name)
+    listing.save_pack(listing.load(p['generated']), folder)
+    save(dict(p, generated='.'), os.path.join(folder, 'profile.json'))
+    return p
 
 
 def save(profile, path):

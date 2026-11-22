@@ -95,9 +95,12 @@ def spent_text():
 
 
 def _run(cmd, cwd=None):
-    flags = BELOW_NORMAL if os.name == 'nt' else 0
+    if os.name == 'nt':
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors='replace',
+                              creationflags=BELOW_NORMAL)
+    from .project import _lower_priority
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors='replace',
-                          creationflags=flags)
+                          preexec_fn=_lower_priority)
 
 
 def seven_zip():
