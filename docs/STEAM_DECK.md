@@ -92,3 +92,23 @@ installed game from Steam with extra flags and, at the given seconds, sends keys
 renderer's captures (`cap`), sets draw-debug switches (`dbg<mask>`) and reads the APU's power
 (`pwr`); the captures and the log come back to `<work>\<game>\deck`. More on debugging:
 [DEBUGGING.md](DEBUGGING.md).
+
+## Preparing and building on the Deck itself
+
+The tool also runs on Linux, to make a game's Windows build on the Deck with no PC (the
+ReXNative Deck app sets this up). Measured on a Deck: codegen about twice the PC's time with
+jemalloc, a build 2.6 times; the build runs under Proton like one made on the PC.
+
+- `project --build` configures with the CMake toolchain file `$REXNATIVE_TOOLCHAIN_FILE` (clang
+  for `x86_64-pc-windows-msvc`, lld, the MSVC CRT and the Windows SDK) instead of `vcenv.cmd`;
+  `$REXNATIVE_REXGLUE` is ReXGlue's codegen built for Linux, from the same commit as the SDK
+  (its generated code matches the Windows tool's function for function).
+- The runs a prepare makes (the image dump, `--discover`) start the game through
+  `$REXNATIVE_RUNNER`, a command that runs a Windows program (Proton, with a prefix of its own).
+- `refs-pack <folder>` writes each known port's profile and listings (reference packs, about
+  25 MB for three ports) and a `ports.json` naming them: with it as `--ports`, `adapt` and
+  `prepare` work without the reference games' sources or generated code, with the same result.
+  The packs are derived from the games: keep them to yourself.
+- `deck --local` installs on the machine it runs on (no SSH); the game's files are hard links to
+  the work folder's, so a game the Deck prepared does not take its space twice. Steam must be
+  closed to add a shortcut this way (`install.sh` says so and leaves it).
