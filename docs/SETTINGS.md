@@ -56,6 +56,11 @@ change it.
   5's cost. `rexnative.dlss5_colour_space = "oklab"` mixes the game's colour and the model's in
   Oklab when the colour strength is between 0 and 1 (Natural's 0.65, or Custom), keeping the
   saturation a mix in RGB loses between two hues; `rgb` (the default) as before.
+  Its still hold (`rexnative.dlss5_hold`: 0 off, 0.8 gentle, 0.95 strong; 1 held until the
+  picture changes) keeps the last change where the game's picture stands still, against the
+  model's slow drift in still regions after the camera stops (DLSS5-Feeder's output stabiliser);
+  `rexnative.dlss5_hold_tolerance` (0.04) is how much a texel's input may differ and still count
+  as still. A texel that moves (the scene's motion) or whose input changed shows the model as is.
 
 ## Settings
 

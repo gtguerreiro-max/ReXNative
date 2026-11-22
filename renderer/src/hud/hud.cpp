@@ -326,6 +326,17 @@ std::vector<Option> MakeOptions() {
                "How often DLSS 5 runs. Between, its last change follows the scene's motion: every "
                "2nd frame nearly halves its cost, at a frame's lag on what the camera uncovers.",
                NvidiaGpu});
+  o.push_back({"DLSS 5", "dlss5_hold", "DLSS 5 still hold",
+               {{"Off", "0"}, {"Gentle", "0.8"}, {"Strong", "0.95"}}, false,
+               [] {
+                 return Nearest(Find("dlss5_hold"),
+                                std::atof(Flag("rexnative_dlss5_hold").c_str()));
+               },
+               [](const std::string& v) { return Assignments{{"rexnative_dlss5_hold", v}}; },
+               nullptr,
+               "Where the game's picture stands still, DLSS 5's last answer is kept: no slow "
+               "drift or shimmer when the camera stops. Moving things show DLSS 5 as it is.",
+               NvidiaGpu});
   o.push_back({"Developer", "occlusion", "Occlusion queries", on_off, true,
                [] { return Flag("rexnative_occlusion"); },
                [](const std::string& v) { return Bool("rexnative_occlusion", v); }, nullptr,

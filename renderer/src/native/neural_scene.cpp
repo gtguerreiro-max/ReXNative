@@ -26,6 +26,14 @@
 // game's depth and motion; no code taken). The model, whose history is then that inferred frame,
 // gets the motion chained back to it.
 //
+// --rexnative_dlss5_hold holds the shown change where the game's picture did not change: the
+// model re-decides a still region from tiny differences in its input (a slope darkening for frames
+// after the camera stops). Per texel, the model's input in a 3x3 box against an anchor (that box
+// when the texel last changed), relative to its brightness, and the scene's motion: still, the
+// last frame's change is kept by this much; changed, the model's shows and the anchor follows.
+// After DLSS5-Feeder's output stabiliser (github.com/jlrouzies-fr/DLSS5-Feeder, MIT, Jean-Laurent
+// Rouzies, src/feed_hold12.h), with the game's motion as a second test of change.
+//
 // The scene target keeps its tracked state (RenderTarget::state) for the resolve after it.
 #include "neural.h"
 
@@ -84,6 +92,14 @@ REXCVAR_DEFINE_INT32(rexnative_dlss5_reuse, 0, "ReXNative",
                      "frame). A frame between carries the last frame's change along the scene's "
                      "motion, so 1 halves the model's cost; the change lags a frame behind on "
                      "surfaces it uncovers, which show the game's picture");
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_hold, 0.0, "ReXNative",
+                      "DLSS 5 at the scene: where the game's picture did not change (its input and "
+                      "motion), how much of the last frame's change is kept (0 off, 0.9 the model's "
+                      "new answer fades in over about ten frames, 1 held until the picture changes)");
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_hold_tolerance, 0.04, "ReXNative",
+                      "DLSS 5's hold: how much a texel's input (3x3, relative to its brightness) "
+                      "may differ from its anchor and still count as still (0.04: 4 %; fully "
+                      "changed at twice it)");
 REXCVAR_DEFINE_STRING(rexnative_dlss5_colour_space, "rgb", "ReXNative",
                       "DLSS 5 at the scene: where a colour strength between 0 and 1 mixes the "
                       "game's colour and the model's: rgb (in linear light, which greys the hues "
@@ -107,10 +123,12 @@ Texture2D<float4> model : register(t1);
 Texture2D<float4> proxy : register(t2);
 Texture2D<float> depth_in : register(t3);    // the scene's depth, render size
 Texture2D<float2> motion_in : register(t4);  // its motion, render size, UV-space
+Texture2D<float4> anchor_in : register(t5);  // the hold's anchors, the last frame's
 RWTexture2D<float4> dst : register(u0);
 RWByteAddressBuffer expo : register(u1);
 RWTexture2D<float> depth_out : register(u2);    // at the working size
 RWTexture2D<float2> motion_out : register(u3);  // at the working size
+RWTexture2D<float4> anchor_out : register(u4);  // the hold's anchors, this frame's
 SamplerState lin : register(s0);
 cbuffer Constants : register(b0) {
   uint2 size;         // the scene's host pixels
@@ -132,6 +150,9 @@ cbuffer Constants : register(b0) {
   float tau_down;
   float dead_band;
   float stability;    // how much of the previous frame's change the stabilisation keeps
+  float hold;         // --rexnative_dlss5_hold; 0 off
+  float hold_tolerance;
+  float2 pad_;
 };
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 float Luma(float3 c) { return dot(c, kLuma); }
@@ -300,12 +321,14 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
   // This frame's change and its 3x3 range (TAA's neighbourhood clamp: the history may smooth
   // the model's flicker but never carry a change this neighbourhood does not have, which is what
   // trails would be).
-  float3 d = 0.0, dmin = 1e9, dmax = -1e9;
+  float3 d = 0.0, dmin = 1e9, dmax = -1e9, box = 0.0;
   float zmin = 1e9, zmax = -1e9;
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       int3 q = int3(clamp(int2(p) + int2(x, y), int2(0, 0), int2(work) - 1), 0);
-      float3 v = carry ? float3(0.0, 0.0, 0.0) : model.Load(q).rgb - proxy.Load(q).rgb;
+      float3 pq = proxy.Load(q).rgb;
+      box += pq;
+      float3 v = carry ? float3(0.0, 0.0, 0.0) : model.Load(q).rgb - pq;
       dmin = min(dmin, v);
       dmax = max(dmax, v);
       if (x == 0 && y == 0) d = v;
@@ -333,6 +356,24 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
     }
   }
   if (any(isnan(o)) || any(isinf(o))) o = 0.0;
+  // The hold: the anchor is the input's 3x3 box when the texel last changed.
+  float3 a = box / 9.0;
+  if (hold > 0.0 && (flags & 36u) == 0u) {  // not on a reset or the raw view
+    float3 b = anchor_in.Load(int3(p, 0)).rgb;
+    float3 e = abs(a - b);
+    // Relative to the brightness: the meter's drift moves dark texels by little, and must not
+    // unlock the picture. A soft gate from the tolerance to twice it.
+    float rel = max(e.r, max(e.g, e.b)) / max(max(Luma(a), Luma(b)), 0.02);
+    float change = saturate((rel - hold_tolerance) / max(hold_tolerance, 1e-4));
+    // The scene's motion: from a quarter of a texel a frame to three quarters, a change.
+    float mv = length(motion_in.Load(int3(p, 0)) * float2(work));
+    change = max(change, saturate(mv * 2.0 - 0.5));
+    // Last frame's shown change at this texel (no reprojection: still texels did not move).
+    float3 shown = scene.Load(int3(p, 0)).rgb;
+    o = lerp(o, shown, saturate(hold) * (1.0 - change));
+    a = lerp(b, a, change);
+  }
+  anchor_out[p] = float4(a, 1.0);
   dst[p] = float4(clamp(o, -1.0, 1.0), z);
 }
 
@@ -395,8 +436,8 @@ void compose_main(uint2 p : SV_DispatchThreadID) {
 }
 )";
 
-// A table a pass: t0-t4, u0-u3.
-constexpr uint32_t kSceneSrvs = 5, kSceneUavs = 4;
+// A table a pass: t0-t5, u0-u4.
+constexpr uint32_t kSceneSrvs = 6, kSceneUavs = 5;
 constexpr uint32_t kSceneViews = kSceneSrvs + kSceneUavs;
 constexpr DXGI_FORMAT kSceneDepthFormat = DXGI_FORMAT_R32_FLOAT;
 constexpr DXGI_FORMAT kSceneMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
@@ -417,8 +458,9 @@ struct SceneConstants {
   uint32_t work[2];
   uint32_t render[2];
   float tau_up, tau_down, dead_band, stability;
+  float hold, hold_tolerance, pad[2];
 };
-static_assert(sizeof(SceneConstants) == 64);
+static_assert(sizeof(SceneConstants) == 80);
 
 }  // namespace
 
@@ -526,6 +568,8 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
     Retire(scene_history_[1], frame);
     Retire(scene_chain_[0], frame);
     Retire(scene_chain_[1], frame);
+    Retire(scene_anchor_[0], frame);
+    Retire(scene_anchor_[1], frame);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     d.Width = work_width;
     d.Height = work_height;
@@ -549,12 +593,14 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
     scene_guides_state_ = kUav;
     d.Format = kSceneFormat;
     for (ComPtr<ID3D12Resource>* r :
-         {std::addressof(scene_history_[0]), std::addressof(scene_history_[1])})
+         {std::addressof(scene_history_[0]), std::addressof(scene_history_[1]),
+          std::addressof(scene_anchor_[0]), std::addressof(scene_anchor_[1])})
       if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, kUav, nullptr,
                                                   IID_PPV_ARGS(&*r)),
                  "DLSS 5 change history"))
         return false;
     scene_history_state_[0] = scene_history_state_[1] = kUav;
+    scene_anchor_state_[0] = scene_anchor_state_[1] = kUav;
     scene_history_valid_ = false;
     for (ComPtr<ID3D12Resource>* r :
          {std::addressof(scene_proxy_), std::addressof(scene_model_[0]),
@@ -616,8 +662,9 @@ void NeuralPass::SceneDispatch(CommandStream* list, uint64_t frame, uint32_t tab
       (uint32_t(frame % D3D12Device::kFramesInFlight) * kTables + table) * kSceneViews;
   D3D12_CPU_DESCRIPTOR_HANDLE cpu = scene_heap_->GetCPUDescriptorHandleForHeapStart();
   cpu.ptr += size_t(first) * scene_stride_;
-  static constexpr DXGI_FORMAT kNullSrv[kSceneSrvs] = {kSceneFormat, kSceneFormat, kSceneFormat,
-                                                       kSceneDepthFormat, kSceneMotionFormat};
+  static constexpr DXGI_FORMAT kNullSrv[kSceneSrvs] = {kSceneFormat,      kSceneFormat,
+                                                       kSceneFormat,      kSceneDepthFormat,
+                                                       kSceneMotionFormat, kSceneFormat};
   for (uint32_t i = 0; i < kSceneSrvs; ++i) {
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
     sd.Format = v.srv_format[i] != DXGI_FORMAT_UNKNOWN ? v.srv_format[i]
@@ -646,6 +693,9 @@ void NeuralPass::SceneDispatch(CommandStream* list, uint64_t frame, uint32_t tab
   cpu.ptr += scene_stride_;
   ud.Format = kSceneMotionFormat;
   device_->CreateUnorderedAccessView(v.motion_out, nullptr, &ud, cpu);
+  cpu.ptr += scene_stride_;
+  ud.Format = kSceneFormat;
+  device_->CreateUnorderedAccessView(v.anchor_out, nullptr, &ud, cpu);
   D3D12_GPU_DESCRIPTOR_HANDLE gpu = scene_heap_->GetGPUDescriptorHandleForHeapStart();
   gpu.ptr += uint64_t(first) * scene_stride_;
   ID3D12DescriptorHeap* heaps[] = {scene_heap_.Get()};
@@ -742,8 +792,10 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   c.tau_down = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_down), 0.05, 60.0));
   c.dead_band = float(std::clamp(REXCVAR_GET(rexnative_dlss5_meter_band), 0.0, 4.0));
   c.stability = look.stability;
+  c.hold = float(std::clamp(REXCVAR_GET(rexnative_dlss5_hold), 0.0, 1.0));
+  c.hold_tolerance = float(std::clamp(REXCVAR_GET(rexnative_dlss5_hold_tolerance), 0.001, 1.0));
 
-  D3D12_RESOURCE_BARRIER bs[4];
+  D3D12_RESOURCE_BARRIER bs[8];
   uint32_t nb = 0;
   auto to = [&](ID3D12Resource* r, D3D12_RESOURCE_STATES* state, D3D12_RESOURCE_STATES after) {
     if (*state == after) return;
@@ -909,8 +961,12 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     if (!infer) sc.flags |= 128u;  // no model this frame: the last change carried
     to(scene_history_[prev].Get(), &scene_history_state_[prev], kRead);
     to(scene_history_[cur].Get(), &scene_history_state_[cur], kUav);
+    to(scene_anchor_[prev].Get(), &scene_anchor_state_[prev], kRead);
+    to(scene_anchor_[cur].Get(), &scene_anchor_state_[cur], kUav);
     flush();
     SceneViews st;
+    st.srv[5] = scene_anchor_[prev].Get();
+    st.anchor_out = scene_anchor_[cur].Get();
     st.srv[0] = scene_history_[prev].Get();
     st.srv[1] = result;
     st.srv[2] = scene_proxy_.Get();
@@ -920,6 +976,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     SceneDispatch(list, frame, kStabilizeTable, scene_stabilize_pso_.Get(), st,
                   (work_width + 7) / 8, (work_height + 7) / 8, &sc);
     to(scene_history_[cur].Get(), &scene_history_state_[cur], kRead);
+    to(scene_anchor_[cur].Get(), &scene_anchor_state_[cur], kRead);
     flush();
     scene_history_valid_ = true;
     result = scene_history_[cur].Get();

@@ -17,7 +17,9 @@ What this repository contains from other projects, with their licenses.
   inference reuse (`--rexnative_dlss5_reuse`) follows the idea Veyra
   (https://github.com/Likely7/Veyra-NRVideo, GPL-3.0) describes for its NR inference reuse,
   written here for a game's depth and motion; no Veyra code is in this repository. Its Oklab
-  matrices are Björn Ottosson's (public domain).
+  matrices are Björn Ottosson's (public domain). Its still hold (`--rexnative_dlss5_hold`) follows
+  DLSS5-Feeder's output stabiliser (https://github.com/jlrouzies-fr/DLSS5-Feeder,
+  `src/feed_hold12.h`; MIT, Copyright (c) 2026 Jean-Laurent ROUZIES).
 - `renderer/src/compat/renderdoc_app.h` is RenderDoc's in-application API header (MIT, Baldur
   Karlsson; its license is at its top), which `renderer/src/native/debug_tools.cpp` loads
   RenderDoc through. RenderDoc itself is not in this repository.
@@ -27,6 +29,31 @@ What this repository contains from other projects, with their licenses.
   pgr4-native's author are pgr4-native's (MIT); several port code from Xenia Canary
   (BSD-3-Clause, below), each naming the Canary commit and files. `0013` is From Dust's port's
   (MIT); the others are this repository's (MIT). `scripts/vcenv.cmd` follows pgr4-native's.
+
+## DLSS5-Feeder (https://github.com/jlrouzies-fr/DLSS5-Feeder)
+
+The still hold in `renderer/src/native/neural_scene.cpp` follows its `src/feed_hold12.h`.
+
+```
+MIT License
+
+Copyright (c) 2026 Jean-Laurent ROUZIES
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+and associated documentation files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
 
 ## ReXGlue SDK (https://github.com/rexglue/rexglue-sdk)
 

@@ -84,13 +84,15 @@ class NeuralPass {
   bool CreateScenePasses();
   bool CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t height, uint32_t work_width,
                           uint32_t work_height, uint32_t mask_width, uint32_t mask_height);
-  // A pass's views: t0-t4 (a format of UNKNOWN takes the resource's own), u0 and the guides.
+  // A pass's views: t0-t5 (a format of UNKNOWN takes the resource's own), u0, the guides and
+  // the hold's anchors.
   struct SceneViews {
-    ID3D12Resource* srv[5] = {};
-    DXGI_FORMAT srv_format[5] = {};
+    ID3D12Resource* srv[6] = {};
+    DXGI_FORMAT srv_format[6] = {};
     ID3D12Resource* dst = nullptr;
     ID3D12Resource* depth_out = nullptr;
     ID3D12Resource* motion_out = nullptr;
+    ID3D12Resource* anchor_out = nullptr;
   };
   void SceneDispatch(CommandStream* list, uint64_t frame, uint32_t table, ID3D12PipelineState* pso,
                      const SceneViews& views, uint32_t groups_x, uint32_t groups_y,
@@ -129,6 +131,11 @@ class NeuralPass {
   uint32_t scene_carried_ = 0;
   uint32_t scene_reuse_logged_ = 0;
   bool scene_prev_inferred_ = true;
+  // --rexnative_dlss5_hold: the input's 3x3 box when each texel last changed (this frame's and
+  // the last, flipped with the history).
+  ComPtr<ID3D12Resource> scene_anchor_[2];
+  D3D12_RESOURCE_STATES scene_anchor_state_[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
   ComPtr<ID3D12DescriptorHeap> scene_heap_, scene_mask_rtv_;
   uint32_t scene_stride_ = 0, scene_width_ = 0, scene_height_ = 0;
   uint32_t scene_work_width_ = 0, scene_work_height_ = 0;
