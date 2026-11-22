@@ -42,7 +42,9 @@ change it.
   `rexnative.frame_generation_debug` its debug view (DEBUGGING.md);
   `rexnative.frame_generation_sharpness` (0.5, 0 to 1, 0 off) sharpens the generated frames
   where the scene moves, to the real frames' detail (NOTES.md).
-- **DLSS 5 page:** picks a look, one set of DLSS 5's settings per kind of game (Cinematic,
+- **DLSS 5 page:** DLSS 5 (`rexnative.dlss5`, NVIDIA RTX) runs inside the upscaler; with the
+  upscaler off it brings it on as DLAA at the game's resolution. The page picks a look, one set
+  of DLSS 5's settings per kind of game (Cinematic,
   Cinematic with two passes, Natural, Stylized, Cel-shaded / 2D, Strong, or Custom), with its
   intensity on top. `project` gives each game the look that suits it (`rexnative/dlss5.py`:
   cel-shaded, anime and 2D games get Cel-shaded, cartoon and painterly 3D Stylized, racing two

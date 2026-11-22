@@ -143,7 +143,13 @@ bool IsHdrColorFormat(uint32_t f) {
 }
 
 // --rexnative_upscaler_mode, or --rexnative_dlss_mode when it is empty ("native" is DLAA's).
+// DLSS 5 runs inside the upscaler (on the scene after DLAA, or before the HUD from the upscaler's
+// output): with --rexnative_upscaler off it did nothing at all, without a word (Halo CEA). It now
+// brings the upscaler on, as DLAA at the game's resolution, on DLSS.
+bool OnlyForDlss5() { return !REXCVAR_GET(rexnative_upscaler) && NeuralPass::Requested(); }
+
 Dlss::Mode ModeSetting() {
+  if (OnlyForDlss5()) return Dlss::Mode::kDlaa;
   std::string name = REXCVAR_GET(rexnative_upscaler_mode);
   if (name.empty()) name = REXCVAR_GET(rexnative_dlss_mode);
   return Dlss::ModeFromName(name);
@@ -182,7 +188,7 @@ std::array<int, 3> VersionNumbers(const char* name) {
 
 }  // namespace
 
-bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler); }
+bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler) || NeuralPass::Requested(); }
 
 std::string Upscaler::Status() {
   if (!g_status_on.load(std::memory_order_relaxed)) return {};
@@ -239,11 +245,16 @@ bool Upscaler::Initialize(ID3D12Device* device) {
   max_width_ = RenderExtent(int32_t(std::lround(OutputWidth() * scale)), OutputWidth());
   max_height_ = RenderExtent(int32_t(std::lround(OutputHeight() * scale)), OutputHeight());
   // DLSS where it runs, FSR otherwise (or as asked).
-  const std::string want = REXCVAR_GET(rexnative_upscaler_backend);
+  const bool for_dlss5 = OnlyForDlss5();
+  const std::string want = for_dlss5 ? std::string("dlss") : REXCVAR_GET(rexnative_upscaler_backend);
   if (want != "fsr" && dlss_.Initialize(device_)) {
     backend_ = Backend::kDlss;
+    if (for_dlss5)
+      REXLOG_INFO("ReXNative upscaler: on for DLSS 5 (--rexnative_upscaler is off), as DLAA at "
+                  "the game's resolution");
   } else if (want == "dlss") {
-    REXLOG_ERROR("ReXNative upscaler: DLSS unavailable (--rexnative_upscaler_backend=dlss)");
+    REXLOG_ERROR("ReXNative upscaler: DLSS unavailable ({})",
+                 for_dlss5 ? "DLSS 5 needs it" : "--rexnative_upscaler_backend=dlss");
     return false;
   } else {
     backend_ = Backend::kFsr;
