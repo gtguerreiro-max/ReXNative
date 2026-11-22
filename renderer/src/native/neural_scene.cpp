@@ -19,6 +19,13 @@
 //            TransferStrength, ColourStrength and a two-sided MaxRatio clamp; times W, clamped to
 //            the 7e3 range the scene's resolve keeps
 //
+// --rexnative_dlss5_reuse runs the model on one frame in two or three: a frame in between does
+// not infer and carries the last inferred change along the scene's own motion, rejected where the
+// depth there disagrees (a disocclusion, a cut), where the frame shows the game's picture as it is
+// (the idea of Veyra's NR inference reuse, github.com/Likely7/Veyra-NRVideo, written here for a
+// game's depth and motion; no code taken). The model, whose history is then that inferred frame,
+// gets the motion chained back to it.
+//
 // The scene target keeps its tracked state (RenderTarget::state) for the resolve after it.
 #include "neural.h"
 
@@ -32,6 +39,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <memory>
 
 REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
@@ -71,6 +79,15 @@ REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_transfer, 1.0, "ReXNative",
 REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_colour, 1.0, "ReXNative",
                       "DLSS 5 at the scene: 0 keeps the game's hue, 1 takes the model's (the "
                       "forks' ColourStrength)");
+REXCVAR_DEFINE_INT32(rexnative_dlss5_reuse, 0, "ReXNative",
+                     "DLSS 5 at the scene: frames between two that run the model (0-2; 0 every "
+                     "frame). A frame between carries the last frame's change along the scene's "
+                     "motion, so 1 halves the model's cost; the change lags a frame behind on "
+                     "surfaces it uncovers, which show the game's picture");
+REXCVAR_DEFINE_STRING(rexnative_dlss5_colour_space, "rgb", "ReXNative",
+                      "DLSS 5 at the scene: where a colour strength between 0 and 1 mixes the "
+                      "game's colour and the model's: rgb (in linear light, which greys the hues "
+                      "in between) or oklab (hue and chroma mixed apart, the saturation kept)");
 
 namespace rexnative {
 
@@ -105,7 +122,10 @@ cbuffer Constants : register(b0) {
   uint flags;         // 1: left half as the game draws it (comparison), 2: the meter starts over,
                       // 4: the model's raw output shown (diagnostic), 8: the proxy shown,
                       // 16: the middle half twice, as the game draws it | with DLSS 5,
-                      // 32: no history for the stabilisation (a reset)
+                      // 32: no history for the stabilisation (a reset),
+                      // 64: chain the motion through t1 (the frame before did not infer),
+                      // 128: no model this frame, the history carried (--rexnative_dlss5_reuse),
+                      // 256: the colour mixed in Oklab
   uint2 work;         // the model's working size (proxy, model, depth and motion)
   uint2 render;       // the scene's depth and motion size
   float tau_up;       // the meter's time constants (seconds) and dead band (stops)
@@ -131,6 +151,47 @@ float3 Knee(float3 n) {
   float peak = max(n.r, max(n.g, n.b));
   if (peak > 1.0) n /= peak;
   return n;
+}
+
+// Oklab (Bjorn Ottosson, public domain), on linear BT.709.
+float3 ToOklab(float3 c) {
+  float3 lms = float3(dot(c, float3(0.4122214708, 0.5363325363, 0.0514459929)),
+                      dot(c, float3(0.2119034982, 0.6806995451, 0.1073969566)),
+                      dot(c, float3(0.0883024619, 0.2817188376, 0.6299787005)));
+  lms = sign(lms) * pow(abs(lms), 1.0 / 3.0);
+  return float3(dot(lms, float3(0.2104542553, 0.7936177850, -0.0040720468)),
+                dot(lms, float3(1.9779984951, -2.4285922050, 0.4505937099)),
+                dot(lms, float3(0.0259040371, 0.7827717662, -0.8086757660)));
+}
+float3 FromOklab(float3 l) {
+  float3 lms = float3(l.x + 0.3963377774 * l.y + 0.2158037573 * l.z,
+                      l.x - 0.1055613458 * l.y - 0.0638541728 * l.z,
+                      l.x - 0.0894841775 * l.y - 1.2914855480 * l.z);
+  lms = lms * lms * lms;
+  return float3(dot(lms, float3(4.0767416621, -3.3077115913, 0.2309699292)),
+                dot(lms, float3(-1.2684380046, 2.6097574011, -0.3413193965)),
+                dot(lms, float3(-0.0041960863, -0.7034186147, 1.7076147010)));
+}
+// a and b (linear, >= 0) mixed by k in Oklab: the lightness and the chroma each mixed, the hue
+// along the straight line between the two (no greyer than either end, as a mix in RGB is between
+// two hues), the chroma lowered until no channel is negative, then the luminance Lt.
+float3 OklabMix(float3 a, float3 b, float k, float Lt) {
+  float3 la = ToOklab(a), lb = ToOklab(b);
+  float2 dir = lerp(la.yz, lb.yz, k);
+  float n = length(dir);
+  float2 ab = n > 1e-6 ? dir * (lerp(length(la.yz), length(lb.yz), k) / n) : float2(0.0, 0.0);
+  float L = lerp(la.x, lb.x, k);
+  float3 rgb = FromOklab(float3(L, ab));
+  if (any(rgb < 0.0)) {
+    float lo = 0.0, hi = 1.0;
+    [loop] for (int i = 0; i < 12; ++i) {
+      float mid = 0.5 * (lo + hi);
+      if (any(FromOklab(float3(L, ab * mid)) < 0.0)) hi = mid; else lo = mid;
+    }
+    rgb = max(FromOklab(float3(L, ab * lo)), 0.0);
+  }
+  float Lr = Luma(rgb);
+  return Lr > 1e-6 ? rgb * (Lt / Lr) : lerp(a, b, k);
 }
 
 groupshared float gs_sum[64];
@@ -210,12 +271,32 @@ void encode_main(uint2 p : SV_DispatchThreadID) {
   motion_out[p] = motion_in.Load(int3(rp, 0));
 }
 
+// With --rexnative_dlss5_reuse: this frame's motion (t4, at the working size) chained back to the
+// last frame that ran the model (t1: the chain the frame before wrote, 64 set) into u3, so the
+// model's history is reprojected from the frame it was made in:
+//   D(p) = f(p) + D_prev(p + f(p))
+[numthreads(8, 8, 1)]
+void chain_main(uint2 p : SV_DispatchThreadID) {
+  if (any(p >= work)) return;
+  float2 f = motion_in.Load(int3(p, 0));
+  float2 o = f;
+  if ((flags & 64u) != 0u) {
+    float2 puv = (float2(p) + 0.5) / float2(work) + f;
+    if (all(puv >= 0.0) && all(puv <= 1.0)) o = f + model.SampleLevel(lin, puv, 0).rg;
+  }
+  if (any(isnan(o)) || any(isinf(o))) o = f;
+  motion_out[p] = o;
+}
+
 // The model's change (model - proxy, at the working size) stabilised: blended with the previous
 // frame's at the reprojected position (t0 the history: rgb the change, a its depth; t3/t4 this
-// frame's depth and motion at the working size), unless the depth there disagrees.
+// frame's depth and motion at the working size), unless the depth there disagrees. A frame that
+// did not run the model (128) takes the previous change as it is where it reprojects, and no
+// change (the game's picture) where it does not.
 [numthreads(8, 8, 1)]
 void stabilize_main(uint2 p : SV_DispatchThreadID) {
   if (any(p >= work)) return;
+  bool carry = (flags & 128u) != 0u;
   // This frame's change and its 3x3 range (TAA's neighbourhood clamp: the history may smooth
   // the model's flicker but never carry a change this neighbourhood does not have, which is what
   // trails would be).
@@ -224,7 +305,7 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
   for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x) {
       int3 q = int3(clamp(int2(p) + int2(x, y), int2(0, 0), int2(work) - 1), 0);
-      float3 v = model.Load(q).rgb - proxy.Load(q).rgb;
+      float3 v = carry ? float3(0.0, 0.0, 0.0) : model.Load(q).rgb - proxy.Load(q).rgb;
       dmin = min(dmin, v);
       dmax = max(dmax, v);
       if (x == 0 && y == 0) d = v;
@@ -235,7 +316,7 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
   float z = depth_in.Load(int3(p, 0));
   float3 o = d;
   // 32: no history (a reset); 4: the diagnostic view of the model's raw output.
-  if ((flags & 36u) == 0u && stability > 0.0) {
+  if ((flags & 32u) == 0u && (carry || ((flags & 4u) == 0u && stability > 0.0))) {
     float2 uv = (float2(p) + 0.5) / float2(work);
     float2 puv = uv + motion_in.Load(int3(p, 0));  // UV-space, current -> previous
     if (all(puv >= 0.0) && all(puv <= 1.0)) {
@@ -246,8 +327,8 @@ void stabilize_main(uint2 p : SV_DispatchThreadID) {
       int2 hp = clamp(int2(puv * float2(work)), int2(0, 0), int2(work) - 1);
       float zh = scene.Load(int3(hp, 0)).a;
       if (zh >= zmin * 0.75 && zh <= zmax * 1.25 + 1e-5) {
-        float3 h = clamp(scene.SampleLevel(lin, puv, 0).rgb, dmin, dmax);
-        o = lerp(d, h, saturate(stability));
+        float3 h = scene.SampleLevel(lin, puv, 0).rgb;
+        o = carry ? h : lerp(d, clamp(h, dmin, dmax), saturate(stability));
       }
     }
   }
@@ -305,7 +386,9 @@ void compose_main(uint2 p : SV_DispatchThreadID) {
   if (Lo > 1e-6) keep = o * (Lt / Lo);
   float3 took = keep;
   if (Lu > 1e-6) took = up * (Lt / Lu);
-  float3 res = lerp(keep, took, saturate(colour));
+  float k = saturate(colour);
+  float3 res = (flags & 256u) != 0u && k > 0.0 && k < 1.0 ? OklabMix(keep, took, k, Lt)
+                                                          : lerp(keep, took, k);
   float3 outc = min(max(res, 0.0) * W, 31.875);
   if (any(isnan(outc)) || any(isinf(outc))) outc = c.rgb;
   dst[p] = float4(outc, c.a);
@@ -323,6 +406,7 @@ enum SceneTable : uint32_t {
   kEncodeTable,
   kStabilizeTable,
   kComposeTable,
+  kChainTable,
   kTables
 };
 
@@ -391,10 +475,12 @@ bool NeuralPass::CreateScenePasses() {
                                          std::addressof(scene_exposure_pso_),
                                          std::addressof(scene_encode_pso_),
                                          std::addressof(scene_stabilize_pso_),
-                                         std::addressof(scene_compose_pso_)};
+                                         std::addressof(scene_compose_pso_),
+                                         std::addressof(scene_chain_pso_)};
   const char* entries[] = {"meter_main", "exposure_main", "encode_main", "stabilize_main",
-                           "compose_main"};
-  for (int i = 0; i < 5; ++i) {
+                           "compose_main", "chain_main"};
+  static_assert(std::size(entries) == kTables);
+  for (uint32_t i = 0; i < kTables; ++i) {
     ComPtr<ID3DBlob> code, error;
     if (!compile ||
         FAILED(compile(kSceneHlsl, sizeof(kSceneHlsl) - 1, kName, nullptr, nullptr, entries[i],
@@ -438,6 +524,8 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
     Retire(scene_motion_w_, frame);
     Retire(scene_history_[0], frame);
     Retire(scene_history_[1], frame);
+    Retire(scene_chain_[0], frame);
+    Retire(scene_chain_[1], frame);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     d.Width = work_width;
     d.Height = work_height;
@@ -451,6 +539,13 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
                                                 IID_PPV_ARGS(&scene_motion_w_)),
                "DLSS 5 motion at the working size"))
       return false;
+    for (ComPtr<ID3D12Resource>* r :
+         {std::addressof(scene_chain_[0]), std::addressof(scene_chain_[1])})
+      if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, kUav, nullptr,
+                                                  IID_PPV_ARGS(&*r)),
+                 "DLSS 5 chained motion"))
+        return false;
+    scene_chain_state_[0] = scene_chain_state_[1] = kUav;
     scene_guides_state_ = kUav;
     d.Format = kSceneFormat;
     for (ComPtr<ID3D12Resource>* r :
@@ -610,6 +705,19 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   const bool gap = scene_last_frame_ + 1 != frame;
   scene_last_frame_ = frame;
   if (gap || in.reset) ++scene_resets_;
+  const bool reset = in.reset || gap;
+  // --rexnative_dlss5_reuse: the frames between two that run the model (not with the diagnostic
+  // views or the full-size comparison, which show the model's own output).
+  const uint32_t reuse = REXCVAR_GET(rexnative_dlss5_view) != 0 || split == 2
+                             ? 0u
+                             : uint32_t(std::clamp(REXCVAR_GET(rexnative_dlss5_reuse), 0, 2));
+  const bool infer = reuse == 0 || reset || !scene_history_valid_ || scene_carried_ >= reuse;
+  if (reuse != scene_reuse_logged_) {
+    scene_reuse_logged_ = reuse;
+    REXLOG_INFO("ReXNative DLSS 5 (scene): the model on {}", reuse == 0   ? "every frame"
+                                                             : reuse == 1 ? "one frame in two"
+                                                                          : "one frame in three");
+  }
 
   SceneConstants c = {};
   c.size[0] = width;
@@ -624,7 +732,8 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   c.dt = std::clamp(in.frame_ms * 0.001f, 0.0f, 0.25f);
   c.flags = (split == 1 ? 1u : 0u) | (gap ? 2u : 0u) |
             (REXCVAR_GET(rexnative_dlss5_view) == 1 ? 4u : 0u) |
-            (REXCVAR_GET(rexnative_dlss5_view) == 2 ? 8u : 0u) | (split == 2 ? 16u : 0u);
+            (REXCVAR_GET(rexnative_dlss5_view) == 2 ? 8u : 0u) | (split == 2 ? 16u : 0u) |
+            (REXCVAR_GET(rexnative_dlss5_colour_space) == "oklab" ? 256u : 0u);
   c.work[0] = work_width;
   c.work[1] = work_height;
   c.render[0] = in.render_width;
@@ -698,10 +807,32 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   scene_guides_state_ = kRead;
   flush();
 
+  // With reuse: this frame's motion chained back to the last frame that ran the model (every
+  // frame, so the chain is there for the next inference).
+  ID3D12Resource* model_motion = scene_motion_w_.Get();
+  if (reuse > 0) {
+    const uint32_t cur = scene_chain_index_ ^= 1, prev = cur ^ 1;
+    SceneConstants cc = c;
+    // The chain so far, unless the frame before ran the model or the textures are new.
+    if (!reset && !scene_prev_inferred_ && scene_history_valid_) cc.flags |= 64u;
+    to(scene_chain_[prev].Get(), &scene_chain_state_[prev], kRead);
+    to(scene_chain_[cur].Get(), &scene_chain_state_[cur], kUav);
+    flush();
+    SceneViews ch;
+    ch.srv[1] = scene_chain_[prev].Get();
+    ch.srv[4] = scene_motion_w_.Get();
+    ch.motion_out = scene_chain_[cur].Get();
+    SceneDispatch(list, frame, kChainTable, scene_chain_pso_.Get(), ch, (work_width + 7) / 8,
+                  (work_height + 7) / 8, &cc);
+    to(scene_chain_[cur].Get(), &scene_chain_state_[cur], kRead);
+    flush();
+    model_motion = scene_chain_[cur].Get();
+  }
+
   // The model: pass 1 the proxy into model 0, pass 2 model 0 into model 1, pass 3 model 1 into 0.
   // Every input at the working size: the motion's UV-space vectors scaled to its pixels.
   nf.depth = scene_depth_w_.Get();
-  nf.motion = scene_motion_w_.Get();
+  nf.motion = model_motion;
   nf.mask = scene_mask_.Get();
   nf.width = work_width;
   nf.height = work_height;
@@ -709,10 +840,10 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   nf.render_height = work_height;
   nf.motion_scale_x = float(work_width);
   nf.motion_scale_y = float(work_height);
-  nf.reset = in.reset || gap;
+  nf.reset = reset;
   ID3D12Resource* result = scene_proxy_.Get();
   uint32_t result_index = 0;
-  for (uint32_t pass = 0; pass < passes; ++pass) {
+  for (uint32_t pass = 0; infer && pass < passes; ++pass) {
     const uint32_t w = pass == 1 ? 1u : 0u;
     ID3D12Resource* read = result;
     to(scene_model_[w].Get(), &scene_model_state_[w], kUav);
@@ -720,8 +851,10 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     Dlss::NeuralFrame pf = nf;
     pf.color = read;
     pf.output = scene_model_[w].Get();
-    // Each pass its own history: one that rejoins (more passes again) starts over.
-    pf.reset = nf.reset || scene_pass_frame_[pass] + 1 != frame;
+    // Each pass its own history: one that rejoins (more passes again) starts over. Its history
+    // is the last frame that ran the model (the frames between, with reuse, did not; a gap in
+    // the frames resets nf).
+    pf.reset = nf.reset || scene_pass_frame_[pass] != scene_infer_frame_;
     scene_pass_frame_[pass] = frame;
     list->Call([&dlss, pf, pass](CommandStream::List* l) { dlss.EvaluateNeural(l, pf, pass); });
     to(scene_model_[w].Get(), &scene_model_state_[w], kRead);
@@ -730,6 +863,9 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     result_index = w;
   }
   (void)result_index;
+  if (infer) scene_infer_frame_ = frame;
+  scene_carried_ = infer ? 0 : scene_carried_ + 1;
+  scene_prev_inferred_ = infer;
 
   // The metered white point in the log every 120 frames (a copy 120 frames old: long done).
   if (c.white_fixed <= 0.0f && frame % 120 == 0) {
@@ -770,6 +906,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     const uint32_t cur = scene_history_index_ ^= 1, prev = cur ^ 1;
     SceneConstants sc = c;
     if (!scene_history_valid_ || nf.reset) sc.flags |= 32u;
+    if (!infer) sc.flags |= 128u;  // no model this frame: the last change carried
     to(scene_history_[prev].Get(), &scene_history_state_[prev], kRead);
     to(scene_history_[cur].Get(), &scene_history_state_[cur], kUav);
     flush();

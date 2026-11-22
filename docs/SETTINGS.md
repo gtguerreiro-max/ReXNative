@@ -49,6 +49,13 @@ change it.
   passes, realistic games Cinematic), after the modding community's findings (the Cinematic
   style and two passes on old console games; cel-shaded art only sharpened; a colour strength of
   0 keeps the game's hues).
+  Its speed (`rexnative.dlss5_reuse`: 0 every frame, 1 every 2nd, 2 every 3rd) runs the model
+  on fewer frames: a frame between carries the last change along the scene's motion, rejected
+  where the depth disagrees (what the camera uncovers then shows the game's picture for a frame),
+  and the model gets the motion chained back to the frame it last ran on. 1 nearly halves DLSS
+  5's cost. `rexnative.dlss5_colour_space = "oklab"` mixes the game's colour and the model's in
+  Oklab when the colour strength is between 0 and 1 (Natural's 0.65, or Custom), keeping the
+  saturation a mix in RGB loses between two hues; `rgb` (the default) as before.
 
 ## Settings
 

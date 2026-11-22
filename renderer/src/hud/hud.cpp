@@ -318,6 +318,14 @@ std::vector<Option> MakeOptions() {
                },
                nullptr, "How strongly DLSS 5 changes the picture, on top of the look's own.",
                NvidiaGpu});
+  o.push_back({"DLSS 5", "dlss5_reuse", "DLSS 5 speed",
+               {{"Every frame", "0"}, {"Every 2nd frame", "1"}, {"Every 3rd frame", "2"}}, false,
+               [] { return std::to_string(std::clamp(FlagInt("rexnative_dlss5_reuse"), 0, 2)); },
+               [](const std::string& v) { return Assignments{{"rexnative_dlss5_reuse", v}}; },
+               nullptr,
+               "How often DLSS 5 runs. Between, its last change follows the scene's motion: every "
+               "2nd frame nearly halves its cost, at a frame's lag on what the camera uncovers.",
+               NvidiaGpu});
   o.push_back({"Developer", "occlusion", "Occlusion queries", on_off, true,
                [] { return Flag("rexnative_occlusion"); },
                [](const std::string& v) { return Bool("rexnative_occlusion", v); }, nullptr,

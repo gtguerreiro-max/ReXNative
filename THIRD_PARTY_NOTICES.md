@@ -13,7 +13,11 @@ What this repository contains from other projects, with their licenses.
   shipped, prebuilt (`renderer/src/native/shaders/d3d12_5_1`: BSD-3-Clause, from Xenia, which
   takes them from AMD FidelityFX, MIT), kept here since ReXGlue v0.11 has no FidelityFX. The SDK is not in this repository.
 - `renderer/src/native/dlss.cpp` and `neural*.cpp` build with the NVIDIA DLSS SDK and DLSS 5
-  headers, under NVIDIA's license; they are not in this repository.
+  headers, under NVIDIA's license; they are not in this repository. `neural_scene.cpp`'s
+  inference reuse (`--rexnative_dlss5_reuse`) follows the idea Veyra
+  (https://github.com/Likely7/Veyra-NRVideo, GPL-3.0) describes for its NR inference reuse,
+  written here for a game's depth and motion; no Veyra code is in this repository. Its Oklab
+  matrices are Björn Ottosson's (public domain).
 - `renderer/src/compat/renderdoc_app.h` is RenderDoc's in-application API header (MIT, Baldur
   Karlsson; its license is at its top), which `renderer/src/native/debug_tools.cpp` loads
   RenderDoc through. RenderDoc itself is not in this repository.

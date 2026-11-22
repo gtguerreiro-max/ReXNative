@@ -112,13 +112,23 @@ class NeuralPass {
   D3D12_RESOURCE_STATES scene_composed_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   ComPtr<ID3D12RootSignature> scene_signature_;
   ComPtr<ID3D12PipelineState> scene_meter_pso_, scene_exposure_pso_, scene_encode_pso_,
-      scene_stabilize_pso_, scene_compose_pso_;
+      scene_stabilize_pso_, scene_compose_pso_, scene_chain_pso_;
   // The stabilised change at the working size: two textures, this frame's and the last.
   ComPtr<ID3D12Resource> scene_history_[2];
   D3D12_RESOURCE_STATES scene_history_state_[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
   uint32_t scene_history_index_ = 0;
   bool scene_history_valid_ = false;
+  // --rexnative_dlss5_reuse: the motion chained back to the last frame that ran the model (two
+  // textures, this frame's and the last), that frame, and the frames carried since.
+  ComPtr<ID3D12Resource> scene_chain_[2];
+  D3D12_RESOURCE_STATES scene_chain_state_[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+  uint32_t scene_chain_index_ = 0;
+  uint64_t scene_infer_frame_ = UINT64_MAX;
+  uint32_t scene_carried_ = 0;
+  uint32_t scene_reuse_logged_ = 0;
+  bool scene_prev_inferred_ = true;
   ComPtr<ID3D12DescriptorHeap> scene_heap_, scene_mask_rtv_;
   uint32_t scene_stride_ = 0, scene_width_ = 0, scene_height_ = 0;
   uint32_t scene_work_width_ = 0, scene_work_height_ = 0;
