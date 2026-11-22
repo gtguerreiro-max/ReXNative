@@ -115,6 +115,11 @@ rexnative_add({name}_common
 if(TARGET {name}_recompiled)
     target_precompile_headers({name}_recompiled PRIVATE "${{REXNATIVE_DIR}}/src/spin_pause.h")
 endif()
+# A game's own src/game_pch.h, when it has one, joins it after: macros over what codegen writes,
+# for that game alone (Lazy Raiders: dcbz clears its 128-byte line).
+if(TARGET {name}_recompiled AND EXISTS "${{CMAKE_CURRENT_SOURCE_DIR}}/src/game_pch.h")
+    target_precompile_headers({name}_recompiled PRIVATE "${{CMAKE_CURRENT_SOURCE_DIR}}/src/game_pch.h")
+endif()
 
 # The link map (build/{name}.map) names the recompiled guest functions of a crash's offsets.
 target_link_options({name} PRIVATE "LINKER:/MAP")
@@ -516,12 +521,16 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     pch_list = os.path.join(pch_dir, 'cmake_pch.hxx')
     if os.path.exists(pch_list):
         with open(pch_list, encoding='utf-8', errors='replace') as f:
-            has_spin = 'spin_pause.h' in f.read()
-        if not has_spin:
+            listed = f.read()
+        has_spin = 'spin_pause.h' in listed
+        # The same when the game's src/game_pch.h came or went.
+        game_pch = os.path.exists(os.path.join(work, 'src', 'game_pch.h'))
+        if not has_spin or game_pch != ('game_pch.h' in listed):
             for old in glob.glob(os.path.join(pch_dir, 'cmake_pch.hxx*')):
                 os.remove(old)
-            log('%s: the generated code is compiled again (spin_pause.h joins its precompiled '
-                'header)' % name)
+            log('%s: the generated code is compiled again (%s its precompiled header)' % (
+                name, 'spin_pause.h joins' if not has_spin else
+                'src/game_pch.h joins' if game_pch else 'src/game_pch.h leaves'))
     steps = [('configure', configure), ('build', 'cmake --build "%s" -j %d' % (bdir, jobs))]
     os.makedirs(bdir, exist_ok=True)
     for what, cmd in steps:
