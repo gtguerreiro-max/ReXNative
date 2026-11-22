@@ -32,7 +32,8 @@ What this repository contains from other projects, with their licenses.
 
 ## DLSS5-Feeder (https://github.com/jlrouzies-fr/DLSS5-Feeder)
 
-The still hold in `renderer/src/native/neural_scene.cpp` follows its `src/feed_hold12.h`.
+The still hold in `renderer/src/native/neural_scene.cpp` follows its `src/feed_hold12.h`, and the
+motion check the first rule of its Refine vector pipeline (README, Per-pixel refinement).
 
 ```
 MIT License

@@ -326,6 +326,12 @@ std::vector<Option> MakeOptions() {
                "How often DLSS 5 runs. Between, its last change follows the scene's motion: every "
                "2nd frame nearly halves its cost, at a frame's lag on what the camera uncovers.",
                NvidiaGpu});
+  o.push_back({"DLSS 5", "dlss5_mv_check", "DLSS 5 motion check", on_off, false,
+               [] { return Flag("rexnative_dlss5_mv_check"); },
+               [](const std::string& v) { return Bool("rexnative_dlss5_mv_check", v); }, nullptr,
+               "Checks the scene's motion against the picture before DLSS 5 gets it: where a "
+               "wrong vector would smear or shimmer DLSS 5's picture, it gets no motion instead.",
+               NvidiaGpu});
   o.push_back({"DLSS 5", "dlss5_hold", "DLSS 5 still hold",
                {{"Off", "0"}, {"Gentle", "0.8"}, {"Strong", "0.95"}}, false,
                [] {

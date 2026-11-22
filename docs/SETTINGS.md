@@ -61,6 +61,12 @@ change it.
   model's slow drift in still regions after the camera stops (DLSS5-Feeder's output stabiliser);
   `rexnative.dlss5_hold_tolerance` (0.04) is how much a texel's input may differ and still count
   as still. A texel that moves (the scene's motion) or whose input changed shows the model as is.
+  Its motion check (`rexnative.dlss5_mv_check`) tests the scene's motion against the picture before
+  the model gets it: DLSS 5 ignores its depth input (Veyra's controlled test) but follows its
+  motion closely, and the rebuilt vectors are wrong on some draws (NOTES.md, Motion vectors from
+  a vertex ring). Where a texel's 3x3 neighbourhood did not change
+  (`rexnative.dlss5_mv_still`, 0.008), or no motion explains it at least twice as well as the
+  vector (DLSS5-Feeder's Refine pipeline), the model gets no motion there.
 
 ## Settings
 

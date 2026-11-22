@@ -26,6 +26,15 @@
 // game's depth and motion; no code taken). The model, whose history is then that inferred frame,
 // gets the motion chained back to it.
 //
+// --rexnative_dlss5_mv_check checks the scene's motion before the model gets it. DLSS 5 ignores
+// its depth input (Veyra's controlled test: no output texel changed with any depth) but follows
+// its motion closely, and these vectors are rebuilt from the draws (a draw matched with another
+// mesh moves by hundreds of pixels on a still view: NOTES.md). Per texel, the model's input in a
+// 3x3 box against the last frame's at the vector and at no motion: where nothing changed, or no
+// motion explains it at least twice as well as the vector, the vector is zero (DLSS5-Feeder's
+// "Refine" vector pipeline, its first rule). The checked motion feeds the model, the reuse chain
+// and the stabilisation.
+//
 // --rexnative_dlss5_hold holds the shown change where the game's picture did not change: the
 // model re-decides a still region from tiny differences in its input (a slope darkening for frames
 // after the camera stops). Per texel, the model's input in a 3x3 box against an anchor (that box
@@ -100,6 +109,13 @@ REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_hold_tolerance, 0.04, "ReXNative",
                       "DLSS 5's hold: how much a texel's input (3x3, relative to its brightness) "
                       "may differ from its anchor and still count as still (0.04: 4 %; fully "
                       "changed at twice it)");
+REXCVAR_DEFINE_BOOL(rexnative_dlss5_mv_check, false, "ReXNative",
+                    "DLSS 5 at the scene: check the scene's motion against the picture first, and "
+                    "give the model no motion where no motion explains the texel better (the "
+                    "rebuilt vectors are wrong on some draws; DLSS 5 follows them closely)");
+REXCVAR_DEFINE_DOUBLE(rexnative_dlss5_mv_still, 0.008, "ReXNative",
+                      "DLSS 5's motion check: the mean change (0-1, in the model's sRGB input) "
+                      "under which a texel's neighbourhood counts as unchanged (0.008: 2 of 255)");
 REXCVAR_DEFINE_STRING(rexnative_dlss5_colour_space, "rgb", "ReXNative",
                       "DLSS 5 at the scene: where a colour strength between 0 and 1 mixes the "
                       "game's colour and the model's: rgb (in linear light, which greys the hues "
@@ -143,7 +159,7 @@ cbuffer Constants : register(b0) {
                       // 32: no history for the stabilisation (a reset),
                       // 64: chain the motion through t1 (the frame before did not infer),
                       // 128: no model this frame, the history carried (--rexnative_dlss5_reuse),
-                      // 256: the colour mixed in Oklab
+                      // 256: the colour mixed in Oklab, 512: the last frame's proxy in t1
   uint2 work;         // the model's working size (proxy, model, depth and motion)
   uint2 render;       // the scene's depth and motion size
   float tau_up;       // the meter's time constants (seconds) and dead band (stops)
@@ -152,7 +168,8 @@ cbuffer Constants : register(b0) {
   float stability;    // how much of the previous frame's change the stabilisation keeps
   float hold;         // --rexnative_dlss5_hold; 0 off
   float hold_tolerance;
-  float2 pad_;
+  float mv_still;     // --rexnative_dlss5_mv_still
+  float pad_;
 };
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 float Luma(float3 c) { return dot(c, kLuma); }
@@ -290,6 +307,34 @@ void encode_main(uint2 p : SV_DispatchThreadID) {
   int2 rp = int2(min(uv * float2(render), float2(render) - 1.0));
   depth_out[p] = depth_in.Load(int3(rp, 0));
   motion_out[p] = motion_in.Load(int3(rp, 0));
+}
+
+// With --rexnative_dlss5_mv_check: this frame's motion (t4, working size) against the picture
+// (t2 the proxy, t1 the last frame's, 512 set) into u3: zero where the 3x3 neighbourhood did not
+// change, or where no motion explains it at least twice as well as the vector.
+[numthreads(8, 8, 1)]
+void check_main(uint2 p : SV_DispatchThreadID) {
+  if (any(p >= work)) return;
+  float2 f = motion_in.Load(int3(p, 0));
+  float2 o = f;
+  if (any(isnan(f)) || any(isinf(f))) {
+    o = 0.0;
+  } else if ((flags & 512u) != 0u) {
+    float2 texel = 1.0 / float2(work);
+    float2 uv = (float2(p) + 0.5) * texel;
+    float e0 = 0.0, em = 0.0;
+    for (int y = -1; y <= 1; ++y)
+      for (int x = -1; x <= 1; ++x) {
+        int3 q = int3(clamp(int2(p) + int2(x, y), int2(0, 0), int2(work) - 1), 0);
+        float c = Luma(proxy.Load(q).rgb);
+        e0 += abs(c - Luma(model.Load(q).rgb));
+        em += abs(c - Luma(model.SampleLevel(lin, uv + float2(x, y) * texel + f, 0).rgb));
+      }
+    e0 /= 9.0;
+    em /= 9.0;
+    if (e0 <= mv_still || e0 * 2.0 <= em) o = 0.0;
+  }
+  motion_out[p] = o;
 }
 
 // With --rexnative_dlss5_reuse: this frame's motion (t4, at the working size) chained back to the
@@ -448,6 +493,7 @@ enum SceneTable : uint32_t {
   kStabilizeTable,
   kComposeTable,
   kChainTable,
+  kCheckTable,
   kTables
 };
 
@@ -458,7 +504,7 @@ struct SceneConstants {
   uint32_t work[2];
   uint32_t render[2];
   float tau_up, tau_down, dead_band, stability;
-  float hold, hold_tolerance, pad[2];
+  float hold, hold_tolerance, mv_still, pad;
 };
 static_assert(sizeof(SceneConstants) == 80);
 
@@ -518,9 +564,10 @@ bool NeuralPass::CreateScenePasses() {
                                          std::addressof(scene_encode_pso_),
                                          std::addressof(scene_stabilize_pso_),
                                          std::addressof(scene_compose_pso_),
-                                         std::addressof(scene_chain_pso_)};
+                                         std::addressof(scene_chain_pso_),
+                                         std::addressof(scene_check_pso_)};
   const char* entries[] = {"meter_main", "exposure_main", "encode_main", "stabilize_main",
-                           "compose_main", "chain_main"};
+                           "compose_main", "chain_main", "check_main"};
   static_assert(std::size(entries) == kTables);
   for (uint32_t i = 0; i < kTables; ++i) {
     ComPtr<ID3DBlob> code, error;
@@ -570,6 +617,8 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
     Retire(scene_chain_[1], frame);
     Retire(scene_anchor_[0], frame);
     Retire(scene_anchor_[1], frame);
+    Retire(scene_motion_checked_, frame);
+    Retire(scene_proxy_prev_, frame);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     d.Width = work_width;
     d.Height = work_height;
@@ -584,23 +633,26 @@ bool NeuralPass::CreateSceneTargets(uint64_t frame, uint32_t width, uint32_t hei
                "DLSS 5 motion at the working size"))
       return false;
     for (ComPtr<ID3D12Resource>* r :
-         {std::addressof(scene_chain_[0]), std::addressof(scene_chain_[1])})
+         {std::addressof(scene_chain_[0]), std::addressof(scene_chain_[1]),
+          std::addressof(scene_motion_checked_)})
       if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, kUav, nullptr,
                                                   IID_PPV_ARGS(&*r)),
                  "DLSS 5 chained motion"))
         return false;
-    scene_chain_state_[0] = scene_chain_state_[1] = kUav;
+    scene_chain_state_[0] = scene_chain_state_[1] = scene_motion_checked_state_ = kUav;
     scene_guides_state_ = kUav;
     d.Format = kSceneFormat;
     for (ComPtr<ID3D12Resource>* r :
          {std::addressof(scene_history_[0]), std::addressof(scene_history_[1]),
-          std::addressof(scene_anchor_[0]), std::addressof(scene_anchor_[1])})
+          std::addressof(scene_anchor_[0]), std::addressof(scene_anchor_[1]),
+          std::addressof(scene_proxy_prev_)})
       if (Failed(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, kUav, nullptr,
                                                   IID_PPV_ARGS(&*r)),
                  "DLSS 5 change history"))
         return false;
     scene_history_state_[0] = scene_history_state_[1] = kUav;
-    scene_anchor_state_[0] = scene_anchor_state_[1] = kUav;
+    scene_anchor_state_[0] = scene_anchor_state_[1] = scene_proxy_prev_state_ = kUav;
+    scene_proxy_prev_valid_ = false;
     scene_history_valid_ = false;
     for (ComPtr<ID3D12Resource>* r :
          {std::addressof(scene_proxy_), std::addressof(scene_model_[0]),
@@ -794,6 +846,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   c.stability = look.stability;
   c.hold = float(std::clamp(REXCVAR_GET(rexnative_dlss5_hold), 0.0, 1.0));
   c.hold_tolerance = float(std::clamp(REXCVAR_GET(rexnative_dlss5_hold_tolerance), 0.001, 1.0));
+  c.mv_still = float(std::clamp(REXCVAR_GET(rexnative_dlss5_mv_still), 0.0, 1.0));
 
   D3D12_RESOURCE_BARRIER bs[8];
   uint32_t nb = 0;
@@ -859,9 +912,43 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
   scene_guides_state_ = kRead;
   flush();
 
+  // The motion checked against the picture (--rexnative_dlss5_mv_check), then the last frame's
+  // proxy replaced with this one's for the next frame's check.
+  ID3D12Resource* scene_motion = scene_motion_w_.Get();
+  if (REXCVAR_GET(rexnative_dlss5_mv_check)) {
+    SceneConstants kc = c;
+    if (scene_proxy_prev_valid_ && !reset) kc.flags |= 512u;
+    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, kRead);
+    to(scene_motion_checked_.Get(), &scene_motion_checked_state_, kUav);
+    flush();
+    SceneViews mc;
+    mc.srv[1] = scene_proxy_prev_.Get();
+    mc.srv[2] = scene_proxy_.Get();
+    mc.srv[4] = scene_motion_w_.Get();
+    mc.motion_out = scene_motion_checked_.Get();
+    SceneDispatch(list, frame, kCheckTable, scene_check_pso_.Get(), mc, (work_width + 7) / 8,
+                  (work_height + 7) / 8, &kc);
+    to(scene_motion_checked_.Get(), &scene_motion_checked_state_, kRead);
+    to(scene_proxy_.Get(), &scene_proxy_state_, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+    flush();
+    list->CopyResource(scene_proxy_prev_.Get(), scene_proxy_.Get());
+    to(scene_proxy_.Get(), &scene_proxy_state_, kRead);
+    to(scene_proxy_prev_.Get(), &scene_proxy_prev_state_, kRead);
+    flush();
+    scene_proxy_prev_valid_ = true;
+    scene_motion = scene_motion_checked_.Get();
+    if (!scene_mv_check_logged_) {
+      scene_mv_check_logged_ = true;
+      REXLOG_INFO("ReXNative DLSS 5 (scene): the motion checked against the picture");
+    }
+  } else {
+    scene_proxy_prev_valid_ = false;
+  }
+
   // With reuse: this frame's motion chained back to the last frame that ran the model (every
   // frame, so the chain is there for the next inference).
-  ID3D12Resource* model_motion = scene_motion_w_.Get();
+  ID3D12Resource* model_motion = scene_motion;
   if (reuse > 0) {
     const uint32_t cur = scene_chain_index_ ^= 1, prev = cur ^ 1;
     SceneConstants cc = c;
@@ -872,7 +959,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     flush();
     SceneViews ch;
     ch.srv[1] = scene_chain_[prev].Get();
-    ch.srv[4] = scene_motion_w_.Get();
+    ch.srv[4] = scene_motion;
     ch.motion_out = scene_chain_[cur].Get();
     SceneDispatch(list, frame, kChainTable, scene_chain_pso_.Get(), ch, (work_width + 7) / 8,
                   (work_height + 7) / 8, &cc);
@@ -971,7 +1058,7 @@ bool NeuralPass::ProcessScene(CommandStream* list, uint64_t frame, Dlss& dlss, R
     st.srv[1] = result;
     st.srv[2] = scene_proxy_.Get();
     st.srv[3] = scene_depth_w_.Get();
-    st.srv[4] = scene_motion_w_.Get();
+    st.srv[4] = scene_motion;
     st.dst = scene_history_[cur].Get();
     SceneDispatch(list, frame, kStabilizeTable, scene_stabilize_pso_.Get(), st,
                   (work_width + 7) / 8, (work_height + 7) / 8, &sc);

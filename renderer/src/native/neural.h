@@ -114,7 +114,7 @@ class NeuralPass {
   D3D12_RESOURCE_STATES scene_composed_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   ComPtr<ID3D12RootSignature> scene_signature_;
   ComPtr<ID3D12PipelineState> scene_meter_pso_, scene_exposure_pso_, scene_encode_pso_,
-      scene_stabilize_pso_, scene_compose_pso_, scene_chain_pso_;
+      scene_stabilize_pso_, scene_compose_pso_, scene_chain_pso_, scene_check_pso_;
   // The stabilised change at the working size: two textures, this frame's and the last.
   ComPtr<ID3D12Resource> scene_history_[2];
   D3D12_RESOURCE_STATES scene_history_state_[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -134,6 +134,12 @@ class NeuralPass {
   // --rexnative_dlss5_hold: the input's 3x3 box when each texel last changed (this frame's and
   // the last, flipped with the history).
   ComPtr<ID3D12Resource> scene_anchor_[2];
+  // --rexnative_dlss5_mv_check: the motion checked against the picture, and the last frame's
+  // proxy it is checked with.
+  ComPtr<ID3D12Resource> scene_motion_checked_, scene_proxy_prev_;
+  D3D12_RESOURCE_STATES scene_motion_checked_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  D3D12_RESOURCE_STATES scene_proxy_prev_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  bool scene_proxy_prev_valid_ = false, scene_mv_check_logged_ = false;
   D3D12_RESOURCE_STATES scene_anchor_state_[2] = {D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
   ComPtr<ID3D12DescriptorHeap> scene_heap_, scene_mask_rtv_;
