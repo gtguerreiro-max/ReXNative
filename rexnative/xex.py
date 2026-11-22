@@ -100,6 +100,36 @@ def spa_title(image):
     return None
 
 
+XACH = 0x58414348  # the SPA's achievements table
+
+
+def spa_block(image):
+    """The title's SPA (its XDBF block: achievements, their texts and icons) cut out of a dump of the
+    loaded image (run/image.bin), when it lists achievements; None when there is none. `deck` puts it
+    in the game's folder as achievements.spa, so the Deck shows them for a game it did not build."""
+    try:
+        b = open(image, 'rb').read()
+    except OSError:
+        return None
+    i = b.find(b'XDBF')
+    while i >= 0:
+        try:
+            _, table, count, free, _ = struct.unpack('>IIIII', b[i + 4:i + 24])
+        except struct.error:
+            return None
+        if 0 < count <= table < 65536 and free < 65536:
+            entries, data = i + 24, i + 24 + table * 18 + free * 8
+            end, xach = data, False
+            for k in range(count):
+                ns, eid, off, size = struct.unpack('>HQII', b[entries + 18 * k:entries + 18 * k + 18])
+                end = max(end, data + off + size)
+                xach = xach or (ns == 1 and eid == XACH)
+            if xach and end <= len(b):
+                return b[i:end]
+        i = b.find(b'XDBF', i + 4)
+    return None
+
+
 def d3d_library(info):
     """('D3D9' or 'D3D9LTCG', version) from the static libraries, or (None, None)."""
     for name in ('D3D9LTCG', 'D3D9'):

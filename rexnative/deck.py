@@ -380,6 +380,17 @@ def package(work):
     items += dlc.deck_items(work)
     for f in ('play.sh', 'install.sh', 'steam_shortcuts.py'):
         items.append((os.path.join(KIT, f), f))
+    # The title's achievements list (its SPA, a few KB from run/image.bin): the Manager on the Deck
+    # shows the achievements of a game the PC built from it.
+    from . import xex
+    spa = xex.spa_block(os.path.join(run, 'image.bin'))
+    if spa:
+        spa_path = os.path.join(work, 'deck', 'achievements.spa')
+        os.makedirs(os.path.dirname(spa_path), exist_ok=True)
+        if not os.path.exists(spa_path) or open(spa_path, 'rb').read() != spa:
+            with open(spa_path, 'wb') as f:
+                f.write(spa)
+        items.append((spa_path, 'achievements.spa'))
     # The shortcut's artwork (python -m rexnative art), which install.sh gives Steam.
     art = os.path.join(work, 'deck', 'art')
     if os.path.isdir(art):
