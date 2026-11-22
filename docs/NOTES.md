@@ -115,6 +115,18 @@ write the code again on its own, without `drop_outside_functions`.
 Still open (no case in the games prepared so far): a conditional branch or a jump table into a
 shared function copies nothing either, as an indirect call does not.
 
+**A game that reads the saved registers off the stack.** With `non_volatile_as_local` codegen
+drops the calls to the prologues' save and restore helpers (`bl __savegprlr_N` and its
+`__restgprlr_N`), so the registers they save, and the return address (`stw r12,-8(r1)` in the
+helper), never reach the guest stack. Burnout Crash runs a garbage collector (default.xex's
+allocator, from an allocation in `crash.dll`) that walks every thread's stack frames by their
+return addresses and marks the object pointers each frame holds, saved registers included: it
+read the stale words there (0x32A8DBE6) as an object and faulted in its mark phase, about 40 s in,
+on either renderer. Such a game gets `non_volatile_as_local = false` in a `codegen-options.txt` in
+its work folder (`prepare.options`, lines `name = value` over the OPTIONS above); the manifest
+takes it for the entrypoint and every module, and generated code made with other options than
+the game's is generated again (`_options_differ`, from the flags its `_init.cpp` records).
+
 ## The upscaled pass of a scene drawn in passes
 
 The upscaler takes the frame's last pass of the scene's surface whose draws write depth

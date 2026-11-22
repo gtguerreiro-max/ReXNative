@@ -34,6 +34,39 @@ OPTIONS = {  # register-as-local codegen, as in PGR4Native, From Dust and Iron B
 }
 
 
+def options(work):
+    """OPTIONS with the game's own (codegen-options.txt in its work folder, lines `name = false`):
+    a game whose code reads its callers' saved registers from the stack needs them saved there.
+    With non_volatile_as_local ReXGlue drops the calls to the save and restore helpers
+    (__savegprlr_N, __restgprlr_N), so neither those registers nor the return address reach the
+    guest stack: Burnout Crash's garbage collector walks the stack frames and read stale words
+    there as object pointers (a crash in its mark phase about 40 s in)."""
+    out = dict(OPTIONS)
+    p = os.path.join(work, 'codegen-options.txt')
+    if os.path.exists(p):
+        for line in open(p, encoding='utf-8'):
+            k, eq, v = line.split('#')[0].partition('=')
+            if eq and k.strip() in out:
+                out[k.strip()] = v.strip().lower() in ('1', 'true', 'yes', 'on')
+    return out
+
+
+def _options_differ(work, gen):
+    """The generated code was made with other register options than the game's (its _init.cpp
+    records them as `.name = value,`)."""
+    want = options(work)
+    for d in [gen] + _generated_dirs(work)[1:]:
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if f.endswith('_init.cpp'):
+                text = open(os.path.join(d, f), encoding='utf-8', errors='replace').read()
+                for k, v in re.findall(r'\.(\w+_as_local) = (true|false)', text):
+                    if k in want and want[k] != (v == 'true'):
+                        return True
+    return False
+
+
 def slug(name):
     """'Super Meat Boy (World) (XBLA).7z' -> 'super-meat-boy'."""
     base = os.path.basename(name)
@@ -541,7 +574,8 @@ def _write_manifest(work, name):
     includes = [f for f in ('switch_tables.toml', 'setjmp.toml', 'crt.toml')
                 if os.path.exists(os.path.join(work, f))]
     lines.append('includes = [%s]' % ', '.join('"%s"' % f for f in includes))
-    lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
+    opts = options(work)
+    lines += ['%s = %s' % (k, str(v).lower()) for k, v in opts.items()]
     table = _function_table_base(work)
     if table:
         lines.append('function_table_base = 0x%08X' % table)
@@ -577,7 +611,7 @@ def _write_manifest(work, name):
         tables = 'switch_tables.%s.toml' % m['out'].split('/')[-1]
         lines.append('includes = [%s]' % ('"%s"' % tables if os.path.exists(
             os.path.join(work, tables)) else ''))
-        lines += ['%s = %s' % (k, str(v).lower()) for k, v in OPTIONS.items()]
+        lines += ['%s = %s' % (k, str(v).lower()) for k, v in opts.items()]
         if entries[i + 1]:
             lines.append('[modules.functions]')
             lines += _function_lines(entries[i + 1])
@@ -764,8 +798,9 @@ def codegen(work, name, rexglue, max_rounds, log):
     # Reused only when made under this name (prepare's older runs used names with '_'), by this
     # codegen tool.
     if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and
-            os.path.exists(os.path.join(gen, '%s_init.h' % name))):
-        again = (OPTIONS['non_volatile_as_local'] and not _shares_scanned(work, gen) and
+            os.path.exists(os.path.join(gen, '%s_init.h' % name)) and
+            not _options_differ(work, gen)):
+        again = (options(work)['non_volatile_as_local'] and not _shares_scanned(work, gen) and
                  _add_shares(work, _scan_shares(work, gen), log, 0))
         if not again:
             _shares_scanned(work, gen, True)
@@ -840,7 +875,7 @@ def codegen(work, name, rexglue, max_rounds, log):
                     '(%.0f s): %s' % (rnd, len(epilogues), time.time() - t0,
                                       ' '.join('%08X' % h for h in sorted(epilogues))))
                 continue
-            if OPTIONS['non_volatile_as_local'] and _add_shares(
+            if options(work)['non_volatile_as_local'] and _add_shares(
                     work, _scan_shares(work, gen), log, rnd):
                 continue
             if _add_switch_tables(work, gen, log, rnd):
