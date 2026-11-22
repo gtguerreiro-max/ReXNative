@@ -72,7 +72,11 @@ renderer; Brothers and The Bureau, Unreal Engine 3 games whose one surface holds
 scene and post-processing, so the scene detection finds none (a detection that found Brothers'
 scene made its colours wrong with the upscaler on, so it was left out); and in frame
 generation, translucent dust and particles, which no draw gives motion vectors, break into the
-optical flow's 8-pixel blocks. The plans for them are in [ROADMAP.md](ROADMAP.md).
+optical flow's 8-pixel blocks. Since 2026-11-22 also: a game that draws its menus and HUD as
+2D sprites into the scene's surface, writing depth (Burnout Crash: every draw of its menus), has
+them upscaled as the scene, and FSR's history ghosts the text that moves (its scrolling Autolog
+ticker on the Deck); its Deck settings turn the upscaler off (`deck.toml`), the game's own 4x MSAA
+then antialiasing it. The plans for them are in [ROADMAP.md](ROADMAP.md).
 The garbled WMV videos (Jet Set Radio, Syndicate, Dark Souls II) were the video decoder's
 registers, fixed on 2026-11-18 ([NOTES.md](NOTES.md#registers-a-function-takes-from-its-caller)).
 
