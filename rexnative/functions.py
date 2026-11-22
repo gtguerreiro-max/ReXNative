@@ -228,6 +228,11 @@ def _far_bound(insns, i, index, back, far=200):
                 return None
             for kk in range(k + 1, i):
                 mn2, _, ops2 = insns[kk][1].partition(' ')
+                # The table load itself may write the index register (`lwzx r3,r3,r5; mtctr
+                # r3`: crash.dll's 8A360254, a 5-way switch 27 instructions after its
+                # `cmplwi r3,4`): the index is used up there.
+                if mn2 == 'lwzx' and kk == i - 2:
+                    continue
                 if (not mn2.startswith(('st', 'cmp', 'b', 'mtctr')) and
                         ops2.split(',')[0] == index and not
                         (mn2 == 'rlwinm' and _SCALE.match(insns[kk][1]))):

@@ -471,8 +471,9 @@ def _shares_scanned(work, gen, mark=False):
 
 # The rules of functions.jump_tables, counted: a new rule makes every game's generated code
 # looked at again (tables.scanned). 2: the li + addis tables (their index overwritten before the
-# bctr), the bound checks on cr0, and the DLL modules' code with their own images.
-TABLE_RULES = 2
+# bctr), the bound checks on cr0, and the DLL modules' code with their own images. 3: a far bound
+# check whose index register the table load itself overwrites.
+TABLE_RULES = 3
 
 
 def module_image(work, module):
