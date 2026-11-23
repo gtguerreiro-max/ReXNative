@@ -5,6 +5,7 @@
 | Key | Pad | |
 |---|---|---|
 | F1 | Back + Start (the Deck: View + Menu) | the settings HUD |
+| in the HUD: Page Up / Page Down, Q / E | in the HUD: LB / RB | the HUD's previous or next page |
 | | in the HUD: Y (or its Snapshot button) | a debug snapshot for a report: the frame and a trace of the next frames, in `snapshots\` beside the executable ([DEBUGGING.md](DEBUGGING.md#snapshots-from-the-player)) |
 | F9 | | switch between ReXNative and ReXGlue's Xenos GPU emulation (the HUD's Renderer too) |
 | F7 | | the upscaler on or off |
@@ -16,9 +17,12 @@ The keys are settings too (`bind_rexnative_hud`, `bind_renderer_switch`, `bind_u
 ## The settings HUD
 
 F1 (or Back + Start on a pad) opens a settings HUD over the running game; what it changes is
-saved into the game's configuration file. Up and down pick a setting, left and right (or A)
-change it.
+saved into the game's configuration file. Its settings are on pages, a tab each: Display,
+Picture, Upscaler, DLSS 5 (NVIDIA GPUs) and Developer. LB and RB (Page Up and Page Down, or Q and
+E; or a click on a tab) turn the page, up and down pick a setting, left and right (or A) change
+it. A value marked * takes effect at the next start.
 
+- **Display page:** the renderer, the screen, the frame rate and latency, and the window.
 - **Renderer**, the first setting: Native (ReXNative) or Classic (ReXGlue's Xenos GPU emulation,
   Xenia's renderer), for a game the native renderer does not draw right yet. It switches at once,
   on the Steam Deck too, and the choice is kept for the next start (`rexnative.classic`). The HUD
@@ -32,14 +36,25 @@ change it.
   the mid-tones come out about 20 % darker and the shadows about half as bright. PC monitor turns
   the signal back into light and encodes it for an sRGB screen, as a console connected to a
   monitor shows it. Captures taken as shown (`rexnative.capture_shown`) follow it.
-- **Window page** (not on the Steam Deck, where gamescope shows the game on the whole screen):
+- **Window** (not on the Steam Deck, where gamescope shows the game on the whole screen):
   Windowed, Full screen (a borderless window over the display) or Full screen (exclusive); the
   window's size when windowed (1280x720 to 2560x1440); and the display, when there are several.
   These are ReXGlue's own settings (`ui.fullscreen`, `ui.fullscreen_exclusive`,
   `ui.window_width`, `ui.window_height`, `ui.monitor`), applied at once and saved under `[ui]`.
-- **Upscaler page:** switches the upscaler, its type (automatic, DLSS or FSR), the FSR version
-  and the mode (native anti-aliasing to ultra performance) while the game runs, and says what
-  runs ("AMD FSR 4.1.2 Quality, 853x480 to 1280x720"). Frame generation (AMD FSR) switches there
+- **Picture page:** the resolution, the anti-aliasing (MSAA, or DLSS / FSR: the upscaler's own
+  switch, as F7), the screen scaling (FSR 1 or bilinear) and its sharpening, and the texture
+  filtering.
+- **Resolution** (`rexnative.resolution_scale`, 1 by default; not on the Steam Deck): 2x or 3x
+  draws the game's screen-sized surfaces (the 3D scene, its post-processing and the front buffer)
+  at two or three host pixels per guest pixel, a 1280x720 game at 2560x1440 or 3840x2160, as the
+  Xbox One X (3x) and Series S (2x) run Xbox 360 games. The upscaler works at that size: DLSS's
+  or FSR's native AA renders all of it, Quality at 3x renders 2560x1440 for 3840x2160. Taken at
+  the next start. Forza Horizon on an RTX 5060 Ti: 4.2, 5.0 and 8.0 ms a frame at 1x, 2x and 3x
+  with DLAA, 6.0, 14.4 and 30.4 ms with DLSS 5 on (a replayed trace of its intro drive). A
+  picture larger than the window is shown at the window's size (bilinear), a supersampled frame.
+- **Upscaler page:** the upscaler's type (automatic, DLSS or FSR), the FSR version and the mode
+  (native anti-aliasing to ultra performance) while the game runs, and what runs ("AMD FSR 4.1.2
+  Quality, 853x480 to 1280x720"). Frame generation (AMD FSR) switches there
   too while the game runs (`rexnative.frame_generation`): a generated frame before each of the
   game's, the game at half the screen's rate (30 FPS for 60 on the Steam Deck). It needs the
   upscaler and the frame pacer (`rexnative.frame_latency` above 0); the log's frame statistics

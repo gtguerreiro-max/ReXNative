@@ -140,7 +140,22 @@ std::vector<Option> MakeOptions() {
                "TV: the picture as the console sends it to an HDTV, a little dark on a monitor "
                "or the Steam Deck. PC monitor: as a console connected to a monitor shows it, "
                "lighter in the shadows. At once."});
-  o.push_back({"Display", "antialiasing", "Antialiasing",
+  // The game's screen-sized surfaces (the scene, its post-processing, the front buffer) at 2x or
+  // 3x (--rexnative_resolution_scale, render_targets.h), as the Xbox One X (3x) and Series S (2x)
+  // run Xbox 360 games; the upscaler works at that size. At the next start. Not on the Steam Deck,
+  // whose 1280x800 screen shows a 1280x720 game nearly as it is.
+  o.push_back({"Picture", "resolution", "Resolution",
+               {{"1x (the game's)", "1"}, {"2x", "2"}, {"3x", "3"}}, true,
+               [] { return std::to_string(std::clamp(FlagInt("rexnative_resolution_scale"), 1, 3)); },
+               [](const std::string& v) {
+                 return Assignments{{"rexnative_resolution_scale", v}};
+               },
+               nullptr,
+               "The game drawn at 2x or 3x its resolution (1280x720: 2560x1440 or 3840x2160), as "
+               "the Xbox One X and Series do: sharper, heavier on the GPU. DLSS / FSR work at "
+               "that size. After a restart.",
+               [] { return !SteamDeck(); }});
+  o.push_back({"Picture", "antialiasing", "Antialiasing",
                {{"Off", "1"},
                 {"MSAA 2x (console)", "2"},
                 {"MSAA 4x", "4"},
@@ -161,18 +176,18 @@ std::vector<Option> MakeOptions() {
                  if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
                },
                "The 3D scene's multisampling (most games draw 2x on the console), or the "
-               "upscaler's temporal anti-aliasing (the Upscaler options below)."});
-  o.push_back({"Display", "upscaling", "Screen scaling", {{"Bilinear", "false"}, {"AMD FSR 1", "true"}},
+               "upscaler's temporal anti-aliasing (its options on the Upscaler page)."});
+  o.push_back({"Picture", "upscaling", "Screen scaling", {{"Bilinear", "false"}, {"AMD FSR 1", "true"}},
                false, [] { return Flag("rexnative_fsr"); },
                [](const std::string& v) { return Bool("rexnative_fsr", v); }, nullptr,
                "How the game's picture is scaled to the screen. FSR 1 keeps edges sharp; "
                "bilinear is softer."});
-  o.push_back({"Display", "sharpening", "FSR sharpening",
+  o.push_back({"Picture", "sharpening", "FSR sharpening",
                {{"Soft", "1"}, {"Medium", "0.5"}, {"Sharp", "0.2"}, {"Sharpest", "0"}}, false,
                [] { return Nearest(Find("sharpening"), std::atof(Flag("rexnative_fsr_sharpness").c_str())); },
                [](const std::string& v) { return Assignments{{"rexnative_fsr_sharpness", v}}; },
                nullptr, "How much FSR 1 sharpens the scaled picture (RCAS)."});
-  o.push_back({"Display", "anisotropy", "Texture filtering",
+  o.push_back({"Picture", "anisotropy", "Texture filtering",
                {{"Game's", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}}, true,
                [] { return Nearest(Find("anisotropy"), FlagInt("rexnative_anisotropy")); },
                [](const std::string& v) { return Assignments{{"rexnative_anisotropy", v}}; },
@@ -212,7 +227,7 @@ std::vector<Option> MakeOptions() {
   // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
   // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
   // where gamescope shows the game on the whole screen whatever the window is.
-  o.push_back({"Window", "window_mode", "Window",
+  o.push_back({"Display", "window_mode", "Window",
                {{"Windowed", "window"}, {"Full screen", "full"}, {"Full screen (exclusive)", "exclusive"}},
                false,
                [] {
@@ -228,7 +243,7 @@ std::vector<Option> MakeOptions() {
                "Full screen is a borderless window over the whole display; exclusive takes the "
                "display for the game alone (switching away with Alt+Tab is slower). At once.",
                [] { return !SteamDeck(); }});
-  o.push_back({"Window", "window_size", "Window size",
+  o.push_back({"Display", "window_size", "Window size",
                {{"1280x720", "1280x720"}, {"1600x900", "1600x900"}, {"1920x1080", "1920x1080"},
                 {"2560x1440", "2560x1440"}},
                false,
@@ -244,7 +259,7 @@ std::vector<Option> MakeOptions() {
                },
                nullptr, "The window's size on the desktop, when the game is not full screen.",
                [] { return !SteamDeck() && Flag("ui.fullscreen") != "true"; }});
-  o.push_back({"Window", "monitor", "Display",
+  o.push_back({"Display", "monitor", "Display",
                {{"1", "0"}, {"2", "1"}, {"3", "2"}, {"4", "3"}},
                false,
                [] { return std::to_string(std::clamp(FlagInt("ui.monitor"), 0, 3)); },
@@ -255,13 +270,10 @@ std::vector<Option> MakeOptions() {
   // FSR frame generation (frame_generation.h). They work on the scene surface (game_layer.h's
   // kSceneSurface, or learned at run time: scene.h). The live ones make the upscaler again at
   // the next frame (RequestAntialiasing); the page's first line says what runs (UpscalerStatus).
+  // The upscaler itself is switched on as the Picture page's Antialiasing (one row, not two).
   const auto remake = [] {
     if (NativeRenderer* r = NativeRenderer::Get()) r->RequestAntialiasing();
   };
-  o.push_back({"Upscaler", "upscaler", "Upscaler", on_off, false,
-               [] { return Flag("rexnative_upscaler"); },
-               [](const std::string& v) { return Bool("rexnative_upscaler", v); }, remake,
-               "Temporal anti-aliasing and upscaling of the 3D scene, in place of its MSAA."});
   o.push_back({"Upscaler", "upscaler_backend", "Upscaler type",
                {{"Automatic", "auto"}, {"NVIDIA DLSS", "dlss"}, {"AMD FSR", "fsr"}}, false,
                [] { return Flag("rexnative_upscaler_backend"); },
@@ -737,6 +749,14 @@ void CreateContext() {
   c[ImGuiCol_ButtonHovered] = c[ImGuiCol_HeaderHovered];
   c[ImGuiCol_ButtonActive] = c[ImGuiCol_HeaderActive];
   c[ImGuiCol_Separator] = ImVec4(0.55f, 0.40f, 0.20f, 0.6f);
+  // The pages' tabs in the same browns (StyleColorsDark's are blue).
+  c[ImGuiCol_Tab] = ImVec4(0.30f, 0.19f, 0.07f, 0.85f);
+  c[ImGuiCol_TabHovered] = c[ImGuiCol_HeaderHovered];
+  c[ImGuiCol_TabSelected] = ImVec4(0.62f, 0.39f, 0.13f, 1.0f);
+  c[ImGuiCol_TabSelectedOverline] = c[ImGuiCol_NavCursor];
+  c[ImGuiCol_TabDimmed] = c[ImGuiCol_Tab];
+  c[ImGuiCol_TabDimmedSelected] = c[ImGuiCol_TabSelected];
+  c[ImGuiCol_TabDimmedSelectedOverline] = c[ImGuiCol_TabSelected];
   BuildFont(kBaseFont);
 }
 
@@ -779,10 +799,27 @@ void FeedPad(ImGuiIO& io, bool reset) {
   io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0 && f > 0.5f, ly > 0 ? f : 0.0f);
 }
 
-bool Pressed(std::initializer_list<ImGuiKey> keys) {
+bool Pressed(std::initializer_list<ImGuiKey> keys, bool repeat = true) {
   for (ImGuiKey k : keys)
-    if (ImGui::IsKeyPressed(k, true)) return true;
+    if (ImGui::IsKeyPressed(k, repeat)) return true;
   return false;
+}
+
+// The menu's pages, a tab each, in this order (every option's page is one of them). The one shown
+// is kept while the game runs (UI thread).
+constexpr std::string_view kPages[] = {"Display", "Picture", "Upscaler", "DLSS 5", "Developer"};
+std::string_view g_page = kPages[0];
+
+bool Shown(const Option& o) { return !o.shown || o.shown(); }
+
+// The Upscaler page's first line: what runs now, the upscaler and FSR version the GPU took, its
+// mode and sizes.
+void UpscalerLine() {
+  const std::string status = NativeRenderer::UpscalerStatus();
+  ImGui::TextDisabled("Now: %s", !status.empty() ? status.c_str()
+                                 : Flag("rexnative_upscaler") == "true"
+                                     ? "waiting for the game's 3D scene, or unavailable (see the log)"
+                                     : "off (on: Picture, Antialiasing)");
 }
 
 // One option as a row: its label, and its value between arrows. Left and Right (D-pad, stick,
@@ -838,38 +875,62 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   ImGui::Begin(kTitle, &open,
                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoSavedSettings);
-  const Option* focused = nullptr;
-  std::string_view page;
-  bool first = true;
+  // The pages, a tab each, those with a row to show (DLSS 5 only on an NVIDIA GPU); the most rows
+  // one has sizes the rows' region, so the window keeps its size from page to page.
+  std::vector<std::string_view> pages;
+  size_t most = 1;
+  for (const std::string_view p : kPages) {
+    const size_t n = size_t(std::ranges::count_if(
+        Options(), [&](const Option& o) { return o.page == p && Shown(o); }));
+    if (!n) continue;
+    pages.push_back(p);
+    most = std::max(most, n + (p == "Upscaler" ? 1 : 0));  // its first line, what runs
+  }
+  size_t current = size_t(std::ranges::find(pages, g_page) - pages.begin());
+  if (current >= pages.size()) current = 0;
+  // LB / RB (Page Up / Down, Q / E) turn the page; a click on a tab, or A on it, picks one. A tab
+  // picked with SetSelected shows from the next frame: until then its page is drawn here.
+  bool turned = false;
+  if (Pressed({ImGuiKey_GamepadL1, ImGuiKey_PageUp, ImGuiKey_Q}, false)) {
+    current = (current + pages.size() - 1) % pages.size();
+    turned = true;
+  } else if (Pressed({ImGuiKey_GamepadR1, ImGuiKey_PageDown, ImGuiKey_E}, false)) {
+    current = (current + 1) % pages.size();
+    turned = true;
+  }
+  if (ImGui::BeginTabBar("##pages", ImGuiTabBarFlags_NoTooltip)) {
+    for (size_t i = 0; i < pages.size(); ++i) {
+      const bool pick = (turned || appearing) && i == current;
+      if (ImGui::BeginTabItem(std::string(pages[i]).c_str(), nullptr,
+                              pick ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (!turned && !appearing && i != current) {  // a click
+          current = i;
+          turned = true;
+        }
+        ImGui::EndTabItem();
+      }
+    }
+    ImGui::EndTabBar();
+  }
+  g_page = pages[current];
   // The rows scroll in a region that leaves the help and the footer on the screen: the Steam
-  // Deck's 800 lines (720 on a TV) hold fewer rows than the menu has. The region's height: the
-  // screen less the window's title, padding and a margin, less what follows the rows (two lines
-  // of help, the footer's button, the separators and spacing between them).
+  // Deck's 800 lines (720 on a TV) may hold fewer rows than a page has. Its height at most: the
+  // screen less the window's title, the tabs, padding and a margin, less what follows the rows
+  // (two lines of help, the footer's button, the separators and spacing between them).
   const ImGuiStyle& style = ImGui::GetStyle();
   const float below = style.ItemSpacing.y * 6.0f + 2.0f +
                       ImGui::GetTextLineHeightWithSpacing() * 2.0f + ImGui::GetFrameHeight();
   const float rows_max = io.DisplaySize.y - style.WindowPadding.y * 4.0f -
-                         ImGui::GetFrameHeight() - below;
-  ImGui::SetNextWindowSizeConstraints(
-      ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(rows_max, ImGui::GetFrameHeight() * 3.0f)));
-  ImGui::BeginChild("##rows", ImVec2(0.0f, 0.0f),
-                    ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+                         ImGui::GetFrameHeight() * 2.0f - style.ItemSpacing.y - below;
+  const float rows = std::min(float(most) * ImGui::GetFrameHeightWithSpacing(),
+                              std::max(rows_max, ImGui::GetFrameHeight() * 3.0f));
+  const Option* focused = nullptr;
+  bool first = true;
+  ImGui::BeginChild("##rows", ImVec2(0.0f, rows), ImGuiChildFlags_NavFlattened);
+  if (g_page == "Upscaler") UpscalerLine();
   for (const Option& o : Options()) {
-    if (o.shown && !o.shown()) continue;
-    if (o.page != page) {
-      page = o.page;
-      ImGui::SeparatorText(std::string(page).c_str());
-      if (page == "Upscaler") {
-        // What runs now: the upscaler and FSR version the GPU took, its mode and sizes.
-        const std::string status = NativeRenderer::UpscalerStatus();
-        ImGui::TextDisabled("Now: %s",
-                            !status.empty() ? status.c_str()
-                            : Flag("rexnative_upscaler") == "true"
-                                ? "waiting for the game's 3D scene, or unavailable (see the log)"
-                                : "off");
-      }
-    }
-    if (first && appearing) ImGui::SetKeyboardFocusHere();
+    if (o.page != g_page || !Shown(o)) continue;
+    if (first && (appearing || turned)) ImGui::SetKeyboardFocusHere();
     first = false;
     Row(o, &focused);
   }
@@ -888,8 +949,8 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   ImGui::PopTextWrapPos();
   ImGui::PopStyleColor();
   ImGui::Separator();
-  ImGui::TextDisabled("%s", g_pending.empty() ? "Y: snapshot     B: close"
-                                              : "* after a restart     B: close");
+  ImGui::TextDisabled("%s", g_pending.empty() ? "LB/RB: page   Y: snapshot   B: close"
+                                              : "* after a restart   LB/RB: page");
   const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
   ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Snapshot").x -
                   ImGui::CalcTextSize("Close").x - pad * 2.0f - ImGui::GetStyle().ItemSpacing.x);
@@ -1061,6 +1122,11 @@ bool Key(const rex::InputEvent& e, bool down) {
       return true;
     case VirtualKey::kReturn: key = ImGuiKey_Enter; break;
     case VirtualKey::kSpace: key = ImGuiKey_Space; break;
+    // The pages (DrawMenu): Page Up / Down, or Q / E as in many games' menus.
+    case VirtualKey::kPrior: key = ImGuiKey_PageUp; break;
+    case VirtualKey::kNext: key = ImGuiKey_PageDown; break;
+    case VirtualKey::kQ: key = ImGuiKey_Q; break;
+    case VirtualKey::kE: key = ImGuiKey_E; break;
     case VirtualKey::kEscape: key = ImGuiKey_Escape; break;
     case VirtualKey::kTab: key = ImGuiKey_Tab; break;
     default: break;

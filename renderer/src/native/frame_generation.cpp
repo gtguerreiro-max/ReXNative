@@ -25,6 +25,7 @@ REXCVAR_DEFINE_BOOL(rexnative_frame_generation, false, "ReXNative",
                     "OptiScaler puts behind it) before each frame, from the upscaler's depth and "
                     "motion, at half the display's refresh rate: with --rexnative_upscaler "
                     "(bind_upscaler, F7) and the frame pacer (--rexnative)");
+REXCVAR_DECLARE(int32_t, rexnative_resolution_scale);
 
 namespace rexnative {
 
@@ -406,7 +407,11 @@ bool FrameGeneration::Resize(uint32_t width, uint32_t height, bool hdr, bool dep
                   ? FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING
                   : 0u);
   cd.displaySize = {width, height};
-  cd.maxRenderSize = {SceneWidth(), SceneHeight()};
+  // The scene in host pixels: at --rexnative_resolution_scale (2x, 3x) the upscaler renders up
+  // to that many pixels per guest pixel (native AA at 2x: 2560x1440 for a 1280x720 scene). Taken
+  // at start, as the render targets take it (renderer.cpp).
+  const uint32_t scale = uint32_t(std::clamp(REXCVAR_GET(rexnative_resolution_scale), 1, 3));
+  cd.maxRenderSize = {SceneWidth() * scale, SceneHeight() * scale};
   cd.backBufferFormat = ffxApiGetSurfaceFormatDX12(format);
   SetFfxWatermark(L"MLFI-WATERMARK", debug);
   if (const ffxReturnCode_t rc = api_->create(&context_, &cd.header, nullptr);
