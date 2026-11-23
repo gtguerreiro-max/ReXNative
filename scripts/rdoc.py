@@ -372,6 +372,11 @@ def main():
             field("stencil enable", lambda: om().stencilEnable)
             field("stencil front", lambda: (om().frontFace.function, om().frontFace.passOperation,
                                             om().frontFace.depthFailOperation))
+            field("stencil back", lambda: (om().backFace.function, om().backFace.passOperation,
+                                           om().backFace.depthFailOperation))
+            # Reference, read (compare) and write masks: D3D12 has one reference for both faces.
+            field("stencil ref/read/write", lambda: "%02X/%02X/%02X" % (
+                om().frontFace.reference, om().frontFace.compareMask, om().frontFace.writeMask))
             field("depth bias", lambda: rs().depthBias)
             field("slope bias", lambda: rs().slopeScaledDepthBias)
             field("bias clamp", lambda: rs().depthBiasClamp)

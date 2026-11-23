@@ -46,6 +46,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -2774,7 +2775,7 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
         previous != &now && previous != &camera && previous != &late ? previous : nullptr;
     REXLOG_INFO(
         "ReXNative motion: f{} #{} d{} n={} prim={} found={}{}{}{} limit {:.0f} prev={}/{} off {} base {:08X} | "
-        "buffers {} refusal {} formats {} | "
+        "buffers {} refusal {}{} formats {} | "
         "prev off {} base {:08X} | anchor {} ({:.4g} {:.4g} {:.4g} {:.4g} {:.4g}) prev {} "
         "({:.4g} {:.4g} {:.4g} {:.4g} {:.4g})",
         list_frame, motion_ordinal, frame_draws, s.count, uint32_t(s.primitive),
@@ -2784,6 +2785,18 @@ void DrawRenderer::Impl::BindPreviousConstants(const DrawState& s, const DxbcSha
         p ? int64_t(motion_history.last_index()) : -1, motion_history.previous_count(),
         vertex_index_offset, now.vertex_base[0], motion_history.stable() ? "kept" : "-",
         motion_history.last_refusal(), [&] {
+          std::string f;
+          if (motion_history.last_refusal() == 3 || motion_history.last_refusal() == 5) {
+            for (int k = 0; k < 3; ++k)
+              f += std::format(" c{}.{}:{:.4g}/{:.4g}", motion_history.apart()[k].offset / 16,
+                               "xyzw"[(motion_history.apart()[k].offset / 4) & 3],
+                               motion_history.apart()[k].now, motion_history.apart()[k].then);
+            f += std::format(" turn {:.3g} @c{} ({:.4g} of {:.4g})", motion_history.turn(),
+                             motion_history.turn_block().offset / 16,
+                             motion_history.turn_block().now, motion_history.turn_block().then);
+          }
+          return f;
+        }(), [&] {
           std::string f;
           if (bases)
             for (const auto& a : bindings[0].attributes)

@@ -252,7 +252,10 @@ class MotionHistory {
       found_ = Found::kNone;  // no camera without a matched draw of the shader: that draw
       last_refusal_ = 2;
     }
-    if (best == n) return CameraOrLater(now, floats, size);
+    if (best == n) {
+      last_refusal_ = 4;
+      return CameraOrLater(now, floats, size);
+    }
     if (now.vertex_base[0]) {
       ++buffer_matches_;
       same_buffer_matches_ += best_buffer;
@@ -261,6 +264,7 @@ class MotionHistory {
     // matched holds other objects; the camera's motion instead.
     if (several && other != n && OtherCopies(floats, size, best, other)) {
       ++batch_shuffles_;
+      last_refusal_ = 3;
       cursor_ = best + 1;  // the window stays in step with the frame's order
       return nullptr;
     }
@@ -297,8 +301,17 @@ class MotionHistory {
   bool global() const { return global_; }
   bool stable() const { return stable_; }
   // Debugging (kDebugLogMotion): the last Match's refusal of another mesh's vertex buffer (0
-  // none, 1 the camera instead, 2 no camera: that draw kept).
+  // none, 1 the camera instead, 2 no camera: that draw kept), 3 its copies holding other
+  // objects (OtherCopies), 4 no draw of its identity, 5 kept: the same object turned.
   uint32_t last_refusal() const { return last_refusal_; }
+  // Debugging: OtherCopies' components apart (refusal 3): byte offset, this draw's, the copy's.
+  struct Apart {
+    uint32_t offset;
+    float now, then;
+  };
+  const Apart* apart() const { return apart_; }
+  float turn() const { return last_turn_; }
+  const Apart& turn_block() const { return turn_debug_; }
   // Whether matches are told apart by their vertex buffers (the header; on unless debugging).
   void set_buffers(bool on) { buffers_ = on; }
   // Draws this frame sent to the camera instead of another mesh's vertex buffer, and resets it.
@@ -385,27 +398,121 @@ class MotionHistory {
   // (more than 0.5 apart and a quarter of their size: another object's matrix, where an object
   // that moved changes by less in a frame). Then camera_floats() is this draw's constants with
   // the frame's registers at their previous values (Found::kCamera).
+  // Not the same object turned (kTurned): Forza Horizon draws each car's four wheels as copies
+  // of one mesh, with their world-view-projection, world matrix and its inverse in c0-c10. A
+  // wheel spinning moves its inverse's translation (minus the turned position) by hundreds and
+  // its projected rows by more than 1 in a frame, but a rotation keeps the sum of the squares
+  // of a matrix's registers. So when each block of 4 registers (c0-c3, c4-c7: where a matrix is
+  // kept) with components apart kept its norm, within kTurned of how far it moved, the draw is
+  // the same object turned, if:
+  // - a register of its position stayed: its components all beyond a unit vector's, each
+  //   changed by less than kNear of its size (the wheel's place in the world, c7 = 1712 163
+  //   1239). Without one, a static object's copy matched through a turning camera (a
+  //   world-view matrix's translation turned with it, its norm kept: Sega Rally Revo) moves
+  //   with the camera, exact for it. Such registers are left out of the norms: a position far
+  //   from the origin that moved (the car's, in its tyres' treads' world matrix, was a third
+  //   of how far their c0-c12 moved). Not a row with its translation (the inverse's axle row,
+  //   c8, with 1987: the car turning by 2 degrees moved it by 73, which only the block's norm
+  //   with it keeps).
+  // - none of its registers is, bit for bit, another of the copy matched (Shuffled): copies
+  //   refilled in another order keep the norm of their whole run (Sega Rally Revo's trees moved
+  //   to the next slot), each block not (a tree's matrix, c7-c9, in two of them).
+  // Before, all of Forza's wheels took the camera's motion, 93 draws a frame, and DLSS drew
+  // every rim twice.
+  static constexpr double kTurned = 0.2;
+  static constexpr float kOwnBeyond = 1.05f;  // beyond a unit vector's components
+  static constexpr float kNear = 0.05f;
+  static constexpr uint32_t kBlock = 64;  // bytes: 4 registers
   bool OtherCopies(const uint8_t* floats, uint32_t size, size_t best, size_t other) {
     const Draw& b = previous_[best];
     const Draw& o = previous_[other];
     if (b.size != size || o.size != size) return false;
     const uint8_t* then = previous_floats_.data() + b.offset;
     const uint8_t* copy = previous_floats_.data() + o.offset;
-    uint32_t apart = 0;
-    for (uint32_t i = 0; i + 4 <= size && apart < 3; i += 4) {
-      if (!std::memcmp(then + i, copy + i, 4)) continue;  // the frame's
-      float a, t;
-      std::memcpy(&a, floats + i, 4);
-      std::memcpy(&t, then + i, 4);
-      const float d = std::fabs(a - t);
-      if (std::isfinite(d) && d > 0.5f && d > 0.25f * std::max(std::fabs(a), std::fabs(t))) ++apart;
+    uint32_t apart = 0, block_apart = 0;
+    bool turned = true;     // every block with components apart kept its norm
+    bool anchored = false;  // a register of a position (beyond a unit vector) still
+    double block_now = 0, block_then = 0, block_moved = 0;
+    uint32_t block_at = 0;
+    last_turn_ = 0;
+    auto end_block = [&] {
+      if (block_apart) {
+        const double kept = std::fabs(std::sqrt(block_now) - std::sqrt(block_then));
+        const double moved = std::sqrt(block_moved);
+        if (float(kept / moved) >= last_turn_) {
+          last_turn_ = float(kept / moved);
+          turn_debug_ = {block_at, float(kept), float(moved)};
+        }
+        if (!(kept <= kTurned * moved)) turned = false;
+      }
+      block_now = block_then = block_moved = 0;
+      block_apart = 0;
+    };
+    for (uint32_t r = 0; r + 16 <= size && (turned || apart < 3); r += 16) {
+      if (r % kBlock == 0) {
+        end_block();
+        block_at = r;
+      }
+      if (!std::memcmp(then + r, copy + r, 16)) continue;  // the frame's
+      double reg_now = 0, reg_then = 0, reg_moved = 0;
+      bool still = true;  // a position's: its own components all beyond a unit vector's, kept
+      for (uint32_t i = r; i < r + 16; i += 4) {
+        if (!std::memcmp(then + i, copy + i, 4)) continue;
+        float a, t;
+        std::memcpy(&a, floats + i, 4);
+        std::memcpy(&t, then + i, 4);
+        const float d = std::fabs(a - t);
+        if (!std::isfinite(d)) continue;
+        const float m = std::max(std::fabs(a), std::fabs(t));
+        reg_now += double(a) * a;
+        reg_then += double(t) * t;
+        reg_moved += double(d) * d;
+        still = still && m > kOwnBeyond && d <= kNear * m;
+        if (d > 0.5f && d > 0.25f * m) {
+          if (apart < 3) apart_[apart] = {i, a, t};
+          ++apart;
+          ++block_apart;
+        }
+      }
+      anchored = anchored || still;
+      if (!still) {
+        block_now += reg_now;
+        block_then += reg_then;
+        block_moved += reg_moved;
+      }
     }
+    end_block();
     if (apart < 3) return false;
+    if (turned && anchored && !Shuffled(floats, then, copy, size)) {
+      last_refusal_ = 5;
+      return false;
+    }
     camera_floats_.assign(floats, floats + size);
     for (uint32_t r = 0; r < size; r += 16)
       if (!std::memcmp(then + r, copy + r, 16)) std::memcpy(camera_floats_.data() + r, then + r, 16);
     found_ = Found::kCamera;
     return true;
+  }
+  // Whether one of this draw's own registers (`floats`; own: not the same in `then` and `copy`)
+  // that holds more than a unit vector (kOwnBeyond) is, bit for bit, another own register of
+  // `then`, the copy matched: copies refilled in another order (a static tree's matrix in the
+  // next slot), which no object turned gives.
+  static bool Shuffled(const uint8_t* floats, const uint8_t* then, const uint8_t* copy,
+                       uint32_t size) {
+    for (uint32_t r = 0; r + 16 <= size; r += 16) {
+      if (!std::memcmp(then + r, copy + r, 16) || !std::memcmp(floats + r, then + r, 16)) continue;
+      bool large = false;
+      for (uint32_t i = r; i < r + 16; i += 4) {
+        float a;
+        std::memcpy(&a, floats + i, 4);
+        large = large || std::fabs(a) > kOwnBeyond;
+      }
+      if (!large) continue;
+      for (uint32_t q = 0; q + 16 <= size; q += 16)
+        if (q != r && std::memcmp(then + q, copy + q, 16) && !std::memcmp(floats + r, then + q, 16))
+          return true;
+    }
+    return false;
   }
 
   // A draw without one of its identity in the previous frame (a mesh that came into view or
@@ -505,6 +612,9 @@ class MotionHistory {
   bool stable_ = false;
   bool buffers_ = true;
   uint32_t last_refusal_ = 0;
+  Apart apart_[3] = {};
+  float last_turn_ = 0;  // OtherCopies' largest change of a block's norm for how far it moved
+  Apart turn_debug_ = {};  // that block's first byte, change of its norm, how far it moved
   uint32_t buffer_matches_ = 0, same_buffer_matches_ = 0, other_buffers_ = 0;
   // Draws waiting for a matched draw of their shader (pendable): their place in current_, and
   // the upload memory of their previous float constants.

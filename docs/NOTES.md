@@ -468,6 +468,24 @@ previous values. The trees' motion is then the ground's (0.1 to 0.2 pixels in a 
 the camera fallback for a draw with no match copies only the registers it shares with the draw
 it is taken from, not that draw's own transform.
 
+That test took every wheel in Forza Horizon for another object. A car's four wheels are copies of
+one mesh, each with its world-view-projection (c0-c3), world matrix (c4-c7) and the world
+matrix's inverse (c8-c10); spinning, a wheel's projected rows change by more than 1 in a frame and
+its inverse's translation (minus the turned position, 2100 from the origin) by hundreds. All 4
+wheels, their tyres and treads, 93 draws a frame of the 2026-11-23 gameplay trace, took the
+camera's motion, and DLSS drew every rim twice and smeared the tyres (the intro's Viper seen from
+the side). A rotation keeps the sum of the squares of a matrix's registers, which another
+object's position changes, so a draw whose blocks of 4 registers with components apart each kept
+their norm, within a fifth of how far they moved, is the same object turned, if a register of
+its position stayed (components all beyond 1, each changed by less than 5 %: the wheel's c7 =
+1712 163 1239) and none of its registers is, bit for bit, another of the copy matched (a batch
+refilled in another order keeps the norm of the whole run). Registers that stayed are left out
+of the norms, but not a row with its translation (the inverse's axle row: the car turning by 2
+degrees moved its 1987 by 73). In the trace the wheels then all match their own draw of the
+frame before (`kDebugLogMotion`: refusal 5 and the turn of the block that moved most; 3 for a
+copy refused). In Sega Rally Revo's race trace the trees are as before; 7 draws of a car,
+matched in order with a position kept, now take their own motion instead of the camera's.
+
 With frame generation's optical flow back (above), Sega Rally Revo's generated frames still
 smeared the road around the car: a copy of the bumper's lettering below the bumper, the ground
 in blocks. The frame generation captures now write the scene's motion vectors as well
