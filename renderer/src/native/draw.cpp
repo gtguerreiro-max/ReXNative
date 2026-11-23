@@ -4309,8 +4309,8 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       "%u fn=%08X prim=%u n=%u idx=%u vs=%016llX:%llX ps=%016llX:%llX rt=%u:%d,%d dsv=%d "
       "z=%u/%u/%u st=%u cull=%u blend=%u:%u/%u/%u,%u/%u/%u mask=%X bc=%08X cc=%08X "
       "f=%.2f,%.2f,%.2f,%.2f samples=%u vp=%u,%u,%u,%u z=%.3f-%.3f sc=%u,%u,%u,%u "
-      "tex=%zu ci=%08X si=%08X di=%08X su=%08X dc=%08X sr=%08X sb=%08X po=%g/%g,%g/%g "
-      "bias=%d/%g\n",
+      "tex=%zu ci=%08X si=%08X di=%08X su=%08X dc=%08X sr=%08X sb=%08X hz=%08X "
+      "po=%g/%g,%g/%g bias=%d/%g\n",
       draw_index, uint32_t(s.fn), s.primitive, count, uint32_t(s.indexed),
       (unsigned long long)vs.GetUcodeDataHash(), (unsigned long long)mods.vertex,
       ps ? (unsigned long long)ps->GetUcodeDataHash() : 0ull, (unsigned long long)mods.pixel,
@@ -4326,7 +4326,7 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_RB_SURFACE_INFO],
       regs[XE_GPU_REG_RB_DEPTH_INFO], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
       regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_STENCILREFMASK],
-      regs[XE_GPU_REG_RB_STENCILREFMASK_BF],
+      regs[XE_GPU_REG_RB_STENCILREFMASK_BF], regs[XE_GPU_REG_RB_HIZCONTROL],
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE),
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET),
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE),

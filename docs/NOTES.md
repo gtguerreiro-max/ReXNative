@@ -1143,23 +1143,40 @@ pixels (live shots of two runs differ by where the cars are, which looked like a
 
 ## A car's contact shadow in the motion blur
 
-Forza Horizon's motion blur copies the depth and stencil to an 8888 texture (the stencil in red)
-and its mask pass (pixel shader E68FE55ECD482EC5, 640x360) sets alpha for stencil 1 to 0x80
-(`c253.w` = 0.501968, just above 128/255): the cars (3 the player's, 0x0F and others the AI's)
-and 0x80, which the camera's blur leaves sharp; 0 (the road) and 0x81 (foliage) blur. Each car's
-contact shadow first marks the ground and the foliage inside its box: an `EQUAL 0` draw inverts
-bit 7 of the road (read mask 0xFF: once, so the whole footprint of the box), an `EQUAL 0x81` draw
-decrements foliage to 0x80, and the shadow is drawn where it is 0x80. The emulation, ReXNative's
-and Xenia's alike (the same frame in oracle mode: 44.8 dB under the bumper), leaves that box
-sharp: gravel around the car with a straight edge, the road beyond streaked. The same trace
-replayed with the three draws skipped (`draw-debug.txt` "0 0 875 878" in the capture folder) has
-no shadow, and the ground around and under the car blurs like the rest of the road. Footage of
-the Xbox 360 (the intro drive, the Viper from the front) has that ground blurred, the shadow
-under the car: some detail of the console's (hierarchical stencil, the tiles' order) keeps the
-box out of the mask there, which neither emulation has. The game's settings carry the console's
-look instead (rexnative/tweaks.py, `rexnative.pixel_constant_override` =
-`E68FE55ECD482EC5:c253.w=0.5`): with the threshold below 0x80 the box blurs with the road and
-the shadow stays, soft.
+Forza Horizon's motion blur copies the depth and stencil to an 8888 texture (a depth resolve of
+the 4x MSAA D24FS8 scene) and its mask pass (pixel shader E68FE55ECD482EC5, 640x360) reads it back:
+the depth's 20e4 bits from A, R and G (decoded with 255, 65280 and 15.9375 = 255/16, so the game
+counts on a texel's exact x/255), the stencil from B. Alpha (sharp) is `B != 0 && B <
+c253.w`, `c253.w` = 0.501968, about 32897/65536, just above 0x80 even in 16-bit fixed point:
+the cars (3 the player's, 0x0F and others the AI's) and 0x80 stay sharp, 0 (the road) and 0x81
+(foliage) blur. Each car's contact shadow first marks the ground and the foliage inside its box
+(10 triangles, no culling, depth test GE, two-sided stencil off): an `EQUAL 0` draw inverts bit 7
+(write mask 0x80, read mask 0xFF: the second face over a pixel fails, so every pixel a face is in
+front of), an `EQUAL 0x81` draw decrements foliage to 0x80, and the shadow is drawn where it is
+0x80. Between that and the copy only the cars (`REPLACE` 3) and one `REPLACE` 0 draw write
+stencil. The emulation, ReXNative's and Xenia's alike (the same frame in oracle mode: 44.8 dB
+under the bumper), leaves that box sharp: gravel around the car with a straight edge, the road
+beyond streaked. The same trace replayed with the three draws skipped (`draw-debug.txt`
+"0 0 875 878" in the capture folder) has no shadow, and the ground around and under the car blurs
+like the rest of the road. Footage of the Xbox 360 (the intro drive, the Viper from the front)
+has that ground blurred, the shadow under the car: the console marks less of the box than the
+emulation does, and the game means the mark to stay sharp. Ruled out so far (2026-11-23):
+- hierarchical stencil, as far as `RB_HIZCONTROL`'s undocumented bits can be read from the
+  values (the draw log's `hz=`): 0x13 for the whole main pass, these draws included (read as
+  hierarchical Z on and written, the GE direction); the bits that look like the hierarchical
+  stencil's are only set in the screen-space passes after the first depth copy (draws 275-287);
+- the per-face stencil state (0044: the box has two-sided stencil off);
+- a texel conversion other than x/255 putting 0x80 above `c253.w`: the depth decode above would
+  break with it (64/16 floored to 3);
+- anything resetting 0x80 before the copy.
+Xenia shows the same kind of thing in Forza Motorsport 4, the same engine: "square shadows" around
+the cars (xenia-canary/game-patches#398, worked around there by turning shadow maps off). What
+of the console's rasterising or testing marks less is still open; the candidates are which faces
+of the box pass on the console (only its back faces would leave the ground inside it unmarked)
+and how the console's predicated tiling (the scene is resolved in three 256-line bands) runs the
+box draws. The game's settings carry the console's look meanwhile (rexnative/tweaks.py,
+`rexnative.pixel_constant_override` = `E68FE55ECD482EC5:c253.w=0.5`): with the threshold below
+0x80 the box blurs with the road and the shadow stays, soft.
 
 ## Primitive reset in 32-bit indices
 
