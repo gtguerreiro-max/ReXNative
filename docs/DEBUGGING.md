@@ -169,7 +169,8 @@ window and drives it to the problem; then each experiment takes seconds on the r
   turns them into images; a multisampled colour target is resolved first, a multisampled depth
   target is left out); `drawlog`: one frame's draws; `trace`: the guest push buffer of one frame;
 - in `-Route`, `pad:A+START:200` presses the game's pad through the control file (no focus
-  needed, for a layer with XInputGetState); `pad:none:600:ry=32767` holds a stick or a trigger
+  needed: in XInputGetState for a layer that has it, and with SDK patch 0045 on the SDK's merged pad,
+  so a title screen that reads keystrokes takes it too, Diablo III's); `pad:none:600:ry=32767` holds a stick or a trigger
   meanwhile (`lx` `ly` `rx` `ry` from -32768 to 32767, `lt` `rt` from 0 to 255). A lone Start
   or Back needs about half a second: the settings HUD holds a short one back (its View + Menu).
 - `live.ps1 control "peek 03FD1000 131072"`: how many bytes of guest physical memory there are

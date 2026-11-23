@@ -1,0 +1,79 @@
+From ce3e877e9ccb2d9968cecf411380cca1bd6081c3 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 21:25:13 +0000
+Subject: [PATCH] hid: a pad overlay, so a tool's presses reach the keystrokes
+ too
+
+rex_hid_set_pad_overlay (C linkage, for a title's code to find with GetProcAddress) sets a
+function called on each read of a user's merged pad state, after the deadzones: GetState, the
+keystrokes made from the state and GetStateForUI all see what it adds. ReXNative's control file
+`pad` presses through it, so a title screen that waits for its START with XInputGetKeystroke
+(Diablo III's) takes it as one pressed on the pad.
+---
+ include/rex/hid/input_system.h | 12 ++++++++++++
+ src/hid/input_system.cpp       | 10 ++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/include/rex/hid/input_system.h b/include/rex/hid/input_system.h
+index cf364e78..75c74a6f 100644
+--- a/include/rex/hid/input_system.h
++++ b/include/rex/hid/input_system.h
+@@ -260,4 +260,16 @@ REX_DECLARE_INTERFACE(IInputSystem, 2)
+   [[nodiscard]] virtual Result<PadReading> GetStateForUI(u32 user) = 0;
+ };
+ 
++/**
++ * What a tool adds to a pad, as a player would press it (ReXNative's control file `pad`, for
++ * routes that drive a title to its gameplay): called on each read of a user's merged state,
++ * after the deadzones, so GetState, the keystrokes made from the state (XInputGetKeystroke's
++ * title screens) and GetStateForUI all see it. Called under the input lock: no input calls
++ * from it. nullptr, the default: nothing added.
++ */
++using PadOverlay = void (*)(u32 user, PadState* state);
++
+ }  // namespace rex::hid
++
++/** Sets the pad overlay; C linkage, for a title's code to find in rexhid with GetProcAddress. */
++extern "C" REX_HID_API void rex_hid_set_pad_overlay(rex::hid::PadOverlay overlay);
+diff --git a/src/hid/input_system.cpp b/src/hid/input_system.cpp
+index 542e17cc..83ebe3c0 100644
+--- a/src/hid/input_system.cpp
++++ b/src/hid/input_system.cpp
+@@ -1,6 +1,7 @@
+ #include "hid/input_system.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cmath>
+ 
+ #include <rex/chrono.h>
+@@ -21,6 +22,8 @@ using detail::DeviceKey;
+ 
+ namespace {
+ 
++std::atomic<PadOverlay> g_pad_overlay{nullptr};
++
+ Error NotFound(const char* what) {
+   return Error(ErrorCategory::kNotFound, what);
+ }
+@@ -237,6 +240,9 @@ Result<rex::hid::PadState> InputSystem::State::ReadRawLocked(u32 user) {
+   }
+   detail::ApplyDeadzones(merged, owner.GetSettings().left_stick_deadzone.Get(),
+                          owner.GetSettings().right_stick_deadzone.Get());
++  if (const PadOverlay overlay = g_pad_overlay.load(std::memory_order_acquire)) {
++    overlay(user, &merged);
++  }
+   return merged;
+ }
+ 
+@@ -774,3 +780,7 @@ ScopeGuard InputSystem::SetPointerModeListener(MoveOnlyFunction<void()> listener
+ }
+ 
+ }  // namespace rex::hid
++
++extern "C" void rex_hid_set_pad_overlay(rex::hid::PadOverlay overlay) {
++  rex::hid::g_pad_overlay.store(overlay, std::memory_order_release);
++}
+-- 
+2.55.0.windows.5
+

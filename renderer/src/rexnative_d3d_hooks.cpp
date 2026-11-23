@@ -66,10 +66,13 @@
 #include "game_layer.h"  // this game's layer (rexnative adapt): addresses, offsets
 
 #include <rex/cvar.h>
+#include <rex/hid/pad.h>
 #include "native/sdk.h"
 #include <rex/ppc/hook.h>
 #include <rex/logging.h>
 #include "host.h"
+
+#include <windows.h>  // GetProcAddress: rexhid's pad overlay
 
 #include <algorithm>
 #include <array>
@@ -489,6 +492,29 @@ std::atomic<uint64_t> g_pad_state{0};
 // (left in bits 40-47, right in 48-55).
 std::atomic<uint64_t> g_pad_state2{0};
 std::atomic<uint64_t> g_pad_until_ns{0};
+
+// The same press on the SDK's merged pad (sdk patch 0045, rexhid's rex_hid_set_pad_overlay):
+// the keystrokes the SDK makes from it reach the title too, where the XInputGetState hook does
+// not (XInputGetKeystroke: Diablo III's title screen waits for its START that way).
+void PadOverlay(uint32_t user, rex::hid::PadState* state) {
+  if (user != 0 || rexnative::NowNs() >= g_pad_until_ns.load(std::memory_order_acquire)) return;
+  rex::hid::PadState& s = *state;
+  const uint64_t pad = g_pad_state.load(std::memory_order_relaxed);
+  s.buttons = uint16_t(s.buttons | uint16_t(pad));
+  if (pad >> 48 & 1) {
+    s.thumb_lx = int16_t(uint16_t(pad >> 16));
+    s.thumb_ly = int16_t(uint16_t(pad >> 32));
+  }
+  const uint64_t pad2 = g_pad_state2.load(std::memory_order_relaxed);
+  if (pad2 >> 32 & 1) {
+    s.thumb_rx = int16_t(uint16_t(pad2));
+    s.thumb_ry = int16_t(uint16_t(pad2 >> 16));
+  }
+  if (pad2 >> 56 & 1) {
+    s.left_trigger = uint8_t(pad2 >> 40);
+    s.right_trigger = uint8_t(pad2 >> 48);
+  }
+}
 
 // "A+START", "UP", "none": XINPUT_GAMEPAD button bits; false for an unknown name.
 bool ParsePadButtons(const std::string& s, uint16_t* out) {
@@ -1028,6 +1054,19 @@ void BeginTrace(Tap& t) {
 }
 
 void PollControl(Tap& t, uint8_t* base) {
+  // Found once; an SDK without the patch has none, and the XInputGetState hook alone presses.
+  static const bool overlay = [] {
+    using SetOverlay = void (*)(void (*)(uint32_t, rex::hid::PadState*));
+    const HMODULE hid = GetModuleHandleW(L"rexhid.dll");
+    const auto set = hid ? reinterpret_cast<SetOverlay>(
+                               reinterpret_cast<void*>(GetProcAddress(hid, "rex_hid_set_pad_overlay")))
+                         : nullptr;
+    if (set) set(&PadOverlay);
+    REXLOG_INFO("ReXNative D3D control: pad presses {}", set ? "on the SDK's merged pad and in "
+                "XInputGetState" : "in XInputGetState only (no rex_hid_set_pad_overlay)");
+    return set != nullptr;
+  }();
+  (void)overlay;
   for (const std::string& l : rexnative::control_file::Take(REXCVAR_GET(rexnative_d3d_control))) {
     std::istringstream ss(l);
     std::string cmd, arg;
