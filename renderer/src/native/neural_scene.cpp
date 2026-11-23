@@ -804,7 +804,8 @@ void NeuralPass::SceneDispatch(CommandStream* list, uint64_t frame, uint32_t tab
 }
 
 bool NeuralPass::SceneWanted(const Dlss& dlss) {
-  if (!SceneStage() || !dlss.neural_available() || REXCVAR_GET(rexnative_dlss5_paused))
+  if (!Requested() || !SceneStage() || !dlss.neural_available() ||
+      REXCVAR_GET(rexnative_dlss5_paused))
     return false;
   const bool racing = Dlss5Wanted();
   if (racing != scene_racing_) {

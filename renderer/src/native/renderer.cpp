@@ -744,6 +744,15 @@ void NativeRenderer::BeginFrameModules() {
   // for it, as when the antialiasing changes.
   if (SceneEndFrame(frame_index_) && (upscaler_ || Upscaler::Requested() || scene_msaa_ != 2))
     antialiasing_requested_.store(true, std::memory_order_relaxed);
+  // DLSS 5 turned on live (the settings HUD): its pass is made now and handed to the upscaler,
+  // which DLSS 5 needs (made too when it was off). Off, the pass stays and stops running
+  // (NeuralPass::Requested in SceneWanted and BeforeDraw).
+  if (!neural_ && NeuralPass::Requested()) {
+    neural_ = std::make_unique<NeuralPass>(device_->device());
+    if (upscaler_) upscaler_->set_neural(neural_.get());
+    if (!upscaler_on_) antialiasing_requested_.store(true, std::memory_order_relaxed);
+    REXLOG_INFO("ReXNative DLSS 5: turned on at frame {}", frame_index_);
+  }
   if (antialiasing_requested_.exchange(false, std::memory_order_relaxed)) {
     ReadSceneMsaa();
     // The upscaler takes its sizes when it is made (Upscaler::Initialize); its resources may be

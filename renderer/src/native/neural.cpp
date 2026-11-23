@@ -274,7 +274,7 @@ void NeuralPass::ReadSettings(Dlss::NeuralSettings& s, uint32_t& passes) {
 
 bool NeuralPass::BeforeDraw(CommandStream* list, uint64_t frame, const uint32_t* regs,
                             RenderTargets& targets, Upscaler* upscaler, uint64_t ps_hash) {
-  if (SceneStage()) return false;  // the scene stage runs in Upscaler::Upscale
+  if (SceneStage() || !Requested()) return false;  // the scene stage runs in Upscaler::Upscale
   if (!front_ || done_frame_ == frame || !upscaler || !upscaler->upscaled_this_frame())
     [[likely]]
     return false;
