@@ -1139,16 +1139,38 @@ faces 0, nothing culled; the draw log's `sr=` and `sb=`).
 
 It does not change Forza Horizon's picture, though it was first taken for the cause of the sharp
 ground under its cars: a trace of the intro drive replayed with it on and off draws the same
-pixels (live shots of two runs differ by where the cars are, which looked like a change). The
-sharp ground is the game's. Its motion blur copies the depth and stencil to an 8888 texture
-(the stencil in red) and its mask pass sets alpha for stencil 1 to 0x80 (`c253.w` = 0.501968,
-just above 128/255): the cars (3 the player's, 0x0F and others the AI's) and 0x80; 0 (the road)
-and 0x81 (foliage) blur with the camera. Each car's contact shadow first marks the ground and the
-foliage inside its box: an `EQUAL 0` draw inverts bit 7 of the road (read mask 0xFF: once, so
-the whole footprint of the box), an `EQUAL 0x81` draw decrements foliage to 0x80, and the shadow
-is drawn where it is 0x80. The box around the car, ground and shadow, is then in the cars' class
-and keeps the car's motion (none, in a chase), so the shadow is not smeared by the camera's. In
-the intro's frame 3726 capture 57 563 pixels are 0x80, the box around the Viper; the screenshot's
-sharp gravel around the car is that box. The same trace replayed with those three draws skipped
-(`draw-debug.txt` "0 0 875 878" in the capture folder) has no shadow, and the ground around and
-under the car blurs like the rest of the road.
+pixels (live shots of two runs differ by where the cars are, which looked like a change).
+
+## A car's contact shadow in the motion blur
+
+Forza Horizon's motion blur copies the depth and stencil to an 8888 texture (the stencil in red)
+and its mask pass (pixel shader E68FE55ECD482EC5, 640x360) sets alpha for stencil 1 to 0x80
+(`c253.w` = 0.501968, just above 128/255): the cars (3 the player's, 0x0F and others the AI's)
+and 0x80, which the camera's blur leaves sharp; 0 (the road) and 0x81 (foliage) blur. Each car's
+contact shadow first marks the ground and the foliage inside its box: an `EQUAL 0` draw inverts
+bit 7 of the road (read mask 0xFF: once, so the whole footprint of the box), an `EQUAL 0x81` draw
+decrements foliage to 0x80, and the shadow is drawn where it is 0x80. The emulation, ReXNative's
+and Xenia's alike (the same frame in oracle mode: 44.8 dB under the bumper), leaves that box
+sharp: gravel around the car with a straight edge, the road beyond streaked. The same trace
+replayed with the three draws skipped (`draw-debug.txt` "0 0 875 878" in the capture folder) has
+no shadow, and the ground around and under the car blurs like the rest of the road. Footage of
+the Xbox 360 (the intro drive, the Viper from the front) has that ground blurred, the shadow
+under the car: some detail of the console's (hierarchical stencil, the tiles' order) keeps the
+box out of the mask there, which neither emulation has. The game's settings carry the console's
+look instead (rexnative/tweaks.py, `rexnative.pixel_constant_override` =
+`E68FE55ECD482EC5:c253.w=0.5`): with the threshold below 0x80 the box blurs with the road and
+the shadow stays, soft.
+
+## Primitive reset in 32-bit indices
+
+Forza Horizon's wheels drew their rims as grey discs streaked with thin triangles and their tyres
+on jagged dark blocks (the depth prepass' copy showed it already, Xenia's plugin drew the spokes).
+Their index buffers are 32-bit triangle strips with primitive reset, `VGT_MULTI_PRIM_IB_RESET_INDX`
+0x00FFFFFF, and the strips' cuts stored as 0x00FFFFFF: Xenos compares the low 24 bits of an
+index with it, the host's strip cut all 32 bits with 0xFFFFFFFF. The renderer binds shared
+memory as the index buffer (the vertex shader swaps the indices), so the host read the marker as
+a vertex (16777215 once swapped, outside the mesh) and the strip ran on through it. Where the
+guest and the host would cut apart, the draw now binds a copy (`UploadReset32`, in Prepare like a
+fan's indices): the marker 0xFFFFFFFF, every other index its low 24 bits in guest endian, as the
+primitive processor's `ReplaceResetIndex32To24` does for the plugin. Its scan of every 32-bit
+strip with reset did not change the intro drive's draw CPU time (1.1 to 1.4 ms for 1000 draws).

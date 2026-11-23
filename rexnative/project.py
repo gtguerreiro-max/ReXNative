@@ -609,6 +609,9 @@ def build(work, sdk_install, sdk_src, fidelityfx, dlss_sdk, dlss_nr, jobs=0, log
     # The DLSS 5 look that suits the game (dlss5.py), unless the player chose one in the HUD.
     from . import dlss5
     dlss5.apply(work, [toml, os.path.join(run, '%s.toml' % name)], log=log)
+    # Settings that make the picture the console's where an emulated detail differs (tweaks.py).
+    from . import tweaks
+    tweaks.apply(work, [toml, os.path.join(run, '%s.toml' % name)], log=log)
     # game/ -> game-data/; title-update/ -> the installed title update's files (title_update.py),
     # which the app mounts as update: when it finds the folder beside it.
     links = [('game', os.path.join(work, 'game-data')),

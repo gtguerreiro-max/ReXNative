@@ -96,6 +96,10 @@ struct DrawPrep {
   D3D12_GPU_VIRTUAL_ADDRESS fan_indices = 0;
   uint32_t fan_count = 0;
   bool fan_wide = false;
+  // 32-bit strips whose primitive reset the host would miss (UploadReset32): Prepare's copy of
+  // their indices (0: none needed); `reset_checked` false: Draw checks again.
+  D3D12_GPU_VIRTUAL_ADDRESS reset_indices = 0;
+  bool reset_checked = false;
   uint64_t captured = ~0ull;  // TextureCache::MarkCapture stamp (kCapturedNow: none)
   // --rexnative_coherency_check: XXH3 of the register file's blocks as Prepare saw them
   // (render state, float constants VS and PS, fetch and bool/loop constants), 0: not taken.

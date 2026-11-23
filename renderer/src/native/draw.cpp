@@ -104,6 +104,11 @@ REXCVAR_DEFINE_BOOL(rexnative_dynamic_depth_bias, true, "ReXNative",
                     "Set the polygon offset with RSSetDepthBias instead of baking it into the "
                     "pipeline state, where the driver supports it (the game animates it, which "
                     "made hundreds of pipelines per shader pair)");
+REXCVAR_DEFINE_STRING(rexnative_pixel_constant_override, "", "ReXNative",
+                      "Picture tweaks a game's settings ask for, not the console's: pixel shader "
+                      "float constants replaced, as <ucode hash>:c<register>.<x|y|z|w>=<value>, "
+                      "several joined by ';' (Forza Horizon: its motion blur's c253.w, so the "
+                      "ground in a car's contact shadow blurs like the road around it)");
 REXCVAR_DEFINE_BOOL(rexnative_independent_stencil_ref, true, "ReXNative",
                     "Give back faces their own stencil reference (RB_STENCILREFMASK_BF) where the "
                     "driver supports it (D3D12 options 14), instead of the front face's");
@@ -1228,6 +1233,13 @@ struct DrawRenderer::Impl {
   // front faces, 0 for back faces, nothing culled). With one for both, the back faces wrote the
   // front's (Xenia's D3D12 backend the same). docs/NOTES.md: it does not change Forza's picture.
   bool independent_stencil_ref = false;
+  // --rexnative_pixel_constant_override, parsed at Initialize.
+  struct PixelOverride {
+    uint64_t hash;
+    uint32_t index;  // dword in the 256 constants: register * 4 + component
+    uint32_t bits;
+  };
+  std::vector<PixelOverride> pixel_overrides;
   std::filesystem::path library_path;
   size_t prewarm_next = 0;  // into store.loaded_pipelines()
   uint32_t prewarm_failed = 0, prewarm_frames = 0;
@@ -1516,6 +1528,13 @@ struct DrawRenderer::Impl {
   };
   // The host indices of the triangle fan `s` (s.count >= 3) in upload memory tagged `tag`.
   FanIndices UploadFanIndices(const DrawState& s, uint64_t tag);
+  // A 32-bit indexed strip with primitive reset: the host's strip cut compares all 32 bits with
+  // 0xFFFFFFFF, the guest the low 24 with VGT_MULTI_PRIM_IB_RESET_INDX (the primitive
+  // processor's IsResetIndexUsed). Where they would cut apart, `*out` is a copy of the indices in
+  // upload memory tagged `tag`, the reset 0xFFFFFFFF and every other index its low 24 bits (in
+  // guest endian: the vertex shader swaps them); 0 when the guest's own indices do. False only
+  // out of upload memory.
+  bool UploadReset32(const DrawState& s, uint64_t tag, D3D12_GPU_VIRTUAL_ADDRESS* out);
   void ResetListState();
   // Whether [start, start + length) lies in guest physical memory (logged once if not).
   bool InSharedMemory(uint32_t start, uint32_t length);
@@ -1950,6 +1969,27 @@ bool DrawRenderer::Impl::Initialize() {
                             options14.IndependentFrontAndBackStencilRefMaskSupported;
   REXLOG_INFO("ReXNative draw: a stencil reference for each face {}",
               independent_stencil_ref ? "on" : "off");
+  const std::string overrides = REXCVAR_GET(rexnative_pixel_constant_override);
+  for (size_t at = 0; at < overrides.size();) {
+    size_t end = overrides.find(';', at);
+    if (end == std::string::npos) end = overrides.size();
+    const std::string item = overrides.substr(at, end - at);
+    at = end + 1;
+    if (item.find_first_not_of(" 	") == std::string::npos) continue;
+    unsigned long long hash = 0;
+    unsigned reg = 0;
+    char comp = 0;
+    float value = 0;
+    if (std::sscanf(item.c_str(), " %llx:c%u.%c=%f", &hash, &reg, &comp, &value) != 4 ||
+        reg > 255 || !std::strchr("xyzw", comp) || !comp) {
+      REXLOG_WARN("ReXNative draw: pixel constant override '{}' not understood", item);
+      continue;
+    }
+    pixel_overrides.push_back(
+        {uint64_t(hash), reg * 4 + uint32_t(std::strchr("xyzw", comp) - "xyzw"),
+         std::bit_cast<uint32_t>(value)});
+    REXLOG_INFO("ReXNative draw: pixel shader {:016X} c{}.{} = {}", hash, reg, comp, value);
+  }
   if (REXCVAR_GET(rexnative_pipeline_cache)) {
     // The app's cache root (app.cache_root): co_run keeps it.
     std::filesystem::path dir = rexnative::settings::Path("app.cache_root");
@@ -3265,6 +3305,18 @@ void DrawRenderer::Impl::Prewarm() {
 
 namespace {
 
+// Whether the host would cut 32-bit guest indices `guest` (raw, guest endian) elsewhere than the
+// guest: the guest where the low 24 bits are the reset index (`reset_ge` under `mask_ge`, both in
+// guest endian), the host where all 32 are 0xFFFFFFFF.
+bool ResetCutsApart(const uint32_t* guest, uint32_t count, uint32_t reset_ge, uint32_t mask_ge) {
+  uint32_t apart = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t v = guest[i];
+    apart |= uint32_t((v & mask_ge) == reset_ge) ^ uint32_t(v == 0xFFFFFFFFu);
+  }
+  return apart != 0;
+}
+
 // Fan vertex i is guest index i of `guest`, or i itself without one.
 template <typename T>
 void FanAsList(const uint8_t* guest, uint32_t count, T* out) {
@@ -3291,6 +3343,37 @@ void DrawRenderer::Impl::WriteFanIndices(const DrawState& s, uint32_t count, boo
     FanAsList(guest, count, reinterpret_cast<uint32_t*>(out));
   else
     FanAsList(guest, count, reinterpret_cast<uint16_t*>(out));
+}
+
+bool DrawRenderer::Impl::UploadReset32(const DrawState& s, uint64_t tag,
+                                       D3D12_GPU_VIRTUAL_ADDRESS* out) {
+  *out = 0;
+  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
+  const auto prim = xenos::PrimitiveType(s.primitive);
+  if (!s.indexed || !s.index_32bit || !s.index_address || s.count == 0 ||
+      !regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena ||
+      (prim != xenos::PrimitiveType::kLineStrip && prim != xenos::PrimitiveType::kTriangleStrip))
+    return true;
+  const auto endian = xenos::Endian(s.index_endian);
+  const uint32_t reset_ge =
+      xenos::GPUSwap(regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx, endian);
+  const uint32_t mask_ge = xenos::GPUSwap(xenos::kVertexIndexMask, endian);
+  if (!InSharedMemory(s.index_address, s.count * 4)) return true;
+  const uint32_t* guest = reinterpret_cast<const uint32_t*>(membase + s.index_address);
+  if (!ResetCutsApart(guest, s.count, reset_ge, mask_ge)) return true;
+  UploadPool::Alloc a;
+  if (!vertex_upload.Allocate(uint64_t(s.count) * 4, 16, tag, &a)) return false;
+  uint32_t* host = reinterpret_cast<uint32_t*>(a.cpu);
+  for (uint32_t i = 0; i < s.count; ++i) {
+    const uint32_t v = guest[i] & mask_ge;
+    host[i] = v == reset_ge ? 0xFFFFFFFFu : v;
+  }
+  REXNATIVE_LOG_FIRST(4, INFO,
+                      "ReXNative draw: 32-bit indices at {:08X} ({}) copied with their reset "
+                      "index {:08X} as the host's strip cut",
+                      s.index_address, s.count, reset_ge);
+  *out = a.gpu;
+  return true;
 }
 
 DrawRenderer::Impl::FanIndices DrawRenderer::Impl::UploadFanIndices(const DrawState& s,
@@ -4026,6 +4109,9 @@ void DrawRenderer::Impl::Prepare(const DrawState& s, uint64_t tag, DrawPrep* pre
     prep->fan_count = fan.count;
     prep->fan_wide = fan.wide;
   }
+  // 32-bit strips with a reset the host would miss: from the guest's indices now, as fans.
+  if (prep->upload_ok)
+    prep->reset_checked = UploadReset32(s, tag, &prep->reset_indices);
   profile::Mark(profile::kCapVertices);
 }
 
@@ -5068,8 +5154,11 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
           strip_cut = 1;
         }
       } else {
-        // The host compares all 32 bits; the guest only the low 24. Fine when the guest uses
-        // 0xFFFFFFFF (or the index never appears).
+        // The host compares all 32 bits; the guest only the low 24. Where they would cut
+        // apart (a reset marker other than 0xFFFFFFFF), the draw binds a copy (UploadReset32):
+        // Forza Horizon's wheels and tyres, reset index 0x00FFFFFF, ran their strips on through
+        // the marker, a vertex outside the mesh to the host: the rims drawn as solid discs
+        // streaked with thin triangles, the tyres on jagged dark blocks.
         strip_cut = 2;
       }
     }
@@ -5281,6 +5370,19 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
       }
     }
   }
+  if (!hooked && ps && !pixel_overrides.empty()) [[unlikely]] {
+    const uint64_t hash = ps->GetUcodeDataHash();
+    bool any = false;
+    for (const PixelOverride& o : pixel_overrides) any |= o.hash == hash;
+    if (any) {
+      alignas(16) uint32_t constants[256 * 4];
+      std::memcpy(constants, s.regs + XE_GPU_REG_SHADER_CONSTANT_256_X, sizeof(constants));
+      for (const PixelOverride& o : pixel_overrides)
+        if (o.hash == hash) constants[o.index] = o.bits;
+      PackFloats(cb_float_ps, ps, constants, 0);
+      hooked = true;
+    }
+  }
   if (!hooked) PackFloats(cb_float_ps, ps, s.regs, XE_GPU_REG_SHADER_CONSTANT_256_X);
   profile::Mark(profile::kPack);
 
@@ -5473,6 +5575,17 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   } else if (s.indexed && memexport) {
     list->IASetIndexBuffer(&memexport_ibv);
     bound_ibv = memexport_ibv;
+  } else if (D3D12_GPU_VIRTUAL_ADDRESS reset_copy = 0;
+             strip_cut == 2 &&
+             (prep && prep->reset_checked ? (reset_copy = prep->reset_indices) != 0
+                                          : (UploadReset32(s, r.frame_fence(), &reset_copy) &&
+                                             reset_copy != 0))) {
+    D3D12_INDEX_BUFFER_VIEW ibv;
+    ibv.BufferLocation = reset_copy;
+    ibv.SizeInBytes = count * 4;
+    ibv.Format = DXGI_FORMAT_R32_UINT;
+    list->IASetIndexBuffer(&ibv);
+    bound_ibv = ibv;
   } else if (s.indexed) {
     // The whole shared memory buffer is the index buffer and the draw starts at the guest
     // address, so consecutive draws only rebind it when the index format changes.

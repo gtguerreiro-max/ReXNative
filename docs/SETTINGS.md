@@ -108,6 +108,12 @@ configuration file (`run/<game>.toml`) or on the command line.
 - `rexnative.scene_late_draws`: scene detection takes an 8-bit surface without MSAA as the scene
   when 3D draws went into it before any of its full-size resolves, not only its first (Iron
   Brigade resolves it once after its depth prepass, before the scene's draws).
+- `rexnative.pixel_constant_override`: a picture tweak, not the console's emulation: pixel shader
+  float constants replaced, as `<ucode hash>:c<register>.<x|y|z|w>=<value>`, several joined by
+  `;`. `rexnative project` writes the ones a game needs to look like the console where an emulated
+  detail still differs (rexnative/tweaks.py): Forza Horizon's `E68FE55ECD482EC5:c253.w=0.5`, so
+  the ground in a car's contact shadow blurs like the road around it. Empty it to see the
+  emulation as it is; a value already in the file stays.
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 
