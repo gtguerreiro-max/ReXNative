@@ -149,6 +149,18 @@ REXCVAR_DEFINE_INT32(rexnative_frame_latency, 3, "ReXNative",
                      "the pacing to the game's vblank wait (with --rexnative_csv the shown "
                      "presents are still logged)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(rexnative_frame_latency_auto, true, "ReXNative",
+                    "With --rexnative_frame_latency=1: frames that miss the display raise it to "
+                    "2 for as long as they would at 1, and it comes back to 1 once they fit "
+                    "(frame_pacer.h, automatic latency); false keeps 1 whatever the frames do");
+REXCVAR_DEFINE_INT32(rexnative_debug_frame_cost_us, 0, "ReXNative",
+                     "Testing: the render thread spends this long on each frame before it is "
+                     "submitted, as a heavy game's frame (the automatic frame latency on a fast "
+                     "PC); live through the control file");
+REXCVAR_DEFINE_INT32(rexnative_debug_game_cost_us, 0, "ReXNative",
+                     "Testing: the game thread spends this long at the start of each frame, as "
+                     "a heavy game's logic (with --rexnative_debug_frame_cost_us, a pipeline that "
+                     "fits at frame latency 2 and not at 1); live through the control file");
 REXCVAR_DEFINE_INT32(rexnative_present_interval, 1, "ReXNative",
                      "With the frames presented with vsync (the frame pacer's FIFO): each frame "
                      "is shown for this many display refreshes (1-3), so the game runs at the "
@@ -198,6 +210,12 @@ struct NativeRenderer::Csv {
 namespace {
 // Set once the device or swapchain failed; the native path stops.
 std::atomic<bool> g_failed{false};
+
+// --rexnative_debug_game_cost_us: a heavy game's logic on the game thread, for tests.
+void DebugGameCost() {
+  if (const int32_t cost = REXCVAR_GET(rexnative_debug_game_cost_us); cost > 0)
+    for (const uint64_t until = NowNs() + uint64_t(cost) * 1000; NowNs() < until;) {}
+}
 
 // The game window (the SDK's display window). ReXGlue's Xenos driver presents into it unless
 // the renderer does (OwnGameWindow).
@@ -1036,8 +1054,10 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   if (sync) q.capture_armed = present_->capture_holding_guest();
   // The settings HUD's Frame latency, live.
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
-    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
+                            REXCVAR_GET(rexnative_frame_latency_auto));
   const uint64_t pace_wait = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
+  DebugGameCost();
   const uint64_t t2 = NowNs();
   // The pacer's wait is the gap between two frames, not time in the hook.
   const uint64_t tail = t2 - t1 - pace_wait;
@@ -1175,8 +1195,10 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   ExecuteSwap(swap);
   // stats_ is the next frame's from here.
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
-    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
+                            REXCVAR_GET(rexnative_frame_latency_auto));
   stats_.pace_wait_ns = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
+  DebugGameCost();
   stats_.guest_begin_ns = NowNs();
   if (swap.hand_over || g_failed) HandOver(base, args.device);
 }
@@ -1374,7 +1396,8 @@ void NativeRenderer::ClassicSwap() {
   }
   // The frames shown stay within the frame latency, as the native ones (frame_pacer.h).
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
-    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)));
+    pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
+                            REXCVAR_GET(rexnative_frame_latency_auto));
   if (pacer_) pacer_->WaitToBegin();
 }
 
@@ -1737,6 +1760,9 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   if (occlusion_) occlusion_->Resolve(d.command_list(), fence);
   if (dbg::CaptureNext(frame_index_, present_->capturing(frame_index_)))
     d.CaptureNextFrame(frame_index_ + 1);
+  // --rexnative_debug_frame_cost_us: a heavy frame's render thread time, for tests.
+  if (const int32_t cost = REXCVAR_GET(rexnative_debug_frame_cost_us); cost > 0)
+    for (const uint64_t until = NowNs() + uint64_t(cost) * 1000; NowNs() < until;) {}
   if (!CloseUploadLists() || !d.EndFrame(shown, upload_lists_)) return Fail();
   const D3D12Device::EndFrameTimes& et = d.end_frame_times();
   stats_.swap_submit_ns = et.submit_ns;

@@ -190,15 +190,25 @@ std::vector<Option> MakeOptions() {
                },
                "How often a frame is shown. Whether the game itself runs faster depends on "
                "the game."});
-  o.push_back({"Display", "frame_latency", "Frame latency", {{"1", "1"}, {"2", "2"}, {"3", "3"}},
-               false,
-               [] { return Nearest(Find("frame_latency"), FlagInt("rexnative_frame_latency")); },
+  o.push_back({"Display", "frame_latency", "Frame latency",
+               {{"Auto (1-2)", "auto"}, {"1", "1"}, {"2", "2"}, {"3", "3"}}, false,
+               [] {
+                 const int n = FlagInt("rexnative_frame_latency");
+                 if (n <= 1 && Flag("rexnative_frame_latency_auto") == "true")
+                   return std::string("auto");
+                 return std::to_string(std::clamp(n, 1, 3));
+               },
                [](const std::string& v) {
-                 return Assignments{{"rexnative_frame_latency", v}};
+                 if (v == "auto")
+                   return Assignments{{"rexnative_frame_latency", "1"},
+                                      {"rexnative_frame_latency_auto", "true"}};
+                 return Assignments{{"rexnative_frame_latency", v},
+                                    {"rexnative_frame_latency_auto", "false"}};
                },
                nullptr,
                "Frames the game may run ahead of the screen: 1 responds soonest (the least input "
-               "delay), 3 is the steadiest when the GPU is near its limit. Takes effect at once."});
+               "delay), 3 is the steadiest when the GPU is near its limit. Auto: 1, and 2 for as "
+               "long as frames would miss the screen at 1. Takes effect at once."});
   // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
   // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
   // where gamescope shows the game on the whole screen whatever the window is.

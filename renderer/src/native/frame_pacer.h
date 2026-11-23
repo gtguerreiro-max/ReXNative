@@ -43,6 +43,27 @@
 //   was set, then at twice the period before, up to kProbePeriodMaxNs; and at once when a frame
 //   was shown sooner than the pace allows, as the first frames are once a limit is lifted.
 //
+// Automatic latency (SetFrameLatency's `automatic`, --rexnative_frame_latency_auto). L = 1 gives
+// the least delay, but the game, the render thread and the GPU then work on one frame after the
+// other: where their times add up to more than a display interval, frames miss their slot. The
+// Steam Deck's players set heavy games to 2 by hand (Blur: 51 % of its 5 s windows slow at 1,
+// 3 % at 2; Lazy Raiders 23.5 ms frames at 1 against 16.7 at 2). With L = 1 and `automatic`:
+// - Trying 2: a game too slow at 1 misses every slot the same way, so the shown pace is its own
+//   and nothing looks late (a frame limit looks the same). So the pacer tries: every
+//   kAutoProbePeriodNs it sets 2 for kAutoProbeSettleNs + kAutoProbeMeasureNs and compares the
+//   mean interval shown then with the kAutoProbeMeasureNs before. kAutoProbeGain faster or more
+//   keeps 2; otherwise back to 1, and the next try twice as late, up to kAutoProbePeriodMaxNs.
+//   A try costs one frame of latency for a few seconds, no stutter.
+// - Misses: it also goes to 2 at once when kAutoMisses frames the GPU finished after their slot
+//   were shown late within kAutoMissWindowNs (a stall, as above, does not count, nor the first
+//   kHeadroomFrames after a start or a new pace): a game that mostly keeps the display's pace.
+// - Back to 1 the same way: after the hold it tries 1, and keeps it when the frames come no
+//   later than kAutoProbeKeep times the interval at 2; otherwise 2 again and the hold doubles,
+//   up to kAutoHoldMaxNs (also when frames miss again soon after going back). Neither the
+//   headroom nor a frame's own time from beginning to finished tells: a game that waits inside
+//   its frame for its own pace (most 30 fps ones) leaves neither any slack.
+// Only from 1 to 2: a setting of 2 or 3 is kept as it is.
+//
 // "Shown" is the swapchain's frame latency waitable object: vkd3d-proton releases it once per
 // present when vkWaitForPresentKHR returns, but only in FIFO (with other present modes once the
 // frame's blit finished, which is why the renderer presents with vsync while the pacer paces);
@@ -94,9 +115,10 @@ class FramePacer {
   uint32_t frame_latency() const { return latency_.load(std::memory_order_relaxed); }
   // Whether frames are paced: a swapchain is attached and L > 0.
   bool pacing() const { return waitable_ && frame_latency() > 0; }
-  // Game thread, before WaitToBegin: L from now on (1-3; the settings HUD's Frame latency, live).
-  // The delay estimate starts over, as for a new swapchain.
-  void SetFrameLatency(uint32_t frames);
+  // Game thread, before WaitToBegin: L from now on (1-3; the settings HUD's Frame latency, live),
+  // and with 1 whether the pacer may go to 2 while frames miss their slot (automatic latency
+  // above). A change starts the delay estimate over, as for a new swapchain.
+  void SetFrameLatency(uint32_t frames, bool automatic = false);
   // The mean time from a frame beginning (the game reading its input) to the display showing it,
   // over the frames shown since the last call, in ms (0: none): the stats line's latency.
   double TakeShownLatencyMs();
@@ -138,6 +160,18 @@ class FramePacer {
   static constexpr int64_t kProbeStepNs = 500'000;  // D's step down per frame while probing
   static constexpr uint64_t kProbeHoldFrames = 8;   // for the median of three to see a faster pace
   static constexpr uint64_t kNoLag = ~0ull;
+  // Automatic latency (above).
+  static constexpr uint32_t kAutoMisses = 4;
+  static constexpr uint64_t kAutoMissWindowNs = 3'000'000'000;
+  static constexpr uint64_t kAutoHoldNs = 20'000'000'000;
+  static constexpr uint64_t kAutoHoldMaxNs = 320'000'000'000;
+  static constexpr uint64_t kAutoProbeSettleNs = 1'000'000'000;
+  static constexpr uint64_t kAutoProbeMeasureNs = 3'000'000'000;
+  static constexpr uint64_t kAutoProbePeriodNs = 15'000'000'000;
+  static constexpr uint64_t kAutoProbePeriodMaxNs = 240'000'000'000;
+  static constexpr double kAutoProbeGain = 0.95;  // the interval at 2 over the one at 1
+  static constexpr double kAutoProbeKeep = 1.03;  // the interval at 1 over the one at 2
+  static constexpr uint32_t kShownRing = 512;       // shown times: 3 s at 144 fps and more
 
   struct Present {
     uint64_t frame = 0;   // the frame's number (Swaps since the pacer started, from 1)
@@ -155,12 +189,32 @@ class FramePacer {
   void OnFenceLocked(uint64_t now_ns);
   // mutex_ held, per shown present: updates delay_ns_.
   void ControlLocked(const Present& p, uint64_t shown_ns);
+  // mutex_ held, from ControlLocked: the automatic latency's step for a shown present that
+  // `missed` slots of `interval`. True when it changed L (the control started over).
+  bool AutoLatencyLocked(const Present& p, uint64_t shown_ns, int64_t missed, int64_t interval);
+  // mutex_ held: the mean interval between the presents shown in the last `window_ns` (ms; 0
+  // with fewer than 10).
+  double MeanShownIntervalLocked(uint64_t now_ns, uint64_t window_ns) const;
   int64_t IntervalLocked() const;
   void ResetControlLocked();
   // Sleeps until `deadline_ns` (NowNs clock).
   void SleepUntil(uint64_t deadline_ns) const;
 
   std::atomic<uint32_t> latency_;  // L: written by the game thread (SetFrameLatency)
+  // The setting (SetFrameLatency) and its automatic step: L is base_latency_ + auto_raised_.
+  std::atomic<uint32_t> base_latency_;
+  std::atomic<bool> automatic_{false};
+  uint32_t auto_raised_ = 0;                          // mutex_: 1 while raised to 2
+  std::array<uint64_t, kAutoMisses> auto_miss_ns_{};  // mutex_: when the last misses were shown
+  uint64_t auto_misses_ = 0;
+  uint64_t auto_lowered_ns_ = 0;
+  uint64_t auto_hold_ns_ = kAutoHoldNs;
+  std::array<uint64_t, kShownRing> auto_shown_ns_{};  // mutex_: when presents were shown
+  uint64_t auto_shown_count_ = 0;
+  uint64_t auto_probe_end_ns_ = 0;   // while trying 2: when the try ends
+  uint64_t auto_next_probe_ns_ = 0;  // the next try (0: not set yet)
+  uint64_t auto_probe_period_ns_ = kAutoProbePeriodNs;
+  double auto_probe_base_ms_ = 0;  // the mean interval at 1 before the try
   const bool low_latency_;
   const int64_t margin_ns_;
   const std::unique_ptr<AsyncFile> log_;
