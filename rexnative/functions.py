@@ -208,6 +208,47 @@ _MTCTR = re.compile(r'^mtctr (r\d+)$')
 _MR = re.compile(r'^mr (r\d+),(r\d+)$')
 
 
+_STACK_LOAD = re.compile(r'^lwz (r\d+),(-?\d+)\(r1\)$')
+_STACK_STORE = re.compile(r'^(st[a-z]*) (r\d+|f\d+),(-?\d+)\(r1\)$')
+
+
+def _spilled_index(insns, i, index, bgt, back, far):
+    """When the index of the bctr at insns[i] is reloaded from a stack slot (`lwz <index>,D(r1)`,
+    the last write to it before the bctr but the scaling and the table load), the register the
+    same function stored to that slot last (`stw R,D(r1)`, no other store over the slot and no
+    change to r1 between) and the store's position: (R, position). None when not so."""
+    reload = None
+    for k in range(i - 1, max(-1, i - back), -1):
+        t = insns[k][1]
+        mn, _, ops = t.partition(' ')
+        if ops.split(',')[0] != index or mn.startswith(('st', 'cmp', 'b', 'mtctr')):
+            continue
+        if (mn == 'lwzx' and k == i - 2) or _SCALE.match(t):
+            continue
+        m = _STACK_LOAD.match(t)
+        if not m:
+            return None
+        reload = (k, int(m.group(2)))
+        break
+    if reload is None:
+        return None
+    k0, slot = reload
+    for k in range(k0 - 1, max(-1, k0 - far), -1):
+        t = insns[k][1]
+        mn, _, ops = t.partition(' ')
+        if ops.split(',')[0] == 'r1' and not mn.startswith(('st', 'cmp')) or mn == 'stwu':
+            return None  # the frame moves
+        m = _STACK_STORE.match(t)
+        if not m:
+            continue
+        off = int(m.group(3))
+        if m.group(1) == 'stw' and off == slot and m.group(2).startswith('r'):
+            return m.group(2), k
+        if slot - 8 < off < slot + 4:
+            return None  # another store over the slot
+    return None
+
+
 def _far_bound(insns, i, index, back, far=200):
     """The bound of the bctr at insns[i] whose compare the compiler moved far ahead of it (Burnout
     Crash's crash.dll: `cmplwi cr2,r27,4` 94 instructions before its `bgt cr2`, stores between):
@@ -219,6 +260,12 @@ def _far_bound(insns, i, index, back, far=200):
     if bgt is None:
         return None
     cr = _BGT.match(insns[bgt][1]).group(1) or 'cr0'
+    # The index spilled to the stack and reloaded before the table load (crash.dll's 8A2F5ADC:
+    # `stw r6,84(r1); cmplwi cr2,r6,6`, calls, then `lwz r4,84(r1)` 4 instructions before the
+    # bctr): the compare is on the register stored to that slot, the reload is the index.
+    spill = _spilled_index(insns, i, index, bgt, back, far)
+    if spill:
+        index, i = spill
     for k in range(bgt - 1, max(-1, bgt - far), -1):
         t = insns[k][1]
         mn, _, ops = t.partition(' ')
@@ -226,7 +273,10 @@ def _far_bound(insns, i, index, back, far=200):
         if m and (m.group(1) or 'cr0') == cr:
             if m.group(2) != index:
                 return None
-            for kk in range(k + 1, i):
+            # Nothing writes the index from the compare to the bctr; with a spill, nothing
+            # writes the stored register between the compare and the store (either order).
+            span = range(k + 1, i) if not spill else range(min(k, i) + 1, max(k, i))
+            for kk in span:
                 mn2, _, ops2 = insns[kk][1].partition(' ')
                 # The table load itself may write the index register (`lwzx r3,r3,r5; mtctr
                 # r3`: crash.dll's 8A360254, a 5-way switch 27 instructions after its
