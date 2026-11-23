@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace rexnative::hud {
 
@@ -24,6 +25,10 @@ void Shutdown();
 
 // Whether the menu is up. Any thread.
 bool MenuOpen();
+
+// Writes `cvar = value` into the game's settings file as the menu does (the line that sets it is
+// replaced; a default value is left out), from any thread. False without a file or on an error.
+bool SaveSetting(const std::string& cvar, const std::string& value);
 
 // From the game's XInputGetState hook, if it has one, for each pad read: `pad` is the
 // XINPUT_GAMEPAD the guest gets (big-endian: buttons, triggers, sticks; 12 bytes). Watches for

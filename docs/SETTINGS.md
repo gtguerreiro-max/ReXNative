@@ -95,11 +95,13 @@ configuration file (`run/<game>.toml`) or on the command line.
   HUD's "Auto (1-2)" with latency 1). At 1 the game, the render thread and the GPU work one frame
   after the other, the least input delay; a heavy game then misses the display's pace (Blur on
   the Steam Deck: half its stretches slow at 1, almost none at 2). Auto tries 2 for 4 s, 5 s after
-  the game settles and then every 15 s (less often each time it does not help), and keeps it when
-  frames come at least 5 % sooner; goes to 2 at once when frames start missing their slot; and
-  tries 1 again after 20 s (then less often), keeping it when frames come no later, and ending the
-  try after a second when they come 10 % later (frame_pacer.h). The log says each change ("frame latency 1 -> 2
-  (automatic: a frame every 33.4 ms at 2, 41.7 ms at 1)"). `rexnative.debug_game_cost_us` and
+  the game settles and then every 15 s (less often each time it does not help, and at once when
+  frames start missing their slot). When frames come at least 5 % sooner at 2 it keeps 2, tries 1
+  once 20 s later for about a second to confirm it, and then makes 2 the game's setting for good:
+  `frame_latency = 2` written in its settings file, as if picked in the HUD (a game that needed 2
+  will need it again; trying 1 now and then would only stutter). A setting of 2 or 3 is left as
+  it is. The log says each step ("frame latency 2 for this game (automatic: a frame every 41.7 ms
+  at 1, 33.3 ms at 2; saved in its settings)"). `rexnative.debug_game_cost_us` and
   `rexnative.debug_frame_cost_us` make a fast PC's frames as heavy as a handheld's, for testing it.
 - `rexnative.upscaler_depth_test`: the upscaler takes the frame's last pass of the scene whose
   draws test depth, not only write it (Diablo III, whose menus draw the hero in a pass of its own).

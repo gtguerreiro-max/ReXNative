@@ -204,89 +204,91 @@ void FramePacer::ControlLocked(const Present& p, uint64_t shown_ns) {
 bool FramePacer::AutoLatencyLocked(const Present& p, uint64_t shown_ns, int64_t missed,
                                    int64_t interval) {
   if (!automatic_.load(std::memory_order_relaxed) ||
-      base_latency_.load(std::memory_order_relaxed) != 1)
+      base_latency_.load(std::memory_order_relaxed) != 1 || auto_state_ == AutoState::kDone)
     return false;
-  if (auto_probe_end_ns_) {
-    // Trying the other latency: kept when the frames come sooner at 2, or no later at 1.
-    const bool to2 = !auto_raised_;
-    const uint64_t measured_from = auto_probe_end_ns_ - kAutoProbeMeasureNs;
-    // Trying 1 in a heavy scene: clearly slower after a second is enough, the rest of the try
-    // would be lag the player feels.
-    if (shown_ns < auto_probe_end_ns_ &&
-        (to2 || shown_ns < measured_from + kAutoProbeEarlyNs ||
-         MeanShownIntervalLocked(shown_ns, kAutoProbeEarlyNs) <=
-             auto_probe_base_ms_ * kAutoProbeEarlyLoss))
-      return false;
-    const double tried = MeanShownIntervalLocked(shown_ns, shown_ns - measured_from);
-    auto_probe_end_ns_ = 0;
-    const bool keep = tried > 0.0 && (to2 ? tried < auto_probe_base_ms_ * kAutoProbeGain
-                                          : tried <= auto_probe_base_ms_ * kAutoProbeKeep);
-    if (keep) {
-      auto_raised_ = to2 ? 1 : 0;
-      auto_misses_ = 0;
-      if (to2) {
-        auto_probe_period_ns_ = kAutoProbePeriodNs;
-      } else {
-        auto_hold_ns_ = kAutoHoldNs;
-        auto_lowered_ns_ = shown_ns;
-      }
-      auto_next_probe_ns_ = shown_ns + (to2 ? auto_hold_ns_ : auto_probe_period_ns_);
-      REXLOG_INFO("ReXNative: frame latency {} -> {} (automatic: a frame every {:.1f} ms at {}, "
-                  "{:.1f} ms at {})",
-                  to2 ? 1 : 2, to2 ? 2 : 1, tried, to2 ? 2 : 1, auto_probe_base_ms_, to2 ? 1 : 2);
+  // Starts a try of `latency` from now, against the mean interval of the last seconds.
+  const auto start_try = [&](AutoState state, uint32_t latency) {
+    auto_probe_base_ms_ = MeanShownIntervalLocked(shown_ns, kAutoProbeMeasureNs);
+    if (auto_probe_base_ms_ <= 0.0) {
+      auto_next_probe_ns_ = shown_ns + kAutoProbeEarlyNs;
       return false;
     }
-    // Back, and the next try twice as late.
-    if (to2) {
-      auto_probe_period_ns_ = std::min(auto_probe_period_ns_ * 2, kAutoProbePeriodMaxNs);
-      auto_next_probe_ns_ = shown_ns + auto_probe_period_ns_;
-    } else {
-      auto_hold_ns_ = std::min(auto_hold_ns_ * 2, kAutoHoldMaxNs);
-      auto_next_probe_ns_ = shown_ns + auto_hold_ns_;
-    }
-    REXLOG_INFO("ReXNative: frame latency stays {} (automatic: a frame every {:.1f} ms at {}, "
-                "{:.1f} ms at {}; tried again in {:.0f} s)",
-                to2 ? 1 : 2, tried, to2 ? 2 : 1, auto_probe_base_ms_, to2 ? 1 : 2,
-                double(auto_next_probe_ns_ - shown_ns) / 1e9);
-    latency_.store(to2 ? 1 : 2, std::memory_order_relaxed);
+    auto_state_ = state;
+    auto_probe_end_ns_ = shown_ns + kAutoProbeSettleNs + kAutoProbeMeasureNs;
+    latency_.store(latency, std::memory_order_relaxed);
     ResetControlLocked();
     return true;
+  };
+  switch (auto_state_) {
+    case AutoState::kTrying2: {
+      if (shown_ns < auto_probe_end_ns_) return false;
+      const double tried = MeanShownIntervalLocked(shown_ns, kAutoProbeMeasureNs);
+      if (tried > 0.0 && tried < auto_probe_base_ms_ * kAutoProbeGain) {
+        auto_state_ = AutoState::kAt2;
+        auto_next_probe_ns_ = shown_ns + kAutoConfirmNs;
+        REXLOG_INFO("ReXNative: frame latency 1 -> 2 (automatic: a frame every {:.1f} ms at 2, "
+                    "{:.1f} ms at 1; 1 is tried once more in {:.0f} s before 2 is kept)",
+                    tried, auto_probe_base_ms_, double(kAutoConfirmNs) / 1e9);
+        return false;
+      }
+      auto_probe_period_ns_ = std::min(auto_probe_period_ns_ * 2, kAutoProbePeriodMaxNs);
+      auto_next_probe_ns_ = shown_ns + auto_probe_period_ns_;
+      REXLOG_INFO("ReXNative: frame latency stays 1 (automatic: a frame every {:.1f} ms at 2, "
+                  "{:.1f} ms at 1; tried again in {:.0f} s)",
+                  tried, auto_probe_base_ms_, double(auto_probe_period_ns_) / 1e9);
+      auto_state_ = AutoState::kAt1;
+      latency_.store(1, std::memory_order_relaxed);
+      ResetControlLocked();
+      return true;
+    }
+    case AutoState::kAt2:
+      if (shown_ns < auto_next_probe_ns_ || headroom_count_ < kHeadroomFrames) return false;
+      return start_try(AutoState::kTrying1, 1);
+    case AutoState::kTrying1: {
+      // Clearly slower after a second is enough: the rest of the try would be lag.
+      const uint64_t measured_from = auto_probe_end_ns_ - kAutoProbeMeasureNs;
+      if (shown_ns < auto_probe_end_ns_ &&
+          (shown_ns < measured_from + kAutoProbeEarlyNs ||
+           MeanShownIntervalLocked(shown_ns, kAutoProbeEarlyNs) <=
+               auto_probe_base_ms_ * kAutoProbeEarlyLoss))
+        return false;
+      const double tried = MeanShownIntervalLocked(shown_ns, shown_ns - measured_from);
+      if (tried > 0.0 && tried <= auto_probe_base_ms_ * kAutoProbeKeep) {
+        // As fast at 1: the gain was a moment's (a loading screen). 1, trying 2 as before.
+        auto_state_ = AutoState::kAt1;
+        auto_next_probe_ns_ = shown_ns + auto_probe_period_ns_;
+        REXLOG_INFO("ReXNative: frame latency 2 -> 1 (automatic: a frame every {:.1f} ms at 1, "
+                    "{:.1f} ms at 2)",
+                    tried, auto_probe_base_ms_);
+        return false;
+      }
+      auto_state_ = AutoState::kDone;
+      auto_decided_.store(true, std::memory_order_release);
+      REXLOG_INFO("ReXNative: frame latency 2 for this game (automatic: a frame every {:.1f} ms "
+                  "at 1, {:.1f} ms at 2; saved in its settings)",
+                  tried, auto_probe_base_ms_);
+      latency_.store(2, std::memory_order_relaxed);
+      ResetControlLocked();
+      return true;
+    }
+    case AutoState::kDone:
+      return false;
+    case AutoState::kAt1:
+      break;
   }
-  // At 1, frames that miss their slot: 2 at once. Not before the estimate settled: the first
-  // frames after a start, a reset or a new pace are late for reasons of their own; nor a frame
-  // the GPU finished before the slot it missed (the present queue, a new pace).
-  if (!auto_raised_ && missed > 0 && headroom_count_ >= kHeadroomFrames &&
+  // At 1. Frames that miss their slot (the GPU finishing after it) bring the next try forward.
+  if (missed > 0 && headroom_count_ >= kHeadroomFrames &&
       int64_t(p.ready_ns) + 1'000'000 > int64_t(p.first_shown_ns) - missed * interval) {
     for (int64_t i = 0; i < missed; ++i) auto_miss_ns_[auto_misses_++ % kAutoMisses] = shown_ns;
     if (auto_misses_ >= kAutoMisses &&
         shown_ns - auto_miss_ns_[auto_misses_ % kAutoMisses] <= kAutoMissWindowNs) {
-      // Missing again soon after going back to 1: wait longer before trying 1 again.
-      if (auto_lowered_ns_ && shown_ns - auto_lowered_ns_ < 2 * auto_hold_ns_)
-        auto_hold_ns_ = std::min(auto_hold_ns_ * 2, kAutoHoldMaxNs);
-      auto_raised_ = 1;
-      auto_next_probe_ns_ = shown_ns + auto_hold_ns_;
-      latency_.store(2, std::memory_order_relaxed);
-      REXLOG_INFO("ReXNative: frame latency 1 -> 2 (automatic: {} frames shown late within "
-                  "{:.1f} s)",
-                  kAutoMisses,
-                  double(shown_ns - auto_miss_ns_[auto_misses_ % kAutoMisses]) / 1e9);
-      ResetControlLocked();
-      return true;
+      auto_misses_ = 0;
+      auto_next_probe_ns_ = shown_ns;
     }
   }
-  // A try when one is due: 2 from 1 every kAutoProbePeriodNs and more, 1 from 2 after the hold.
-  if (!auto_next_probe_ns_)
-    auto_next_probe_ns_ = shown_ns + (auto_raised_ ? auto_hold_ns_ : kAutoProbeFirstNs);
+  if (!auto_next_probe_ns_) auto_next_probe_ns_ = shown_ns + kAutoProbeFirstNs;
   if (shown_ns < auto_next_probe_ns_ || headroom_count_ < kHeadroomFrames) return false;
-  auto_probe_base_ms_ = MeanShownIntervalLocked(shown_ns, kAutoProbeMeasureNs);
-  if (auto_probe_base_ms_ <= 0.0) {
-    auto_next_probe_ns_ = shown_ns + kAutoProbePeriodNs;
-    return false;
-  }
-  auto_probe_end_ns_ = shown_ns + kAutoProbeSettleNs + kAutoProbeMeasureNs;
-  latency_.store(auto_raised_ ? 1 : 2, std::memory_order_relaxed);
-  ResetControlLocked();
-  return true;
+  return start_try(AutoState::kTrying2, 2);
 }
 
 double FramePacer::MeanShownIntervalLocked(uint64_t now_ns, uint64_t window_ns) const {
@@ -352,13 +354,11 @@ void FramePacer::SetFrameLatency(uint32_t frames, bool automatic) {
   // Automatic only matters at 1: the first call at 2 or 3 sets it without a word.
   if (frames != frame_latency() || frames == 1)
     REXLOG_INFO("ReXNative: frame latency {} -> {}{}", frame_latency(), frames,
-                automatic && frames == 1 ? " (automatic: 2 while frames come sooner at 2)" : "");
+                automatic && frames == 1 ? " (automatic: 2 for good if frames come sooner at 2)" : "");
   base_latency_.store(frames, std::memory_order_relaxed);
   automatic_.store(automatic, std::memory_order_relaxed);
-  auto_raised_ = 0;
+  auto_state_ = AutoState::kAt1;
   auto_misses_ = 0;
-  auto_lowered_ns_ = 0;
-  auto_hold_ns_ = kAutoHoldNs;
   auto_probe_end_ns_ = auto_next_probe_ns_ = 0;
   auto_probe_period_ns_ = kAutoProbePeriodNs;
   latency_.store(frames, std::memory_order_relaxed);

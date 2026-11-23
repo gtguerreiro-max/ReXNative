@@ -1123,6 +1123,10 @@ void SetConfigPath(const std::filesystem::path& config) {
   g_file = config;
 }
 
+bool SaveSetting(const std::string& cvar, const std::string& value) {
+  return Write({{cvar, value}});
+}
+
 void Initialize() {
   if (g_file.empty()) {
     // The app's configuration file (app.config_file), unless the game's app set another. Its
