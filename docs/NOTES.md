@@ -1149,4 +1149,6 @@ the whole footprint of the box), an `EQUAL 0x81` draw decrements foliage to 0x80
 is drawn where it is 0x80. The box around the car, ground and shadow, is then in the cars' class
 and keeps the car's motion (none, in a chase), so the shadow is not smeared by the camera's. In
 the intro's frame 3726 capture 57 563 pixels are 0x80, the box around the Viper; the screenshot's
-sharp gravel around the car is that box.
+sharp gravel around the car is that box. The same trace replayed with those three draws skipped
+(`draw-debug.txt` "0 0 875 878" in the capture folder) has no shadow, and the ground around and
+under the car blurs like the rest of the road.
