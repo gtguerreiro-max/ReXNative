@@ -128,6 +128,18 @@ std::vector<Option> MakeOptions() {
                },
                "Native: ReXNative, with the settings below. Classic: Xenia's renderer, for a "
                "game the native one does not draw right yet. At once, and kept."});
+  // The console tells the game it is on an HDTV; on a monitor or the Steam Deck's screen that
+  // signal looks dark (present.cpp, rexnative_display_monitor). Both renderers, at once.
+  o.push_back({"Display", "screen", "Screen", {{"TV (console)", "tv"}, {"PC monitor", "monitor"}},
+               false,
+               [] { return std::string(Flag("rexnative_display_monitor") == "true" ? "monitor" : "tv"); },
+               [](const std::string& v) {
+                 return Bool("rexnative_display_monitor", v == "monitor" ? "true" : "false");
+               },
+               nullptr,
+               "TV: the picture as the console sends it to an HDTV, a little dark on a monitor "
+               "or the Steam Deck. PC monitor: as a console connected to a monitor shows it, "
+               "lighter in the shadows. At once."});
   o.push_back({"Display", "antialiasing", "Antialiasing",
                {{"Off", "1"},
                 {"MSAA 2x (console)", "2"},

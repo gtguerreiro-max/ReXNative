@@ -50,6 +50,11 @@ REXCVAR_DEFINE_BOOL(rexnative_capture_shown, false, "ReXNative",
                     "Captures as the screen shows them: the game's display gamma ramp applied, "
                     "as the presenter applies it (the classic renderer's frames have it "
                     "already). Off: the front buffer as the game wrote it, before the ramp");
+REXCVAR_DEFINE_BOOL(rexnative_display_monitor, false, "ReXNative",
+                    "The picture for a PC monitor (or the Steam Deck's screen): the console told "
+                    "the game it is on an HDTV, whose signal (the BT.709 camera curve the game's "
+                    "gamma ramp writes) looks dark on an sRGB screen; this re-encodes it for one, "
+                    "as a console connected to a monitor shows it. False: the HDTV signal as it is");
 REXCVAR_DEFINE_BOOL(rexnative_luma_probe, false, "ReXNative",
                     "Read back three rows of every front buffer (at 10, 40 and 80 % of its "
                     "height) and log their mean brightness in the frame CSV, to find frames "
@@ -110,12 +115,18 @@ static_assert(sizeof(rex::graphics::reg::DC_LUT_PWL_DATA) == 4 &&
 // linearly from the ramp's white. A hue-preserving shoulder (Reinhard on the largest component,
 // slope 1 at the knee) fits the highlights under the display's peak; the HUD stays at paper
 // white. Then BT.709 -> BT.2020 and the PQ curve (SMPTE ST 2084).
+//
+// monitor (--rexnative_display_monitor): the console tells the game it is on an HDTV
+// (VdGetCurrentDisplayGamma, BT.709), and the game's ramp writes the BT.709 camera curve. That
+// signal is turned back into light (the curve's inverse) and, in SDR, encoded with the sRGB curve
+// of a monitor; the HDR path takes that light as its SDR values.
 const char kBlitHlsl[] = R"(
 Texture2D<float4> src : register(t0);
 cbuffer blit : register(b0) {
   float2 image_size; uint ramp_mode; uint point_sampled;
   uint hdr; float paper_white; float peak; float knee;  // paper_white in 10000 nits (PQ 1.0);
   float3 white; uint srgb;                              // peak and knee over SDR white
+  uint monitor; uint3 pad;
 };
 cbuffer gamma : register(b1) { uint4 ramp[96]; };
 void vs(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 texel : TEXCOORD0) {
@@ -138,11 +149,17 @@ float3 Gamma(float3 c) {
   }
   return c;
 }
+float3 Bt709Light(float3 v) { return v < 0.081 ? v / 4.5 : pow((v + 0.099) / 1.099, 1.0 / 0.45); }
+float3 SrgbEncode(float3 l) {
+  return l <= 0.0031308 ? 12.92 * l : 1.055 * pow(l, 1.0 / 2.4) - 0.055;
+}
 float3 Texel(int2 p) {
   float3 c = src.Load(int3(p, 0)).rgb;
-  if (!hdr) return Gamma(c);
+  if (!hdr) return monitor ? SrgbEncode(Bt709Light(saturate(Gamma(c)))) : Gamma(c);
   float3 g = Gamma(saturate(c));
-  float3 sdr = srgb ? (g <= 0.04045 ? g / 12.92 : pow((g + 0.055) / 1.055, 2.4)) : pow(g, 2.2);
+  float3 sdr = monitor ? Bt709Light(g)
+               : srgb  ? (g <= 0.04045 ? g / 12.92 : pow((g + 0.055) / 1.055, 2.4))
+                       : pow(g, 2.2);
   return c > 1.0 ? white * c : sdr;
 }
 float3 Hdr10(float3 c) {
@@ -219,6 +236,21 @@ void ApplyRamp(RampMode mode, const uint32_t* ramp, std::vector<uint8_t>* rgb) {
   for (size_t i = 0; i < rgb->size(); ++i) (*rgb)[i] = lut[i % 3][(*rgb)[i]];
 }
 
+// The blit shader's monitor conversion (--rexnative_display_monitor), for the CPU.
+double Bt709Light(double v) { return v < 0.081 ? v / 4.5 : std::pow((v + 0.099) / 1.099, 1.0 / 0.45); }
+double SrgbEncode(double l) {
+  return l <= 0.0031308 ? 12.92 * l : 1.055 * std::pow(l, 1.0 / 2.4) - 0.055;
+}
+
+// A capture as shown (--rexnative_capture_shown) with the monitor conversion on: the HDTV signal
+// re-encoded for an sRGB screen, as the blit does it (classic frames included).
+void ApplyMonitor(std::vector<uint8_t>* rgb) {
+  uint8_t lut[256];
+  for (uint32_t v = 0; v < 256; ++v)
+    lut[v] = uint8_t(std::lround(std::clamp(SrgbEncode(Bt709Light(v / 255.0)), 0.0, 1.0) * 255.0));
+  for (uint8_t& b : *rgb) b = lut[b];
+}
+
 double Psnr(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
   if (a.size() != b.size() || a.empty()) return 0.0;
   double se = 0.0;
@@ -286,6 +318,7 @@ struct Presenter::Impl {
     bool rgb10a2 = false;
     RampMode ramp_mode = kRampNone;  // --rexnative_capture_shown: the ramp of the frame
     uint32_t ramp[kPwlWords] = {};
+    bool monitor = false;  // --rexnative_capture_shown with --rexnative_display_monitor
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     ComPtr<ID3D12Resource> readback;
   } capture;
@@ -298,6 +331,7 @@ struct Presenter::Impl {
     bool rgb10a2 = false;
     RampMode ramp_mode = kRampNone;  // --rexnative_capture_shown: the ramp of the frame
     std::vector<uint32_t> ramp;
+    bool monitor = false;  // --rexnative_capture_shown with --rexnative_display_monitor
     uint64_t frame = 0, fence = 0;
     std::filesystem::path dir;  // --rexnative_capture_dir, or a snapshot's folder (snapshot.h)
   };
@@ -524,6 +558,7 @@ void Presenter::Impl::WriteShots() {
       if (!ReadbackRgb(s.readback.Get(), s.pitch, s.width, s.height, s.mapping, s.rgb10a2, &rgb))
         continue;
       if (!s.ramp.empty()) ApplyRamp(s.ramp_mode, s.ramp.data(), &rgb);
+      if (s.monitor) ApplyMonitor(&rgb);
       const std::string name = "f" + std::to_string(s.frame) + "-native.png";
       const bool ok = WritePng((s.dir / name).c_str(), rgb, s.width, s.height);
       REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", s.frame, s.width, s.height,
@@ -579,6 +614,10 @@ void Presenter::Impl::FinishCapture() {
   }
   ApplyRamp(c.ramp_mode, c.ramp, &native_rgb);
   ApplyRamp(c.ramp_mode, c.ramp, &xenos_rgb);
+  if (c.monitor) {
+    ApplyMonitor(&native_rgb);
+    ApplyMonitor(&xenos_rgb);
+  }
   const std::filesystem::path& dir = capture_dir;
   const std::string stem = "f" + std::to_string(c.frame);
   bool ok = WritePng((dir / (stem + "-native.png")).c_str(), native_rgb, c.width, c.height) &&
@@ -715,11 +754,13 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
                                  // The shoulder starts halfway to the peak, above white.
                                  std::max(std::min(1.0f, peak), 0.5f * peak),
                                  {},
-                                 SrgbCurve(d)};
+                                 SrgbCurve(d),
+                                 REXCVAR_GET(rexnative_display_monitor) ? 1u : 0u};
       // The ramp's white through the same curve as the shader's SDR values.
       for (uint32_t c = 0; c < 3; ++c) {
         const float w = ramp_white[c];
         constants.white[c] = constants.ramp_mode == kRampNone ? 1.0f
+                             : constants.monitor              ? float(Bt709Light(w))
                              : !constants.srgb               ? std::pow(w, 2.2f)
                              : w <= 0.04045f                 ? w / 12.92f
                                              : std::pow((w + 0.055f) / 1.055f, 2.4f);
@@ -858,6 +899,8 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
         shot.ramp_mode = CopyRamp(rgb10a2, shot.ramp.data());
         if (shot.ramp_mode == kRampNone) shot.ramp.clear();
       }
+      shot.monitor =
+          REXCVAR_GET(rexnative_capture_shown) && REXCVAR_GET(rexnative_display_monitor);
       shot.frame = last_shot_frame = r.frame_index();
       shot.fence = r.frame_fence();
       shot.dir = capture_dir;
@@ -879,6 +922,7 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     c.rgb10a2 = rgb10a2;
     c.ramp_mode = REXCVAR_GET(rexnative_capture_shown) && !classic ? CopyRamp(rgb10a2, c.ramp)
                                                                    : kRampNone;
+    c.monitor = REXCVAR_GET(rexnative_capture_shown) && REXCVAR_GET(rexnative_display_monitor);
   }
 }
 

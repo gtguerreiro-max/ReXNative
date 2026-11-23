@@ -25,6 +25,13 @@ change it.
   stays up on both, so the game can go back to Native the same way. A fault in the native path
   (a layer whose offsets do not fit the game's D3D) hands the game to the classic renderer for
   the rest of the run instead of crashing.
+- **Screen**: TV (console) or PC monitor (`rexnative.display_monitor`), at once, on both
+  renderers. The console tells the game it is on an HDTV, and most games then write a gamma ramp
+  that encodes the picture with the BT.709 camera curve (64/128/192 of 255 to 193/462/741 of
+  1023). A TV shows that as meant; on a monitor or the Steam Deck's screen, whose curve is sRGB,
+  the mid-tones come out about 20 % darker and the shadows about half as bright. PC monitor turns
+  the signal back into light and encodes it for an sRGB screen, as a console connected to a
+  monitor shows it. Captures taken as shown (`rexnative.capture_shown`) follow it.
 - **Window page** (not on the Steam Deck, where gamescope shows the game on the whole screen):
   Windowed, Full screen (a borderless window over the display) or Full screen (exclusive); the
   window's size when windowed (1280x720 to 2560x1440); and the display, when there are several.
