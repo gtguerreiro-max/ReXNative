@@ -60,10 +60,17 @@
 //   first kHeadroomFrames after a start or a new pace), bring the next try forward to at once.
 // - kAutoProbeGain faster at 2: 2, and once, kAutoConfirmNs later, 1 again to confirm it (a try
 //   during a loading screen can look faster): kAutoProbeEarlyLoss slower at 1 after
-//   kAutoProbeEarlyNs (or kAutoProbeKeep over the whole try) and 2 is the game's for good, saved
+//   kAutoProbeEarlyNs ends the try, and kAutoProbeSure slower over all it measured makes 2 the
+//   game's for good (a second alone is noise: one 10 % slower ended a try 4.8 % slower), saved
 //   in its settings file as the HUD would (TakeAutoDecision: the renderer writes it), so it
 //   starts at 2 from then on; no later at 1 and it stays at 1, trying again as before.
-//   The confirmation is the one stutter a game that needs 2 ever gets (about a second).
+//   Between the two (more than kAutoProbeKeep, less than kAutoProbeSure slower at 1) it stays 2
+//   for this run only and confirms again later (twice as late each time, up to
+//   kAutoProbePeriodMaxNs): a title screen or a menu a little slower at 1 decided for good what
+//   the game itself does (Lazy Raiders' title 4 % slower at 1 one start and not the next, its
+//   levels 50 %; Blur's menu 4.5 %, its races more).
+//   The confirmation is the one stutter a game that needs 2 ever gets (about a second; a few
+//   more where it was not sure).
 // Neither the headroom nor a frame's own time from beginning to finished tells whether 1 would
 // do: a game that waits inside its frame for its own pace (most 30 fps ones) leaves no slack.
 // Only from 1 to 2: a setting of 2 or 3 is kept as it is.
@@ -179,7 +186,8 @@ class FramePacer {
   static constexpr uint64_t kAutoConfirmNs = 20'000'000'000;  // 2, then the try of 1 that confirms
   static constexpr uint64_t kAutoProbeEarlyNs = 1'000'000'000;  // that try: judged after
   static constexpr double kAutoProbeEarlyLoss = 1.10;  // that much slower ends it: 2 for good
-  static constexpr double kAutoProbeKeep = 1.03;  // over the whole try, more than this: 2 too
+  static constexpr double kAutoProbeKeep = 1.03;  // over the whole try, more than this: 2 for now
+  static constexpr double kAutoProbeSure = 1.10;  // and more than this: 2 for good
   static constexpr uint32_t kShownRing = 512;       // shown times: 3 s at 144 fps and more
 
   struct Present {
@@ -223,6 +231,7 @@ class FramePacer {
   uint64_t auto_probe_end_ns_ = 0;   // while trying: when the try ends
   uint64_t auto_next_probe_ns_ = 0;  // the next try (0: not set yet)
   uint64_t auto_probe_period_ns_ = kAutoProbePeriodNs;
+  uint64_t auto_confirm_period_ns_ = kAutoConfirmNs;  // the next confirmation of 2 when unsure
   double auto_probe_base_ms_ = 0;  // the mean interval before the try
   const bool low_latency_;
   const int64_t margin_ns_;

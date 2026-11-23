@@ -225,6 +225,7 @@ bool FramePacer::AutoLatencyLocked(const Present& p, uint64_t shown_ns, int64_t 
       const double tried = MeanShownIntervalLocked(shown_ns, kAutoProbeMeasureNs);
       if (tried > 0.0 && tried < auto_probe_base_ms_ * kAutoProbeGain) {
         auto_state_ = AutoState::kAt2;
+        auto_confirm_period_ns_ = kAutoConfirmNs;
         auto_next_probe_ns_ = shown_ns + kAutoConfirmNs;
         REXLOG_INFO("ReXNative: frame latency 1 -> 2 (automatic: a frame every {:.1f} ms at 2, "
                     "{:.1f} ms at 1; 1 is tried once more in {:.0f} s before 2 is kept)",
@@ -261,6 +262,19 @@ bool FramePacer::AutoLatencyLocked(const Present& p, uint64_t shown_ns, int64_t 
                     "{:.1f} ms at 2)",
                     tried, auto_probe_base_ms_);
         return false;
+      }
+      // A little slower at 1 over all it measured (also when a second of it was much slower and
+      // ended it early): 2 for this run, confirmed again later.
+      if (tried > 0.0 && tried < auto_probe_base_ms_ * kAutoProbeSure) {
+        auto_state_ = AutoState::kAt2;
+        auto_confirm_period_ns_ = std::min(auto_confirm_period_ns_ * 2, kAutoProbePeriodMaxNs);
+        auto_next_probe_ns_ = shown_ns + auto_confirm_period_ns_;
+        REXLOG_INFO("ReXNative: frame latency stays 2 for now (automatic: a frame every {:.1f} ms "
+                    "at 1, {:.1f} ms at 2; 1 is tried again in {:.0f} s before 2 is kept)",
+                    tried, auto_probe_base_ms_, double(auto_confirm_period_ns_) / 1e9);
+        latency_.store(2, std::memory_order_relaxed);
+        ResetControlLocked();
+        return true;
       }
       auto_state_ = AutoState::kDone;
       auto_decided_.store(true, std::memory_order_release);
@@ -361,6 +375,7 @@ void FramePacer::SetFrameLatency(uint32_t frames, bool automatic) {
   auto_misses_ = 0;
   auto_probe_end_ns_ = auto_next_probe_ns_ = 0;
   auto_probe_period_ns_ = kAutoProbePeriodNs;
+  auto_confirm_period_ns_ = kAutoConfirmNs;
   latency_.store(frames, std::memory_order_relaxed);
   ResetControlLocked();
 }
