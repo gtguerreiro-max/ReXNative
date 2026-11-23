@@ -18,7 +18,8 @@
 //                    --rexnative_capture_hold_ms so the plugin's GPU thread finishes frame
 //                    F), untiled with TextureMod's UntileTexture
 // and logs the PSNR (RGB, 8 bit) of the pair and appends it to <dir>\captures.csv.
-// Both images are the front buffer before the presenter's gamma ramp.
+// Both images are the front buffer before the presenter's gamma ramp, or with it applied as the
+// window shows it with --rexnative_capture_shown (the classic renderer's frames have it already).
 //
 // The debug tools (PNG writer, glitch catcher, luma probe) are in present_debug.h.
 //

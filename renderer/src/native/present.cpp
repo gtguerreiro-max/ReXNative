@@ -46,6 +46,10 @@ REXCVAR_DEFINE_BOOL(rexnative_capture_xenos, true, "ReXNative",
                     "between them, holding the guest thread (--rexnative_capture_hold_ms; not "
                     "with frame generation on); false: the native image alone, written off the "
                     "guest thread");
+REXCVAR_DEFINE_BOOL(rexnative_capture_shown, false, "ReXNative",
+                    "Captures as the screen shows them: the game's display gamma ramp applied, "
+                    "as the presenter applies it (the classic renderer's frames have it "
+                    "already). Off: the front buffer as the game wrote it, before the ramp");
 REXCVAR_DEFINE_BOOL(rexnative_luma_probe, false, "ReXNative",
                     "Read back three rows of every front buffer (at 10, 40 and 80 % of its "
                     "height) and log their mean brightness in the frame CSV, to find frames "
@@ -188,6 +192,33 @@ double PwlOut(const uint32_t* words, uint32_t channel, uint32_t x) {
   return std::min(1.0, ((w & 0xFFFFu) + (x & 7u) * (w >> 16) / 8.0) / 65472.0);
 }
 
+// The ramp the presenter applies to a front buffer (WriteRamp's source), copied for a capture
+// (--rexnative_capture_shown). kRampNone when the driver holds none.
+RampMode CopyRamp(bool rgb10a2, uint32_t* out) {
+  const rex::xenos::GammaRampView ramps = GuestGammaRamps();
+  const RampMode mode = rgb10a2 ? kRampPwl : kRampTable;
+  const uint32_t* words = mode == kRampPwl ? ramps.pwl_rgb : ramps.table_256;
+  if (!words) return kRampNone;
+  const uint32_t count = mode == kRampPwl ? kPwlWords : kTableWords;
+  for (uint32_t i = 0; i < count; ++i) out[i] = __atomic_load_n(words + i, __ATOMIC_RELAXED);
+  return mode;
+}
+
+// A captured image (8-bit RGB, the fetch constant's swizzle applied) through the ramp, as the
+// blit shader's Gamma does it, so it matches the window and the classic renderer's frames.
+void ApplyRamp(RampMode mode, const uint32_t* ramp, std::vector<uint8_t>* rgb) {
+  if (mode == kRampNone) return;
+  uint8_t lut[3][256];
+  for (uint32_t c = 0; c < 3; ++c)
+    for (uint32_t v = 0; v < 256; ++v) {
+      const double out = mode == kRampPwl
+                             ? PwlOut(ramp, c, uint32_t(v * 1023.0 / 255.0 + 0.5))
+                             : double((ramp[v] >> (20 - 10 * c)) & 1023u) / 1023.0;
+      lut[c][v] = uint8_t(std::lround(std::clamp(out, 0.0, 1.0) * 255.0));
+    }
+  for (size_t i = 0; i < rgb->size(); ++i) (*rgb)[i] = lut[i % 3][(*rgb)[i]];
+}
+
 double Psnr(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
   if (a.size() != b.size() || a.empty()) return 0.0;
   double se = 0.0;
@@ -253,6 +284,8 @@ struct Presenter::Impl {
     uint32_t width = 0, height = 0;
     uint32_t mapping = 0;
     bool rgb10a2 = false;
+    RampMode ramp_mode = kRampNone;  // --rexnative_capture_shown: the ramp of the frame
+    uint32_t ramp[kPwlWords] = {};
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     ComPtr<ID3D12Resource> readback;
   } capture;
@@ -263,6 +296,8 @@ struct Presenter::Impl {
     ComPtr<ID3D12Resource> readback;
     uint32_t pitch = 0, width = 0, height = 0, mapping = 0;
     bool rgb10a2 = false;
+    RampMode ramp_mode = kRampNone;  // --rexnative_capture_shown: the ramp of the frame
+    std::vector<uint32_t> ramp;
     uint64_t frame = 0, fence = 0;
     std::filesystem::path dir;  // --rexnative_capture_dir, or a snapshot's folder (snapshot.h)
   };
@@ -488,6 +523,7 @@ void Presenter::Impl::WriteShots() {
       std::vector<uint8_t> rgb;
       if (!ReadbackRgb(s.readback.Get(), s.pitch, s.width, s.height, s.mapping, s.rgb10a2, &rgb))
         continue;
+      if (!s.ramp.empty()) ApplyRamp(s.ramp_mode, s.ramp.data(), &rgb);
       const std::string name = "f" + std::to_string(s.frame) + "-native.png";
       const bool ok = WritePng((s.dir / name).c_str(), rgb, s.width, s.height);
       REXLOG_INFO("ReXNative capture: frame {} {}x{} ({}\\{}{})", s.frame, s.width, s.height,
@@ -541,6 +577,8 @@ void Presenter::Impl::FinishCapture() {
       c.height = h;
     }
   }
+  ApplyRamp(c.ramp_mode, c.ramp, &native_rgb);
+  ApplyRamp(c.ramp_mode, c.ramp, &xenos_rgb);
   const std::filesystem::path& dir = capture_dir;
   const std::string stem = "f" + std::to_string(c.frame);
   bool ok = WritePng((dir / (stem + "-native.png")).c_str(), native_rgb, c.width, c.height) &&
@@ -815,6 +853,11 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
       shot.height = extent.height;
       shot.mapping = mapping;
       shot.rgb10a2 = rgb10a2;
+      if (REXCVAR_GET(rexnative_capture_shown) && !classic) {
+        shot.ramp.resize(kPwlWords);
+        shot.ramp_mode = CopyRamp(rgb10a2, shot.ramp.data());
+        if (shot.ramp_mode == kRampNone) shot.ramp.clear();
+      }
       shot.frame = last_shot_frame = r.frame_index();
       shot.fence = r.frame_fence();
       shot.dir = capture_dir;
@@ -834,6 +877,8 @@ void Presenter::Impl::OnSwap(const SwapCall& swap, bool shown, const SwapCopy* c
     c.height = extent.height;
     c.mapping = mapping;
     c.rgb10a2 = rgb10a2;
+    c.ramp_mode = REXCVAR_GET(rexnative_capture_shown) && !classic ? CopyRamp(rgb10a2, c.ramp)
+                                                                   : kRampNone;
   }
 }
 
