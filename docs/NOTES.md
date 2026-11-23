@@ -473,8 +473,9 @@ one mesh, each with its world-view-projection (c0-c3), world matrix (c4-c7) and 
 matrix's inverse (c8-c10); spinning, a wheel's projected rows change by more than 1 in a frame and
 its inverse's translation (minus the turned position, 2100 from the origin) by hundreds. All 4
 wheels, their tyres and treads, 93 draws a frame of the 2026-11-23 gameplay trace, took the
-camera's motion, and DLSS drew every rim twice and smeared the tyres (the intro's Viper seen from
-the side). A rotation keeps the sum of the squares of a matrix's registers, which another
+camera's motion: DLSS took their history from where the camera's motion put it, a doubled rim
+(the user's report; the side views in the attract loop after the title are a video, not drawn,
+so they show nothing of it). A rotation keeps the sum of the squares of a matrix's registers, which another
 object's position changes, so a draw whose blocks of 4 registers with components apart each kept
 their norm, within a fifth of how far they moved, is the same object turned, if a register of
 its position stayed (components all beyond 1, each changed by less than 5 %: the wheel's c7 =
@@ -1126,17 +1127,26 @@ comparison used a 60-frame trace, the first 20 frames of the last time through l
 
 ## A stencil reference for each face
 
-Forza Horizon had no motion blur under its cars, and its tyres stood on dark blocks with straight
-edges, in ReXNative and in Xenia's D3D12 backend alike. Its cars are drawn both sides with
-two-sided stencil: front faces write 0x81, back faces 0 (`RB_STENCILREFMASK` 0x81,
-`RB_STENCILREFMASK_BF` 0, nothing culled; the draw log's `sr=` and `sb=`). Its motion blur
-copies the depth and stencil to an 8888 texture and reads stencil 1 to 0x80 and 0x81 and above
-as different classes (`c253.w` = 0.501968, just above 128/255): 0x81 is the car. D3D12 had one
-stencil reference for both faces, the front's, so the body's back faces seen under the car (the
-underbody, the inside of the wheel arches) were car too, and the ground there stayed sharp.
-D3D12 options 14 (`IndependentFrontAndBackStencilRefMaskSupported`) gives each face its own
-reference (`OMSetFrontAndBackStencilRef`); the renderer sets the back's from
-`RB_STENCILREFMASK_BF` where the driver has it (`--rexnative_independent_stencil_ref`, on), and
-otherwise keeps the front's for both. The masks stay one for both faces (the pipeline's
-`D3D12_DEPTH_STENCIL_DESC`); Forza's are the same for both. Sega Rally Revo's race trace draws
-pixel for pixel the same either way.
+Xenos has a stencil reference for back faces (`RB_STENCILREFMASK_BF`, with
+`RB_DEPTHCONTROL.backface_enable`); D3D12 had one for both, so a two-sided draw drawn without
+culling wrote the front's with its back faces too (Xenia's D3D12 backend the same; its Vulkan
+backend sets both). D3D12 options 14 (`IndependentFrontAndBackStencilRefMaskSupported`) gives
+each face its own (`OMSetFrontAndBackStencilRef`): the renderer sets the back's where the driver
+has it (`--rexnative_independent_stencil_ref`, on), and otherwise keeps one for both, the back's
+only when only back faces are drawn. The masks stay one for both faces (the pipeline's
+`D3D12_DEPTH_STENCIL_DESC`). Forza Horizon's foliage is such a draw (front faces 0x81, back
+faces 0, nothing culled; the draw log's `sr=` and `sb=`).
+
+It does not change Forza Horizon's picture, though it was first taken for the cause of the sharp
+ground under its cars: a trace of the intro drive replayed with it on and off draws the same
+pixels (live shots of two runs differ by where the cars are, which looked like a change). The
+sharp ground is the game's. Its motion blur copies the depth and stencil to an 8888 texture
+(the stencil in red) and its mask pass sets alpha for stencil 1 to 0x80 (`c253.w` = 0.501968,
+just above 128/255): the cars (3 the player's, 0x0F and others the AI's) and 0x80; 0 (the road)
+and 0x81 (foliage) blur with the camera. Each car's contact shadow first marks the ground and the
+foliage inside its box: an `EQUAL 0` draw inverts bit 7 of the road (read mask 0xFF: once, so
+the whole footprint of the box), an `EQUAL 0x81` draw decrements foliage to 0x80, and the shadow
+is drawn where it is 0x80. The box around the car, ground and shadow, is then in the cars' class
+and keeps the car's motion (none, in a chase), so the shadow is not smeared by the camera's. In
+the intro's frame 3726 capture 57 563 pixels are 0x80, the box around the Viper; the screenshot's
+sharp gravel around the car is that box.

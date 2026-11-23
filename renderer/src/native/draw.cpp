@@ -1224,10 +1224,9 @@ struct DrawRenderer::Impl {
   // with RSSetDepthBias.
   bool dynamic_depth_bias = false;
   // A stencil reference for each face (D3D12_OPTIONS14): a two-sided draw with its own back-face
-  // reference (RB_STENCILREFMASK_BF) writes it. Forza Horizon draws its cars both sides with 0x81
-  // for front faces and 0 for back faces, and its motion blur keeps 0x81 (the car) sharp: with
-  // the front's reference for both, the inside of the body seen under the car (back faces) was
-  // car too, and the ground under it had no motion blur (Xenia's D3D12 backend draws it so).
+  // reference (RB_STENCILREFMASK_BF) writes it, as on Xenos (Forza Horizon's foliage: 0x81 for
+  // front faces, 0 for back faces, nothing culled). With one for both, the back faces wrote the
+  // front's (Xenia's D3D12 backend the same). docs/NOTES.md: it does not change Forza's picture.
   bool independent_stencil_ref = false;
   std::filesystem::path library_path;
   size_t prewarm_next = 0;  // into store.loaded_pipelines()

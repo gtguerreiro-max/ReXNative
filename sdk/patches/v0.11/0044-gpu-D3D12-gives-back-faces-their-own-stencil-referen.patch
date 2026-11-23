@@ -1,4 +1,4 @@
-From 6a4971068e7339664997e4401bed31226139cf34 Mon Sep 17 00:00:00 2001
+From dcbfadbec1583af94a584acfaa997e511b4f12ff Mon Sep 17 00:00:00 2001
 From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
 Date: Mon, 23 Nov 2026 17:38:37 +0000
 Subject: [PATCH] gpu: D3D12 gives back faces their own stencil reference
@@ -6,10 +6,9 @@ Subject: [PATCH] gpu: D3D12 gives back faces their own stencil reference
 Where the device has D3D12 options 14 (IndependentFrontAndBackStencilRefMask),
 a two-sided draw's back faces take RB_STENCILREFMASK_BF's reference through
 OMSetFrontAndBackStencilRef, as the Vulkan backend already does; otherwise one
-reference for both, as before. Forza Horizon draws its cars both sides, front
-faces writing 0x81 and back faces 0, and its motion blur keeps 0x81 (the car)
-sharp: with the front's reference for both, the body's back faces seen under
-the car were car too, and the ground under it had no motion blur.
+reference for both, as before. Xenos keeps one for each face: with one for
+both, a two-sided draw without culling wrote the front's reference with its
+back faces too (Forza Horizon's foliage: front faces 0x81, back faces 0).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -22,7 +21,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  6 files changed, 69 insertions(+), 12 deletions(-)
 
 diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
-index b5b082e9..acace82a 100644
+index b5b082e9..e4fbc92e 100644
 --- a/src/gpu/xenos/d3d12/command_processor.cpp
 +++ b/src/gpu/xenos/d3d12/command_processor.cpp
 @@ -768,9 +768,11 @@ void D3D12CommandProcessor::SetScissorRect(const D3D12_RECT& scissor_rect) {
@@ -51,7 +50,7 @@ index b5b082e9..acace82a 100644
 -    } else {
 -      stencil_ref_mask_reg = xenos::Register::RB_STENCILREFMASK;
 +    // A reference for each face where the device has them (D3D12_OPTIONS14): a two-sided draw
-+    // with its own back face reference (Forza Horizon's cars: front faces 0x81, back faces 0,
++    // with its own back face reference (Forza Horizon's foliage: front faces 0x81, back faces 0,
 +    // nothing culled) writes it. Otherwise one for both, the back one only if drawing only back
 +    // faces.
 +    u32 stencil_ref = regs.Get<xenos::reg::RB_STENCILREFMASK>(xenos::Register::RB_STENCILREFMASK)
