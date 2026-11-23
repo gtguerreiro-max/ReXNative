@@ -1123,3 +1123,20 @@ match brings the stain back, so a racing game keeps the model on every frame; sl
 less. An 8-frame trace looped every 8 frames is not a fair test of this setting: whether the
 model runs on the frame after the loop's cut decided between two results (27 or 42), so the
 comparison used a 60-frame trace, the first 20 frames of the last time through left out.
+
+## A stencil reference for each face
+
+Forza Horizon had no motion blur under its cars, and its tyres stood on dark blocks with straight
+edges, in ReXNative and in Xenia's D3D12 backend alike. Its cars are drawn both sides with
+two-sided stencil: front faces write 0x81, back faces 0 (`RB_STENCILREFMASK` 0x81,
+`RB_STENCILREFMASK_BF` 0, nothing culled; the draw log's `sr=` and `sb=`). Its motion blur
+copies the depth and stencil to an 8888 texture and reads stencil 1 to 0x80 and 0x81 and above
+as different classes (`c253.w` = 0.501968, just above 128/255): 0x81 is the car. D3D12 had one
+stencil reference for both faces, the front's, so the body's back faces seen under the car (the
+underbody, the inside of the wheel arches) were car too, and the ground there stayed sharp.
+D3D12 options 14 (`IndependentFrontAndBackStencilRefMaskSupported`) gives each face its own
+reference (`OMSetFrontAndBackStencilRef`); the renderer sets the back's from
+`RB_STENCILREFMASK_BF` where the driver has it (`--rexnative_independent_stencil_ref`, on), and
+otherwise keeps the front's for both. The masks stay one for both faces (the pipeline's
+`D3D12_DEPTH_STENCIL_DESC`); Forza's are the same for both. Sega Rally Revo's race trace draws
+pixel for pixel the same either way.

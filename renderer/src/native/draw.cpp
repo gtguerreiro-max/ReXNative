@@ -104,6 +104,9 @@ REXCVAR_DEFINE_BOOL(rexnative_dynamic_depth_bias, true, "ReXNative",
                     "Set the polygon offset with RSSetDepthBias instead of baking it into the "
                     "pipeline state, where the driver supports it (the game animates it, which "
                     "made hundreds of pipelines per shader pair)");
+REXCVAR_DEFINE_BOOL(rexnative_independent_stencil_ref, true, "ReXNative",
+                    "Give back faces their own stencil reference (RB_STENCILREFMASK_BF) where the "
+                    "driver supports it (D3D12 options 14), instead of the front face's");
 REXCVAR_DEFINE_BOOL(rexnative_bool_specialize, true, "ReXNative",
                     "Translate shaders whose control flow tests bool constants for each draw's "
                     "values, without the branches (shader_specialize.h)");
@@ -1220,6 +1223,12 @@ struct DrawRenderer::Impl {
   // D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS and keyed with a zero bias, and draws set it
   // with RSSetDepthBias.
   bool dynamic_depth_bias = false;
+  // A stencil reference for each face (D3D12_OPTIONS14): a two-sided draw with its own back-face
+  // reference (RB_STENCILREFMASK_BF) writes it. Forza Horizon draws its cars both sides with 0x81
+  // for front faces and 0 for back faces, and its motion blur keeps 0x81 (the car) sharp: with
+  // the front's reference for both, the inside of the body seen under the car (back faces) was
+  // car too, and the ground under it had no motion blur (Xenia's D3D12 backend draws it so).
+  bool independent_stencil_ref = false;
   std::filesystem::path library_path;
   size_t prewarm_next = 0;  // into store.loaded_pipelines()
   uint32_t prewarm_failed = 0, prewarm_frames = 0;
@@ -1308,7 +1317,7 @@ struct DrawRenderer::Impl {
   D3D12_VIEWPORT bound_viewport{};
   D3D12_RECT bound_scissor{};
   float bound_blend[4] = {};
-  uint32_t bound_stencil_ref = UINT32_MAX;
+  uint32_t bound_stencil_ref = UINT32_MAX, bound_stencil_ref_back = UINT32_MAX;
   float bound_depth_bias = NAN, bound_slope_bias = NAN;
   D3D12_CPU_DESCRIPTOR_HANDLE bound_rtv[DxbcShaderTranslator::kMotionVectorRenderTarget + 1] = {};
   D3D12_CPU_DESCRIPTOR_HANDLE bound_dsv{};
@@ -1935,6 +1944,13 @@ bool DrawRenderer::Impl::Initialize() {
                                                              &options16, sizeof(options16))) &&
                        options16.DynamicDepthBiasSupported;
   REXLOG_INFO("ReXNative draw: dynamic depth bias {}", dynamic_depth_bias ? "on" : "off");
+  D3D12_FEATURE_DATA_D3D12_OPTIONS14 options14 = {};
+  independent_stencil_ref = REXCVAR_GET(rexnative_independent_stencil_ref) &&
+                            SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14,
+                                                                  &options14, sizeof(options14))) &&
+                            options14.IndependentFrontAndBackStencilRefMaskSupported;
+  REXLOG_INFO("ReXNative draw: a stencil reference for each face {}",
+              independent_stencil_ref ? "on" : "off");
   if (REXCVAR_GET(rexnative_pipeline_cache)) {
     // The app's cache root (app.cache_root): co_run keeps it.
     std::filesystem::path dir = rexnative::settings::Path("app.cache_root");
@@ -2028,7 +2044,7 @@ void DrawRenderer::Impl::ResetListState() {
   bound_viewport = {};
   bound_scissor = {};
   std::memset(bound_blend, 0xFF, sizeof(bound_blend));  // NaN: never equal
-  bound_stencil_ref = UINT32_MAX;
+  bound_stencil_ref = bound_stencil_ref_back = UINT32_MAX;
   bound_depth_bias = bound_slope_bias = NAN;
   for (auto& h : bound_rtv) h.ptr = 0;
   bound_dsv.ptr = 0;
@@ -4208,7 +4224,8 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       "%u fn=%08X prim=%u n=%u idx=%u vs=%016llX:%llX ps=%016llX:%llX rt=%u:%d,%d dsv=%d "
       "z=%u/%u/%u st=%u cull=%u blend=%u:%u/%u/%u,%u/%u/%u mask=%X bc=%08X cc=%08X "
       "f=%.2f,%.2f,%.2f,%.2f samples=%u vp=%u,%u,%u,%u z=%.3f-%.3f sc=%u,%u,%u,%u "
-      "tex=%zu ci=%08X si=%08X di=%08X su=%08X dc=%08X po=%g/%g,%g/%g bias=%d/%g\n",
+      "tex=%zu ci=%08X si=%08X di=%08X su=%08X dc=%08X sr=%08X sb=%08X po=%g/%g,%g/%g "
+      "bias=%d/%g\n",
       draw_index, uint32_t(s.fn), s.primitive, count, uint32_t(s.indexed),
       (unsigned long long)vs.GetUcodeDataHash(), (unsigned long long)mods.vertex,
       ps ? (unsigned long long)ps->GetUcodeDataHash() : 0ull, (unsigned long long)mods.pixel,
@@ -4223,7 +4240,9 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       ps ? ps->GetTextureBindingsAfterTranslation().size() : size_t(0),
       regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_RB_SURFACE_INFO],
       regs[XE_GPU_REG_RB_DEPTH_INFO], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
-      regs[XE_GPU_REG_RB_DEPTHCONTROL], regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE),
+      regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_STENCILREFMASK],
+      regs[XE_GPU_REG_RB_STENCILREFMASK_BF],
+      regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE),
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET),
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE),
       regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET), key.depth_bias,
@@ -5383,13 +5402,24 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     std::memcpy(bound_blend, blend, sizeof(blend));
   }
   {
-    const bool bf = polygonal && depth_control.backface_enable && sc.cull_front && !sc.cull_back;
-    uint32_t ref = regs.Get<reg::RB_STENCILREFMASK>(bf ? XE_GPU_REG_RB_STENCILREFMASK_BF
-                                                       : XE_GPU_REG_RB_STENCILREFMASK)
-                       .stencilref;
-    if (ref != bound_stencil_ref) {
-      list->OMSetStencilRef(ref);
+    // Back faces take RB_STENCILREFMASK_BF's reference when the draw has its own for them.
+    const bool two_sided = polygonal && depth_control.backface_enable;
+    const uint32_t front = regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK).stencilref;
+    const uint32_t back =
+        two_sided ? regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF).stencilref
+                  : front;
+    uint32_t ref = front, ref_back = back;
+    if (!independent_stencil_ref) {
+      // One for both: the faces drawn's (the back's when only they are).
+      ref = ref_back = two_sided && sc.cull_front && !sc.cull_back ? back : front;
+    }
+    if (ref != bound_stencil_ref || ref_back != bound_stencil_ref_back) {
+      if (ref == ref_back)
+        list->OMSetStencilRef(ref);
+      else
+        list->OMSetFrontAndBackStencilRef(ref, ref_back);
       bound_stencil_ref = ref;
+      bound_stencil_ref_back = ref_back;
     }
   }
   if (dynamic_depth_bias && (depth_bias != bound_depth_bias || slope_bias != bound_slope_bias)) {

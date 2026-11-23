@@ -170,6 +170,15 @@ class CommandStream {
   void OMSetStencilRef(UINT ref) {
     Call([ref](List* l) { l->OMSetStencilRef(ref); });
   }
+  // ID3D12GraphicsCommandList8's (D3D12_OPTIONS14 IndependentFrontAndBackStencilRefMaskSupported);
+  // the front's for both on a list without it.
+  void OMSetFrontAndBackStencilRef(UINT front, UINT back) {
+    if (!list8_) {
+      OMSetStencilRef(front);
+      return;
+    }
+    Call([l8 = list8_.Get(), front, back](List*) { l8->OMSetFrontAndBackStencilRef(front, back); });
+  }
   void OMSetBlendFactor(const FLOAT factor[4]) {
     const std::array<FLOAT, 4> f = {factor[0], factor[1], factor[2], factor[3]};
     Call([f](List* l) { l->OMSetBlendFactor(f.data()); });
@@ -265,6 +274,7 @@ class CommandStream {
   Chunk* TakeChunk();  // a free chunk, or a new one (mutex_ held)
 
   List* list_ = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList8> list8_;
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList9> list9_;
   Chunk* recording_ = nullptr;
 

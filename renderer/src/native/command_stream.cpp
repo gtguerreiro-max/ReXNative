@@ -12,6 +12,8 @@ namespace rexnative {
 
 void CommandStream::Start(List* list, const wchar_t* name) {
   list_ = list;
+  list8_.Reset();
+  list->QueryInterface(IID_PPV_ARGS(list8_.GetAddressOf()));
   list9_.Reset();
   list->QueryInterface(IID_PPV_ARGS(list9_.GetAddressOf()));
   stop_ = false;
