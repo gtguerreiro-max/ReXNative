@@ -49,8 +49,9 @@
 // Steam Deck's players set heavy games to 2 by hand (Blur: 51 % of its 5 s windows slow at 1,
 // 3 % at 2; Lazy Raiders 23.5 ms frames at 1 against 16.7 at 2). With L = 1 and `automatic`:
 // - Trying 2: a game too slow at 1 misses every slot the same way, so the shown pace is its own
-//   and nothing looks late (a frame limit looks the same). So the pacer tries: every
-//   kAutoProbePeriodNs it sets 2 for kAutoProbeSettleNs + kAutoProbeMeasureNs and compares the
+//   and nothing looks late (a frame limit looks the same). So the pacer tries: kAutoProbeFirstNs
+//   after the estimate settled, then every kAutoProbePeriodNs, it sets 2 for kAutoProbeSettleNs
+//   + kAutoProbeMeasureNs and compares the
 //   mean interval shown then with the kAutoProbeMeasureNs before. kAutoProbeGain faster or more
 //   keeps 2; otherwise back to 1, and the next try twice as late, up to kAutoProbePeriodMaxNs.
 //   A try costs one frame of latency for a few seconds, no stutter.
@@ -58,7 +59,9 @@
 //   were shown late within kAutoMissWindowNs (a stall, as above, does not count, nor the first
 //   kHeadroomFrames after a start or a new pace): a game that mostly keeps the display's pace.
 // - Back to 1 the same way: after the hold it tries 1, and keeps it when the frames come no
-//   later than kAutoProbeKeep times the interval at 2; otherwise 2 again and the hold doubles,
+//   later than kAutoProbeKeep times the interval at 2. A try that is kAutoProbeEarlyLoss slower
+//   after kAutoProbeEarlyNs ends there (in a heavy scene the rest would be lag the player feels;
+//   about 1.5 s of slower frames then). Otherwise 2 again and the hold doubles,
 //   up to kAutoHoldMaxNs (also when frames miss again soon after going back). Neither the
 //   headroom nor a frame's own time from beginning to finished tells: a game that waits inside
 //   its frame for its own pace (most 30 fps ones) leaves neither any slack.
@@ -171,6 +174,9 @@ class FramePacer {
   static constexpr uint64_t kAutoProbePeriodMaxNs = 240'000'000'000;
   static constexpr double kAutoProbeGain = 0.95;  // the interval at 2 over the one at 1
   static constexpr double kAutoProbeKeep = 1.03;  // the interval at 1 over the one at 2
+  static constexpr uint64_t kAutoProbeFirstNs = 5'000'000'000;  // the first try of 2, once settled
+  static constexpr uint64_t kAutoProbeEarlyNs = 1'000'000'000;  // trying 1: judged after
+  static constexpr double kAutoProbeEarlyLoss = 1.10;  // that much slower ends the try
   static constexpr uint32_t kShownRing = 512;       // shown times: 3 s at 144 fps and more
 
   struct Present {
