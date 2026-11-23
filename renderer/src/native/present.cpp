@@ -926,4 +926,12 @@ void Presenter::AfterEndFrame() {
   if (m.capture.pending) m.FinishCapture();
 }
 
+void Presenter::FinishShots() {
+  Impl& m = *impl_;
+  if (!m.shots.empty()) m.WriteShots();
+  if (m.capture.pending) m.FinishCapture();
+  for (std::thread& t : m.shot_writers) t.join();
+  m.shot_writers.clear();
+}
+
 }  // namespace rexnative

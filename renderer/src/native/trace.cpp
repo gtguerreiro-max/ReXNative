@@ -610,9 +610,10 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
     REXLOG_INFO("ReXNative trace: time {} through: {} frames in {:.0f} ms", loop + 1, frames,
                 double(NowNs() - loop_start) / 1e6);
   }
-  // The captures' files are written off this thread.
+  // The captures' files are written off this thread: every one on disk before the exit (a fixed
+  // 2.5 s wait left Limbo's last PNGs empty on a busy PC, 2026-11-23).
   device_->WaitIdle();
-  Sleep(2500);
+  if (present_) present_->FinishShots();
   REXLOG_INFO("ReXNative trace: played {} times; exit", loops);
   TerminateProcess(GetCurrentProcess(), 0);
 }

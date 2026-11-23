@@ -109,6 +109,9 @@ class Presenter {
   // copy: waits for the frame's fence, holds the guest thread, reads guest memory, writes the
   // PNGs; without it: hands a completed frame's image to a thread that writes its PNG).
   void AfterEndFrame();
+  // Once the GPU is idle (D3D12Device::WaitIdle): writes every capture still waiting and returns
+  // when all their PNGs are on disk. The trace player calls it before it ends the process.
+  void FinishShots();
 
   bool front_buffer_found() const;
   // Whether this Swap took a capture of frame `frame` (OnSwap copied its image).
