@@ -17,7 +17,7 @@
 // a cross-check of the decoded registers against the device's own register shadow.
 //
 // Control at run time: --rexnative_d3d_control=<file>. The file is read (then deleted) once per
-// frame, one command per line:
+// frame, once it is whole (native/control_file.h), one command per line:
 //   trace <tag> [frames]   write the next N complete frames to --rexnative_d3d_trace_dir (ignored
 //                          while the tap is off)
 //   skip <draw,clear,resolve|none>   (on the presenting device only, see MayDropPackets)
@@ -54,6 +54,7 @@
 #include "native/snapshot.h"
 #include "native/clock.h"
 #include "native/cmd_replay.h"
+#include "native/control_file.h"
 #include "native/d3d_state.h"
 #include "native/guest_d3d.h"
 #include "native/guest_memory.h"
@@ -1027,17 +1028,7 @@ void BeginTrace(Tap& t) {
 }
 
 void PollControl(Tap& t, uint8_t* base) {
-  const std::string& path = REXCVAR_GET(rexnative_d3d_control);
-  if (path.empty()) return;
-  std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) return;
-  std::ifstream in(path);
-  std::string line;
-  std::vector<std::string> lines;
-  while (std::getline(in, line)) lines.push_back(line);
-  in.close();
-  std::filesystem::remove(path, ec);
-  for (auto& l : lines) {
+  for (const std::string& l : rexnative::control_file::Take(REXCVAR_GET(rexnative_d3d_control))) {
     std::istringstream ss(l);
     std::string cmd, arg;
     ss >> cmd >> arg;

@@ -1,6 +1,7 @@
 #include "trace.h"
 
 #include "clock.h"
+#include "control_file.h"
 #include "d3d12_device.h"
 #include "d3d_state.h"
 #include "draw.h"
@@ -584,22 +585,15 @@ void NativeRenderer::PlayTrace(uint8_t* base) {
           }
           frame_start = stats_.guest_begin_ns = NowNs();
           // The control file's `set` lines (the hooks that read it are the game's).
-          std::error_code ec;
-          if (!control.empty() && std::filesystem::exists(control, ec)) {
-            std::ifstream in(control);
-            std::string line;
-            while (std::getline(in, line)) {
-              std::istringstream ss(line);
-              std::string cmd, name, value;
-              ss >> cmd >> name;
-              std::getline(ss >> std::ws, value);
-              if (cmd == "set" && !name.empty() && !value.empty()) {
-                rex::cvar::SetFlagByName(name, value);
-                REXLOG_INFO("ReXNative trace control: {}", line);
-              }
+          for (const std::string& line : control_file::Take(control)) {
+            std::istringstream ss(line);
+            std::string cmd, name, value;
+            ss >> cmd >> name;
+            std::getline(ss >> std::ws, value);
+            if (cmd == "set" && !name.empty() && !value.empty()) {
+              rex::cvar::SetFlagByName(name, value);
+              REXLOG_INFO("ReXNative trace control: {}", line);
             }
-            in.close();
-            std::filesystem::remove(control, ec);
           }
           break;
         }

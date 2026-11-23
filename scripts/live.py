@@ -126,9 +126,35 @@ def end(s, wait=20):
             time.sleep(0.3)
 
 
-def append(path, text):
-    with open(path, 'a', encoding='ascii', newline='\n') as f:
-        f.write(text + '\n')
+def control(path, text):
+    """Commands for the running game in its control file (--rexnative_d3d_control), which the game
+    removes the moment it sees it: the file appears whole (written aside, then linked in place), as
+    an append could be seen empty and its commands lost (renderer/src/native/control_file.h). One
+    the game has not taken yet is waited for (3 s), then added to."""
+    text = text + '\n'
+    tmp = '%s.%d.tmp' % (path, os.getpid())
+    with open(tmp, 'w', encoding='ascii', newline='\n') as f:
+        f.write(text)
+    try:
+        for _ in range(60):
+            try:
+                os.link(tmp, path)  # only where there is none
+                return
+            except (FileExistsError, PermissionError):  # there is one, or it is being removed
+                pass
+            except OSError:  # a file system without hard links
+                try:
+                    if not os.path.exists(path):
+                        os.replace(tmp, path)
+                        return
+                except PermissionError:
+                    pass
+            time.sleep(0.05)
+        with open(path, 'a', encoding='ascii', newline='\n') as f:
+            f.write(text)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def write(path, text):
@@ -204,7 +230,7 @@ def send_schedule(s, schedule):
             parts = key.split(':')
             ms = parts[2] if len(parts) > 2 else '150'
             axes = (' ' + ' '.join(parts[3:])) if len(parts) > 3 else ''
-            append(os.path.join(s['live'], 'control.txt'), 'pad %s%s %s' % (parts[1], axes, ms))
+            control(os.path.join(s['live'], 'control.txt'), 'pad %s%s %s' % (parts[1], axes, ms))
             print('pad %s%s %s ms at %ss' % (parts[1], axes, ms, at_text))
         else:
             print("skipped '%s' at %ss: no window here (keys and clicks need one; use pad:)" % (key, at_text))
@@ -386,16 +412,16 @@ def main(argv):
         print(f or '')
     elif command == 'control':
         get_game(s)
-        write(os.path.join(s['live'], 'control.txt'), '\n'.join(arg.split(';')))
+        control(os.path.join(s['live'], 'control.txt'), '\n'.join(arg.split(';')))
         time.sleep(1.5)
         print('control: %s' % arg)
     elif command == 'trace':
         get_game(s)
         tag, frames = arg or 'frame', arg2 or '1'
-        control = os.path.join(s['live'], 'control.txt')
-        write(control, 'tap on\ntrace %s %s' % (tag, frames))
+        control_path = os.path.join(s['live'], 'control.txt')
+        control(control_path, 'tap on\ntrace %s %s' % (tag, frames))
         time.sleep(3)
-        write(control, 'tap off')
+        control(control_path, 'tap off')
         time.sleep(1.5)
         files = sorted(glob.glob(os.path.join(s['live'], 'trace', 'rexnative-d3d-%s-f*.txt' % tag)),
                        key=os.path.getmtime, reverse=True)[:int(frames)]
@@ -407,7 +433,7 @@ def main(argv):
         get_game(s)
         n = int(arg) if re.fullmatch(r'\d+', arg) else 2
         start = time.time()
-        append(os.path.join(s['live'], 'control.txt'), 'set rexnative_trace_record %d' % n)
+        control(os.path.join(s['live'], 'control.txt'), 'set rexnative_trace_record %d' % n)
         f = None
         for _ in range(100):
             time.sleep(0.3)
@@ -450,18 +476,18 @@ def main(argv):
                         '--over', arg or '0.004'])
     elif command == 'audit':
         get_game(s)
-        control = os.path.join(s['live'], 'control.txt')
+        control_path = os.path.join(s['live'], 'control.txt')
         start = time.time()
-        append(control, 'set rexnative_texture_audit 2')
+        control(control_path, 'set rexnative_texture_audit 2')
         time.sleep(1.5)
-        append(control, 'set rexnative_texture_audit 3')
+        control(control_path, 'set rexnative_texture_audit 3')
         time.sleep(2.5)
         print('\n'.join(log_since(s, 'ReXNative texture audit', start, 2000, r'^.*ReXNative texture audit: ')))
     elif command == 'idle':
         get_game(s)
         n = arg if re.fullmatch(r'\d+', arg) else '60'
         start = time.time()
-        append(os.path.join(s['live'], 'control.txt'), 'set rexnative_resolve_drop_idle %s' % n)
+        control(os.path.join(s['live'], 'control.txt'), 'set rexnative_resolve_drop_idle %s' % n)
         time.sleep(2.5)
         print('\n'.join(log_since(s, r'ReXNative resolve: (idle image|[0-9]+ images idle)', start, 400,
                                   r'^.*ReXNative resolve: ')))

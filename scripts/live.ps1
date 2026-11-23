@@ -161,6 +161,28 @@ function Get-Window($p) {
     throw 'the game has no window'
 }
 
+# Commands for the running game in its control file (--rexnative_d3d_control), which the game
+# removes the moment it sees it: the file appears whole (written aside, then moved in place), as
+# an append could be seen empty and its commands lost (renderer/src/native/control_file.h). One
+# the game has not taken yet is waited for (3 s), then added to.
+function Send-Control([string]$Path, [string[]]$Lines) {
+    $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $text = ($Lines | ForEach-Object { "$_`n" }) -join ''
+    $tmp = "$Path.$PID.tmp"
+    [IO.File]::WriteAllText($tmp, $text, [Text.Encoding]::ASCII)
+    try {
+        for ($i = 0; $i -lt 60; ++$i) {
+            if (-not (Test-Path -LiteralPath $Path)) {
+                try { [IO.File]::Move($tmp, $Path); return } catch [IO.IOException], [UnauthorizedAccessException] { }
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        [IO.File]::AppendAllText($Path, $text, [Text.Encoding]::ASCII)
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+    }
+}
+
 function Send-Schedule($p, [string]$schedule) {
     # "<seconds from now>:<key>" items, in order.
     $start = Get-Date
@@ -176,7 +198,7 @@ function Send-Schedule($p, [string]$schedule) {
             $parts = $key.Split(':')
             $ms = if ($parts.Count -gt 2) { $parts[2] } else { '150' }
             $axes = if ($parts.Count -gt 3) { ' ' + ($parts[3..($parts.Count - 1)] -join ' ') } else { '' }
-            Add-Content -Path (Join-Path $s.live 'control.txt') -Value "pad $($parts[1])$axes $ms" -Encoding ascii
+            Send-Control (Join-Path $s.live 'control.txt') "pad $($parts[1])$axes $ms"
             "pad $($parts[1])$axes $ms ms at ${at}s"
             continue
         }
@@ -391,7 +413,7 @@ switch ($Command) {
     }
     'control' {
         Get-Game $s | Out-Null
-        Set-Content -Path (Join-Path $s.live 'control.txt') -Value (($Arg -split ';') -join "`n") -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') ($Arg -split ';')
         Start-Sleep -Milliseconds 1500
         "control: $Arg"
     }
@@ -399,9 +421,9 @@ switch ($Command) {
         Get-Game $s | Out-Null
         $tag = if ($Arg) { $Arg } else { 'frame' }
         $frames = if ($Arg2) { $Arg2 } else { '1' }
-        Set-Content -Path (Join-Path $s.live 'control.txt') -Value "tap on`ntrace $tag $frames" -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') @('tap on', "trace $tag $frames")
         Start-Sleep -Milliseconds 3000
-        Set-Content -Path (Join-Path $s.live 'control.txt') -Value 'tap off' -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') 'tap off'
         Start-Sleep -Milliseconds 1500
         Get-ChildItem (Join-Path $s.live 'trace') -Filter "rexnative-d3d-$tag-f*.txt" | Sort-Object LastWriteTime -Descending |
             Select-Object -First ([int]$frames) | ForEach-Object { $_.FullName }
@@ -414,7 +436,7 @@ switch ($Command) {
         $n = if ($Arg -match '^\d+$') { [int]$Arg } else { 1 }
         $list = Join-Path $s.live 'rdoc\captures.txt'
         $before = if (Test-Path $list) { @(Get-Content $list).Count } else { 0 }
-        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_renderdoc_frames $n" -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') "set rexnative_renderdoc_frames $n"
         $lines = @()
         for ($i = 0; $i -lt 300 -and $lines.Count -lt $before + $n; ++$i) {
             Start-Sleep -Milliseconds 300
@@ -429,7 +451,7 @@ switch ($Command) {
         Get-Game $s | Out-Null
         $n = if ($Arg -match '^\d+$') { [int]$Arg } else { 2 }
         $start = Get-Date
-        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_trace_record $n" -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') "set rexnative_trace_record $n"
         $f = $null
         for ($i = 0; $i -lt 100 -and -not $f; ++$i) {
             Start-Sleep -Milliseconds 300
@@ -467,9 +489,9 @@ switch ($Command) {
         Get-Game $s | Out-Null
         $control = Join-Path $s.live 'control.txt'
         $start = Get-Date
-        Add-Content -Path $control -Value 'set rexnative_texture_audit 2' -Encoding ascii
+        Send-Control $control 'set rexnative_texture_audit 2'
         Start-Sleep -Milliseconds 1500
-        Add-Content -Path $control -Value 'set rexnative_texture_audit 3' -Encoding ascii
+        Send-Control $control 'set rexnative_texture_audit 3'
         Start-Sleep -Milliseconds 2500
         Get-Content -LiteralPath (Get-LogPath $s) -Tail 2000 | Select-String 'ReXNative texture audit' |
             ForEach-Object { $_.Line } | Where-Object {
@@ -483,7 +505,7 @@ switch ($Command) {
         Get-Game $s | Out-Null
         $n = if ($Arg -match '^\d+$') { $Arg } else { '60' }
         $start = Get-Date
-        Add-Content -Path (Join-Path $s.live 'control.txt') -Value "set rexnative_resolve_drop_idle $n" -Encoding ascii
+        Send-Control (Join-Path $s.live 'control.txt') "set rexnative_resolve_drop_idle $n"
         Start-Sleep -Milliseconds 2500
         Get-Content -LiteralPath (Get-LogPath $s) -Tail 400 | Select-String 'ReXNative resolve: (idle image|[0-9]+ images idle)' |
             ForEach-Object { $_.Line } | Where-Object {

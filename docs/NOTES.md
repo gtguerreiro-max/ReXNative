@@ -1174,3 +1174,21 @@ guest and the host would cut apart, the draw now binds a copy (`UploadReset32`, 
 fan's indices): the marker 0xFFFFFFFF, every other index its low 24 bits in guest endian, as the
 primitive processor's `ReplaceResetIndex32To24` does for the plugin. Its scan of every 32-bit
 strip with reset did not change the intro drive's draw CPU time (1.1 to 1.4 ms for 1000 draws).
+
+## The control file, whole
+
+`--rexnative_d3d_control` names a file the renderer reads and removes once per frame. Scripts used
+to append to it (`Add-Content`, `cat >>`, `open(..., 'a')`), which first creates the file and
+then writes into it: seen in between, the file was read empty and removed, and its commands were
+lost without a word. A route driving Dark Souls II on the Steam Deck (written over SSH) lost half
+its presses; on Windows, a script appending 1500 commands as fast as it could lost 39 and failed
+68 more (the file being removed under it). Both ends changed:
+- the writers (`live.ps1`'s Send-Control, `live.py`'s `control`) write the commands aside and move
+  the file in place whole; one the game has not taken yet is waited for (3 s, then added to);
+- the renderer (native/control_file.h, PollControl and the trace player) first renames the file to
+  `<file>.taken`, which fails while a writer has it open on Windows and leaves a later append a
+  file of its own, then takes it only once its last line is ended (a writer on Linux writes on
+  into the renamed file; after a second it is taken as it is).
+Against the old reader, emulated, the new writers lost none of 1500; against the new reader, the
+old appends lost none of 3000 (the 62 that failed, failed in the writer, as errors). In Forza
+Horizon, 80 `keys` presses 50 ms apart and 300 `Add-Content` lines in a row all arrived, in order.
