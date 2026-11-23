@@ -1144,39 +1144,42 @@ pixels (live shots of two runs differ by where the cars are, which looked like a
 ## A car's contact shadow in the motion blur
 
 Forza Horizon's motion blur copies the depth and stencil to an 8888 texture (a depth resolve of
-the 4x MSAA D24FS8 scene) and its mask pass (pixel shader E68FE55ECD482EC5, 640x360) reads it back:
-the depth's 20e4 bits from A, R and G (decoded with 255, 65280 and 15.9375 = 255/16, so the game
-counts on a texel's exact x/255), the stencil from B. Alpha (sharp) is `B != 0 && B <
-c253.w`, `c253.w` = 0.501968, about 32897/65536, just above 0x80 even in 16-bit fixed point:
-the cars (3 the player's, 0x0F and others the AI's) and 0x80 stay sharp, 0 (the road) and 0x81
-(foliage) blur. Each car's contact shadow first marks the ground and the foliage inside its box
-(10 triangles, no culling, depth test GE, two-sided stencil off): an `EQUAL 0` draw inverts bit 7
-(write mask 0x80, read mask 0xFF: the second face over a pixel fails, so every pixel a face is in
-front of), an `EQUAL 0x81` draw decrements foliage to 0x80, and the shadow is drawn where it is
-0x80. Between that and the copy only the cars (`REPLACE` 3) and one `REPLACE` 0 draw write
-stencil. The emulation, ReXNative's and Xenia's alike (the same frame in oracle mode: 44.8 dB
-under the bumper), leaves that box sharp: gravel around the car with a straight edge, the road
-beyond streaked. The same trace replayed with the three draws skipped (`draw-debug.txt`
-"0 0 875 878" in the capture folder) has no shadow, and the ground around and under the car blurs
-like the rest of the road. Footage of the Xbox 360 (the intro drive, the Viper from the front)
-has that ground blurred, the shadow under the car: the console marks less of the box than the
-emulation does, and the game means the mark to stay sharp. Ruled out so far (2026-11-23):
+the 4x MSAA D24FS8 scene) and its mask pass (pixel shader E68FE55ECD482EC5, 640x360) reads it back
+point-sampled: the depth's 20e4 bits from A, R and G (multiplied by 255, 65280 and 15.9375 =
+255/16), the stencil from B (the fetch constant swizzles the stencil byte, R in memory, there).
+Alpha (sharp) is `B != 0 && B < c253.w`, `c253.w` = 0.501968, about 32897/65536: the cars (3 the
+player's, 0x0F and others the AI's) stay sharp, 0 (the road) and 0x81 (foliage) blur, and 0x80
+sits a hair (7e-6) under the threshold with the PC's `x / 255`. Each car's contact shadow is a
+slab around it (indices 1-4 the corners at the ground, 6-9 the same 20 cm higher, from vertex
+shader constants: four sides and a top, 4.8 x 2.8 m around the Viper, no culling, depth test GE,
+two-sided stencil off): an `EQUAL 0` draw inverts bit 7 (write mask 0x80), so the ground under
+its top, the whole footprint, becomes 0x80; an `EQUAL 0x81` draw takes foliage to 0x80; the shadow
+is drawn where it is 0x80; only the cars (`REPLACE` 3) and one `REPLACE` 0 draw write stencil
+before the copy. The marking is the same on any correct rasteriser (the top is 20 cm in front of
+the ground), and footage of the Xbox 360 (the intro drive, the Viper from the front) has the soft
+shadow, so the console marks it too: yet that ground is blurred there, sharp in ReXNative's and
+Xenia's emulation (the same frame in oracle mode: 44.8 dB under the bumper), as gravel around the
+car with a straight edge. So on the console a point-sampled texel 0x80 reads at or above 0.501968,
+above 128/255. ReXNative reads point-sampled 8-bit unsigned texels as `(x + (x >> 7)) / 256`, the
+top bit added below the 8 (0x7F 0.49609375, 0x80 0.50390625, 0xFF 1.0; sdk patch 0046's
+`Modification::pixel.textures_unorm8`, set where every texture a pixel shader reads has 8 bits per
+component and none is signed; `--rexnative_texel_unorm8`): the trace of the intro drive then has
+the ground around and under the car blurred with the shadow soft, as the footage, and the frame
+otherwise within 1-5 levels (the blur's velocity, which the game encodes around 127). The exact
+formula below 0x80 is not known (no Xenos documentation of its texel conversion; the depth decode
+above works with it either way, the exponent's floor and the mantissa's fraction compensating),
+so filtered fetches (colours, normals) keep `x / 255`: there no threshold sees the half level.
+Ruled out on the way (2026-11-23):
 - hierarchical stencil, as far as `RB_HIZCONTROL`'s undocumented bits can be read from the
   values (the draw log's `hz=`): 0x13 for the whole main pass, these draws included (read as
   hierarchical Z on and written, the GE direction); the bits that look like the hierarchical
   stencil's are only set in the screen-space passes after the first depth copy (draws 275-287);
-- the per-face stencil state (0044: the box has two-sided stencil off);
-- a texel conversion other than x/255 putting 0x80 above `c253.w`: the depth decode above would
-  break with it (64/16 floored to 3);
+- the per-face stencil state (0044: the slab has two-sided stencil off);
 - anything resetting 0x80 before the copy.
 Xenia shows the same kind of thing in Forza Motorsport 4, the same engine: "square shadows" around
-the cars (xenia-canary/game-patches#398, worked around there by turning shadow maps off). What
-of the console's rasterising or testing marks less is still open; the candidates are which faces
-of the box pass on the console (only its back faces would leave the ground inside it unmarked)
-and how the console's predicated tiling (the scene is resolved in three 256-line bands) runs the
-box draws. The game's settings carry the console's look meanwhile (rexnative/tweaks.py,
-`rexnative.pixel_constant_override` = `E68FE55ECD482EC5:c253.w=0.5`): with the threshold below
-0x80 the box blurs with the road and the shadow stays, soft.
+the cars (xenia-canary/game-patches#398, worked around there by turning shadow maps off). Until
+this, the game's settings carried a threshold tweak (`rexnative.pixel_constant_override` =
+`E68FE55ECD482EC5:c253.w=0.5`, rexnative/tweaks.py); `rexnative project` takes it out again.
 
 ## Primitive reset in 32-bit indices
 

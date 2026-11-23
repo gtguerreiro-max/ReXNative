@@ -105,10 +105,13 @@ REXCVAR_DEFINE_BOOL(rexnative_dynamic_depth_bias, true, "ReXNative",
                     "pipeline state, where the driver supports it (the game animates it, which "
                     "made hundreds of pipelines per shader pair)");
 REXCVAR_DEFINE_STRING(rexnative_pixel_constant_override, "", "ReXNative",
-                      "Picture tweaks a game's settings ask for, not the console's: pixel shader "
-                      "float constants replaced, as <ucode hash>:c<register>.<x|y|z|w>=<value>, "
-                      "several joined by ';' (Forza Horizon: its motion blur's c253.w, so the "
-                      "ground in a car's contact shadow blurs like the road around it)");
+                      "Testing: pixel shader float constants replaced, as <ucode hash>:c<register>"
+                      ".<x|y|z|w>=<value>, several joined by ';'; not the console's emulation");
+REXCVAR_DEFINE_BOOL(rexnative_texel_unorm8, true, "ReXNative",
+                    "Point-sampled 8-bit unsigned texels read above the PC's x / 255 as on "
+                    "Xenos, (x + (x >> 7)) / 256: 0x80 is 0.50390625 (Forza Horizon's motion "
+                    "blur blurs the ground in a car's contact shadow by it); for a shader whose "
+                    "textures all have 8 bits per component (sdk patch 0046)");
 REXCVAR_DEFINE_BOOL(rexnative_independent_stencil_ref, true, "ReXNative",
                     "Give back faces their own stencil reference (RB_STENCILREFMASK_BF) where the "
                     "driver supports it (D3D12 options 14), instead of the front face's");
@@ -1233,6 +1236,7 @@ struct DrawRenderer::Impl {
   // front faces, 0 for back faces, nothing culled). With one for both, the back faces wrote the
   // front's (Xenia's D3D12 backend the same). docs/NOTES.md: it does not change Forza's picture.
   bool independent_stencil_ref = false;
+  bool texel_unorm8 = true;  // --rexnative_texel_unorm8
   // --rexnative_pixel_constant_override, parsed at Initialize.
   struct PixelOverride {
     uint64_t hash;
@@ -1969,6 +1973,9 @@ bool DrawRenderer::Impl::Initialize() {
                             options14.IndependentFrontAndBackStencilRefMaskSupported;
   REXLOG_INFO("ReXNative draw: a stencil reference for each face {}",
               independent_stencil_ref ? "on" : "off");
+  texel_unorm8 = REXCVAR_GET(rexnative_texel_unorm8);
+  REXLOG_INFO("ReXNative draw: 8-bit texels read {}",
+              texel_unorm8 ? "point-sampled as (x + (x >> 7)) / 256" : "as x / 255");
   const std::string overrides = REXCVAR_GET(rexnative_pixel_constant_override);
   for (size_t at = 0; at < overrides.size();) {
     size_t end = overrides.find(';', at);
@@ -4335,6 +4342,17 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
   // Where the draw's data comes from and the float constants each shader reads (hashed, then
   // in full).
   std::fprintf(draw_log, "  ia=%08X", s.indexed ? s.index_address : 0u);
+  // A small draw's indices in full, as guest memory holds them (a box, a decal volume).
+  if (membase && s.indexed && count && count <= 64) {
+    const uint8_t* p = membase + s.index_address;
+    const uint32_t bytes = s.index_32bit ? 4 : 2;
+    std::fputs(" [", draw_log);
+    for (uint32_t i = 0; i < count; ++i, p += bytes)
+      std::fprintf(draw_log, i ? " %X" : "%X",
+                   bytes == 4 ? uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | p[2] << 8 | p[3]
+                              : uint32_t(p[0]) << 8 | p[1]);
+    std::fputc(']', draw_log);
+  }
   const Shader::ConstantRegisterMap& vmap = vs.GetConstantRegisterMap();
   for (uint32_t w = 0; w < 3; ++w)
     for (uint32_t bits = vmap.vertex_fetch_bitmap[w]; bits; bits &= bits - 1) {
@@ -4343,7 +4361,7 @@ void DrawRenderer::Impl::LogDraw(const DrawState& s, const RegisterFile& regs, u
       std::fprintf(draw_log, " vf%u=%08X+%X", index, vf.address << 2, vf.size << 2);
       // Small buffers (a UI quad, a rectangle) in full, as guest memory holds them (big-endian
       // dwords, before the fetch's endian swap).
-      if (membase && vf.size && vf.size <= 16) {
+      if (membase && vf.size && vf.size <= (count <= 64 ? 64u : 16u)) {
         const uint8_t* p = membase + (vf.address << 2);
         std::fputs(" [", draw_log);
         for (uint32_t i = 0; i < vf.size; ++i, p += 4)
@@ -4591,11 +4609,14 @@ uint32_t DrawRenderer::Impl::BindTextures(const TextureBindContext& ctx, const D
       got = texture_cache.Get(fetch, ctx.list, frame_fence, &b, ctx.captured) && b.resource;
     }
     if (draw_log)
-      std::fprintf(draw_log, "  tf%u %08X fmt=%u %ux%ux%u dim=%u tiled=%u mips=%u%s%s\n",
+      std::fprintf(draw_log,
+                   "  tf%u %08X fmt=%u %ux%ux%u dim=%u tiled=%u mips=%u%s%s "
+                   "fetch=%08X %08X %08X %08X %08X %08X\n",
                    tb.fetch_constant, b.key.base_page << 12, uint32_t(b.key.format), b.key.width,
                    b.key.height, b.key.depth_or_array_size, uint32_t(b.key.dimension),
                    uint32_t(b.key.tiled), b.key.mip_levels(), got ? "" : " missing",
-                   got && b.aliased ? " alias" : "");
+                   got && b.aliased ? " alias" : "", fetch[0], fetch[1], fetch[2], fetch[3],
+                   fetch[4], fetch[5]);
     if (got) {
       profile::Scope srv_scope(profile::kTexSrv);
       stale += b.stale;
@@ -5024,7 +5045,7 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   if (motion) mods = WithMotionVectors(mods);
   const uint64_t generic_pixel_mod = mods.pixel;
   mods.pixel = SpecializePixelTextures(mods.pixel, s.fetch(0), mods_memo.ps_textures,
-                                       signed_is_unsigned_formats);
+                                       signed_is_unsigned_formats, texel_unorm8);
 
   if (!mods.draw) {
     skip("the shader modifications draw nothing");

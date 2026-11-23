@@ -1,0 +1,74 @@
+From 0aab2eade0a4463a9c185da9ef6bd58a27b15481 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 22:18:00 +0000
+Subject: [PATCH] gpu: point-sampled 8-bit texels can read as Xenos reads them,
+ above x / 255
+
+Modification::pixel.textures_unorm8, set by a host renderer where every texture a pixel shader
+reads is unsigned with 8 bits per component: its point-sampled fetches (no filter from the fetch
+constant, no anisotropy) read texels as (x + (x >> 7)) / 256, the top bit added below the 8, from
+the host's x / 255 (x * 255 / 256 + [x >= 128] / 256). On the console a point-sampled 0x80 reads
+above 128 / 255: Forza Horizon's motion blur keeps its stencil 0x80 sharp below 0.501968 and the
+Xbox 360 blurs it, which x / 255 did not. Filtered fetches are left as they were.
+---
+ .../xenos/pipeline/shader/dxbc_translator.h   |  5 ++++
+ .../pipeline/shader/dxbc_translator_fetch.cpp | 27 +++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator.h b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+index 1f262e6d..1c8b15aa 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator.h
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+@@ -135,6 +135,11 @@ class DXBCShaderTranslator : public ShaderTranslator {
+       // conversions. Set by a host renderer that knows the fetch constants when it creates the
+       // pipeline; nothing in the SDK sets it.
+       u32 textures_unsigned : 1;
++      // With textures_unsigned: every texture the shader reads also has 8 bits per component,
++      // so its point-sampled fetches read texels as (x + (x >> 7)) / 256 (0x80 is 0.50390625),
++      // not as the host's x / 255 (see the end of ProcessTextureFetchInstruction). Set by a host
++      // renderer that knows the fetch constants; nothing in the SDK sets it.
++      u32 textures_unorm8 : 1;
+     } pixel;
+ 
+     explicit Modification(u64 modification_value = 0) : value(modification_value) {
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+index 48fdd94e..1ad130e2 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -1622,6 +1622,33 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+     PopSystemTemp();
+   }
+ 
++  // An 8-bit unsigned normalized texel fetched point-sampled reads above x / 255 on Xenos where a
++  // game can tell: Forza Horizon's motion blur keeps its stencil 0x80 sharp below 0.501968 (just
++  // above 128 / 255) and the console blurs it, which x / 255 did not. Read as (x + (x >> 7)) /
++  // 256 here, the top bit added below the 8 (0x7F 0.49609375, 0x80 0.50390625, 0xFF 1.0), from
++  // the host's x / 255: x * 255 / 256 + [x >= 128] / 256, the step as saturate(v * 255 - 127).
++  // Only for fetches the instruction itself makes point-sampled (no filter from the fetch
++  // constant, no anisotropy): there a texel's exact value is what the shader works with (a mask,
++  // an ID, a stencil copy); a filtered fetch (colours, normals) stays x / 255.
++  if (instr.opcode == FetchOpcode::kTextureFetch && textures_unsigned &&
++      GetDXBCShaderModification().pixel.textures_unorm8 && used_result_nonzero_components &&
++      instr.attributes.mag_filter == xenos::TextureFilter::kPoint &&
++      instr.attributes.min_filter == xenos::TextureFilter::kPoint &&
++      (instr.attributes.mip_filter == xenos::TextureFilter::kPoint ||
++       instr.attributes.mip_filter == xenos::TextureFilter::kBaseMap) &&
++      instr.attributes.aniso_filter == xenos::AnisoFilter::kDisabled) {
++    u32 high_temp = PushSystemTemp();
++    a_.OpMAd(dxbc::Dest::R(high_temp, used_result_nonzero_components),
++             dxbc::Src::R(system_temp_result_), dxbc::Src::LF(255.0f), dxbc::Src::LF(-127.0f),
++             true);
++    a_.OpMul(dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
++             dxbc::Src::R(system_temp_result_), dxbc::Src::LF(255.0f / 256.0f));
++    a_.OpMAd(dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
++             dxbc::Src::R(high_temp), dxbc::Src::LF(1.0f / 256.0f),
++             dxbc::Src::R(system_temp_result_));
++    PopSystemTemp();
++  }
++
+   u32 used_result_zero_components = used_result_components & ~used_result_nonzero_components;
+   if (used_result_zero_components) {
+     a_.OpMov(dxbc::Dest::R(system_temp_result_, used_result_zero_components), dxbc::Src::LF(0.0f));
+-- 
+2.55.0.windows.5
+

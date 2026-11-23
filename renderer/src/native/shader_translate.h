@@ -99,19 +99,27 @@ ShaderModifications SelectModifications(const DxbcShaderTranslator& translator,
 // (SignedViewIsUnsignedFormats: the signed view is the unsigned one, and kSigned applies no
 // conversion of its own). `fetch` is the first of the 32 six-dword texture fetch constants.
 // Signs and exponent adjustment change per draw, so this stays outside SelectModifications and
-// its memo.
+// its memo. With `unorm8` (--rexnative_texel_unorm8), where every one of those textures also has
+// 8 bits per component and none of them is signed, Modification::pixel.textures_unorm8 too: the
+// shader's point-sampled fetches read their texels as (x + (x >> 7)) / 256 (sdk patch 0046).
 inline uint64_t SpecializePixelTextures(uint64_t pixel, const uint32_t* fetch, uint32_t textures,
-                                        uint64_t signed_is_unsigned_formats) {
+                                        uint64_t signed_is_unsigned_formats, bool unorm8 = false) {
   if (!textures) return pixel;
+  // k_8, k_8_8_8_8, k_8_A, k_8_B, k_8_8, k_8_8_8_8_A (not k_8_8_8_8_AS_16_16_16_16, nor DXT).
+  constexpr uint64_t kUnorm8Formats = 1ull << 2 | 1ull << 6 | 1ull << 8 | 1ull << 9 |
+                                      1ull << 10 | 1ull << 14;
+  bool all_unorm8 = unorm8;
   for (; textures; textures &= textures - 1) {
     const uint32_t* f = fetch + std::countr_zero(textures) * 6;
     const uint32_t signs = f[0] & 0x3FCu;  // 2 bits per component: 0 unsigned, 1 signed
     if (f[3] & 0x7E000u) return pixel;
     if (signs && ((signs & 0x2A8u) || !((signed_is_unsigned_formats >> (f[1] & 63)) & 1)))
       return pixel;
+    all_unorm8 = all_unorm8 && !signs && ((kUnorm8Formats >> (f[1] & 63)) & 1);
   }
   DxbcShaderTranslator::Modification pm(pixel);
   pm.pixel.textures_unsigned = 1;  // sdk/patches/v0.11 (pgr4-native's 0022)
+  if (all_unorm8) pm.pixel.textures_unorm8 = 1;  // sdk/patches/v0.11/0046
   return pm.value;
 }
 // The draw's modifications with motion vectors (Modification::vertex/pixel.motion_vectors), for
