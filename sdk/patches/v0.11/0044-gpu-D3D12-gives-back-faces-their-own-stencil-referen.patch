@@ -1,0 +1,220 @@
+From 6a4971068e7339664997e4401bed31226139cf34 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 17:38:37 +0000
+Subject: [PATCH] gpu: D3D12 gives back faces their own stencil reference
+
+Where the device has D3D12 options 14 (IndependentFrontAndBackStencilRefMask),
+a two-sided draw's back faces take RB_STENCILREFMASK_BF's reference through
+OMSetFrontAndBackStencilRef, as the Vulkan backend already does; otherwise one
+reference for both, as before. Forza Horizon draws its cars both sides, front
+faces writing 0x81 and back faces 0, and its motion blur keeps 0x81 (the car)
+sharp: with the front's reference for both, the body's back faces seen under
+the car were car too, and the ground under it had no motion blur.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/d3d12/command_processor.cpp     | 42 +++++++++++++------
+ src/gpu/xenos/d3d12/command_processor.h       |  1 +
+ src/gpu/xenos/d3d12/deferred_command_list.cpp | 15 +++++++
+ src/gpu/xenos/d3d12/deferred_command_list.h   |  9 ++++
+ src/gpu/xenos/host/d3d12/d3d12_provider.cpp   | 10 +++++
+ src/gpu/xenos/host/d3d12/d3d12_provider.h     |  4 ++
+ 6 files changed, 69 insertions(+), 12 deletions(-)
+
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index b5b082e9..acace82a 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -768,9 +768,11 @@ void D3D12CommandProcessor::SetScissorRect(const D3D12_RECT& scissor_rect) {
+ }
+ 
+ void D3D12CommandProcessor::SetStencilReference(u32 stencil_ref) {
+-  ff_stencil_ref_update_needed_ |= ff_stencil_ref_ != stencil_ref;
++  ff_stencil_ref_update_needed_ |=
++      ff_stencil_ref_ != stencil_ref || ff_stencil_ref_back_ != stencil_ref;
+   if (ff_stencil_ref_update_needed_) {
+     ff_stencil_ref_ = stencil_ref;
++    ff_stencil_ref_back_ = stencil_ref;
+     deferred_command_list_.D3DOMSetStencilRef(stencil_ref);
+     ff_stencil_ref_update_needed_ = false;
+   }
+@@ -3444,20 +3446,36 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
+       ff_blend_factor_update_needed_ = false;
+     }
+ 
+-    // No per face reference in Direct3D 12, use the back one only if drawing only back faces.
+-    xenos::Register stencil_ref_mask_reg;
+-    auto pa_su_sc_mode_cntl = regs.Get<xenos::reg::PA_SU_SC_MODE_CNTL>();
+-    if (primitive_polygonal && normalized_depth_control.backface_enable &&
+-        pa_su_sc_mode_cntl.cull_front && !pa_su_sc_mode_cntl.cull_back) {
+-      stencil_ref_mask_reg = xenos::Register::RB_STENCILREFMASK_BF;
+-    } else {
+-      stencil_ref_mask_reg = xenos::Register::RB_STENCILREFMASK;
++    // A reference for each face where the device has them (D3D12_OPTIONS14): a two-sided draw
++    // with its own back face reference (Forza Horizon's cars: front faces 0x81, back faces 0,
++    // nothing culled) writes it. Otherwise one for both, the back one only if drawing only back
++    // faces.
++    u32 stencil_ref = regs.Get<xenos::reg::RB_STENCILREFMASK>(xenos::Register::RB_STENCILREFMASK)
++                          .stencilref;
++    u32 stencil_ref_back = stencil_ref;
++    if (primitive_polygonal && normalized_depth_control.backface_enable) {
++      stencil_ref_back =
++          regs.Get<xenos::reg::RB_STENCILREFMASK>(xenos::Register::RB_STENCILREFMASK_BF)
++              .stencilref;
++    }
++    if (!GetD3D12Provider().IsIndependentFrontAndBackStencilRefMaskSupported()) {
++      auto pa_su_sc_mode_cntl = regs.Get<xenos::reg::PA_SU_SC_MODE_CNTL>();
++      if (pa_su_sc_mode_cntl.cull_front && !pa_su_sc_mode_cntl.cull_back) {
++        stencil_ref = stencil_ref_back;
++      }
++      stencil_ref_back = stencil_ref;
+     }
+-    u32 stencil_ref = regs.Get<xenos::reg::RB_STENCILREFMASK>(stencil_ref_mask_reg).stencilref;
+-    ff_stencil_ref_update_needed_ |= ff_stencil_ref_ != stencil_ref;
++    ff_stencil_ref_update_needed_ |=
++        ff_stencil_ref_ != stencil_ref || ff_stencil_ref_back_ != stencil_ref_back;
+     if (ff_stencil_ref_update_needed_) {
+       ff_stencil_ref_ = stencil_ref;
+-      deferred_command_list_.D3DOMSetStencilRef(ff_stencil_ref_);
++      ff_stencil_ref_back_ = stencil_ref_back;
++      if (stencil_ref == stencil_ref_back) {
++        deferred_command_list_.D3DOMSetStencilRef(ff_stencil_ref_);
++      } else {
++        deferred_command_list_.D3DOMSetFrontAndBackStencilRef(ff_stencil_ref_,
++                                                              ff_stencil_ref_back_);
++      }
+       ff_stencil_ref_update_needed_ = false;
+     }
+   }
+diff --git a/src/gpu/xenos/d3d12/command_processor.h b/src/gpu/xenos/d3d12/command_processor.h
+index e979b9d4..b3fff87f 100644
+--- a/src/gpu/xenos/d3d12/command_processor.h
++++ b/src/gpu/xenos/d3d12/command_processor.h
+@@ -632,6 +632,7 @@ class D3D12CommandProcessor : public CommandProcessor {
+   D3D12_RECT ff_scissor_;
+   f32 ff_blend_factor_[4];
+   u32 ff_stencil_ref_;
++  u32 ff_stencil_ref_back_ = 0;
+   bool ff_viewport_update_needed_;
+   bool ff_scissor_update_needed_;
+   bool ff_blend_factor_update_needed_;
+diff --git a/src/gpu/xenos/d3d12/deferred_command_list.cpp b/src/gpu/xenos/d3d12/deferred_command_list.cpp
+index a676a10c..8920f07b 100644
+--- a/src/gpu/xenos/d3d12/deferred_command_list.cpp
++++ b/src/gpu/xenos/d3d12/deferred_command_list.cpp
+@@ -35,6 +35,9 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+   const uintmax_t* stream = command_stream_.Data();
+   size_t stream_remaining = command_stream_.Size();
+   ID3D12PipelineState* current_pipeline_state = nullptr;
++  // Queried at the first per-face stencil reference.
++  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList8> command_list_8;
++  bool command_list_8_queried = false;
+   while (stream_remaining != 0) {
+     const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(stream);
+     stream += kCommandHeaderSizeElements;
+@@ -143,6 +146,18 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+       case Command::kD3DOMSetStencilRef: {
+         command_list->OMSetStencilRef(*reinterpret_cast<const UINT*>(stream));
+       } break;
++      case Command::kD3DOMSetFrontAndBackStencilRef: {
++        auto args = reinterpret_cast<const UINT*>(stream);
++        if (!command_list_8_queried) {
++          command_list->QueryInterface(IID_PPV_ARGS(&command_list_8));
++          command_list_8_queried = true;
++        }
++        if (command_list_8) {
++          command_list_8->OMSetFrontAndBackStencilRef(args[0], args[1]);
++        } else {
++          command_list->OMSetStencilRef(args[0]);
++        }
++      } break;
+       case Command::kD3DResourceBarrier: {
+         static_assert(alignof(D3D12_RESOURCE_BARRIER) <= alignof(uintmax_t));
+         command_list->ResourceBarrier(
+diff --git a/src/gpu/xenos/d3d12/deferred_command_list.h b/src/gpu/xenos/d3d12/deferred_command_list.h
+index fb2ed881..7383aa7b 100644
+--- a/src/gpu/xenos/d3d12/deferred_command_list.h
++++ b/src/gpu/xenos/d3d12/deferred_command_list.h
+@@ -267,6 +267,14 @@ class DeferredCommandList {
+     arg = stencil_ref;
+   }
+ 
++  // ID3D12GraphicsCommandList8 (D3D12_OPTIONS14); the front reference for both without it.
++  void D3DOMSetFrontAndBackStencilRef(UINT front_stencil_ref, UINT back_stencil_ref) {
++    auto args = reinterpret_cast<UINT*>(
++        WriteCommand(Command::kD3DOMSetFrontAndBackStencilRef, sizeof(UINT) * 2));
++    args[0] = front_stencil_ref;
++    args[1] = back_stencil_ref;
++  }
++
+   void D3DResourceBarrier(UINT num_barriers, const D3D12_RESOURCE_BARRIER* barriers) {
+     if (num_barriers == 0) {
+       return;
+@@ -471,6 +479,7 @@ class DeferredCommandList {
+     kD3DOMSetBlendFactor,
+     kD3DOMSetRenderTargets,
+     kD3DOMSetStencilRef,
++    kD3DOMSetFrontAndBackStencilRef,
+     kD3DResourceBarrier,
+     kRSSetScissorRect,
+     kRSSetViewport,
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp b/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
+index d834fe72..00c0e28a 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
++++ b/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
+@@ -393,6 +393,14 @@ bool D3D12Provider::Initialize(i32 adapter_index_wanted) {
+     unaligned_block_textures_supported_ =
+         static_cast<bool>(options8.UnalignedBlockTexturesSupported);
+   }
++  // OMSetFrontAndBackStencilRef (ID3D12GraphicsCommandList8).
++  independent_front_and_back_stencil_ref_mask_supported_ = false;
++  D3D12_FEATURE_DATA_D3D12_OPTIONS14 options14;
++  if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options14,
++                                            sizeof(options14)))) {
++    independent_front_and_back_stencil_ref_mask_supported_ =
++        static_cast<bool>(options14.IndependentFrontAndBackStencilRefMaskSupported);
++  }
+   virtual_address_bits_per_resource_ = 0;
+   D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT virtual_address_support;
+   if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT,
+@@ -403,6 +411,7 @@ bool D3D12Provider::Initialize(i32 adapter_index_wanted) {
+   }
+   REXGPU_INFO(
+       "Direct3D 12 device and OS features:\n"
++      "* Independent front and back stencil reference: {}\n"
+       "* Max GPU virtual address bits per resource: {}\n"
+       "* Non-zeroed heap creation: {}\n"
+       "* Pixel shader specified stencil reference: {}\n"
+@@ -411,6 +420,7 @@ bool D3D12Provider::Initialize(i32 adapter_index_wanted) {
+       "* Resource binding: tier {}\n"
+       "* Tiled resources: tier {}\n"
+       "* Unaligned block-compressed textures: {}",
++      independent_front_and_back_stencil_ref_mask_supported_ ? "yes" : "no",
+       virtual_address_bits_per_resource_,
+       (heap_flag_create_not_zeroed_ & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) ? "yes" : "no",
+       ps_specified_stencil_reference_supported_ ? "yes" : "no",
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_provider.h b/src/gpu/xenos/host/d3d12/d3d12_provider.h
+index 7d6ef6c9..a6fb3994 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_provider.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_provider.h
+@@ -87,6 +87,9 @@ class D3D12Provider : public GraphicsProvider {
+   D3D12_HEAP_FLAGS GetHeapFlagCreateNotZeroed() const { return heap_flag_create_not_zeroed_; }
+   D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER
+   GetProgrammableSamplePositionsTier() const { return programmable_sample_positions_tier_; }
++  bool IsIndependentFrontAndBackStencilRefMaskSupported() const {
++    return independent_front_and_back_stencil_ref_mask_supported_;
++  }
+   bool IsPSSpecifiedStencilReferenceSupported() const {
+     return ps_specified_stencil_reference_supported_;
+   }
+@@ -165,6 +168,7 @@ class D3D12Provider : public GraphicsProvider {
+   D3D12_RESOURCE_BINDING_TIER resource_binding_tier_;
+   D3D12_TILED_RESOURCES_TIER tiled_resources_tier_;
+   u32 virtual_address_bits_per_resource_;
++  bool independent_front_and_back_stencil_ref_mask_supported_;
+   bool ps_specified_stencil_reference_supported_;
+   bool rasterizer_ordered_views_supported_;
+   bool unaligned_block_textures_supported_;
+-- 
+2.55.0.windows.5
+
