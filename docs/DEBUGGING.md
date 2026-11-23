@@ -4,6 +4,17 @@ Every tool here is in the renderer or in `scripts\`, the same for every game, an
 a path, a short list, only what differs. Start a game once with `scripts\live.ps1 start`, drive
 it to the problem, and ask it questions; nothing needs a restart but a rebuild.
 
+**First, the game stock.** Investigate with `live.ps1 start -Stock` (and `play -Stock`): the game
+as it comes, without what a player's settings may put on top of the emulation, DLSS 5 and its
+look, the upscaler, the resolution scale, frame generation, forced anisotropy, HDR output and
+pixel constant overrides (`scripts\stock_flags.txt`). Its settings file often has them on (Forza
+Horizon's: DLSS 5's cinematic look, a 2x resolution scale), and then a picture is not the
+emulation's to judge: DLSS 5 changes the look and does not give the same image twice, so a
+before/after or a comparison with the classic renderer or the console measures the extras. Turn
+one back on (`-Extra` after `-Stock`) only when the fault is in it, or shows only with it. Not
+the same as `control "renderer stock"`, which hands the frames to the classic renderer. The
+ReXNative Manager's tests run stock too.
+
 ## Which tool
 
 | The symptom | The tool | What it answers |

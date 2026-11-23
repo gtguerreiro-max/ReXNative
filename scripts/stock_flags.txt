@@ -1,0 +1,10 @@
+# The game as it comes, without the extras a player's settings may turn on (live.ps1 / live.sh
+# -Stock, and the ReXNative Manager's tests): the picture an investigation starts from. One flag
+# per line; the emulation itself (texel_unorm8, gamma_targets and the like) stays as it is.
+--rexnative_dlss5=false
+--rexnative_upscaler=false
+--rexnative_resolution_scale=1
+--rexnative_frame_generation=false
+--rexnative_anisotropy=1
+--rexnative_hdr=false
+--rexnative_pixel_constant_override=

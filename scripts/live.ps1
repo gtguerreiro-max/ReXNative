@@ -35,6 +35,11 @@
 #                                       # was an image that outlived its memory
 # Two sessions at once: each sets $env:REXNATIVE_LIVE_STATE to a folder of its own, or one's
 # start, play and stop act on the other's game (the live game is one per state folder).
+# With -Stock at start or play the game runs as it comes, without the extras a player's settings
+# may turn on: DLSS 5 and its look, the upscaler, the resolution scale, frame generation, forced
+# anisotropy, HDR output and pixel constant overrides (-Extra after it can turn one back on). An
+# investigation starts there (docs/DEBUGGING.md): with them the picture is not the emulation's.
+# (Not `control "renderer stock"`, which hands the frames to the classic renderer.)
 # With -Oracle at start the Xenos plugin draws the game and ReXNative draws beside it, and
 #   scripts\live.ps1 oracle [threshold] # compares every resolve of the next frame between the
 #                                       # two, printing only the ones that differ (the first one
@@ -82,6 +87,7 @@ param(
     [switch]$Force,
     [switch]$RenderDoc,
     [switch]$Oracle,
+    [switch]$Stock,
     [switch]$Plain
 )
 $ErrorActionPreference = 'Stop'
@@ -316,6 +322,11 @@ switch ($Command) {
               '--rexnative_texture_audit=1') }
         # -RenderDoc: the renderer loads it and takes the captures (debug_tools.h).
         if ($RenderDoc) { $native += @('--rexnative_renderdoc=auto', "--rexnative_renderdoc_dir=$live\rdoc") }
+        # -Stock: the game without the player's extras (scripts\stock_flags.txt, also live.py's).
+        if ($Stock) {
+            $native += @(Get-Content (Join-Path $PSScriptRoot 'stock_flags.txt') |
+                         Where-Object { $_ -and -not $_.StartsWith('#') })
+        }
         # -Oracle: the Xenos plugin presents and ReXNative draws beside it, on the guest thread;
         # `oracle` dumps a frame's resolves from both.
         if ($Oracle) {

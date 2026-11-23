@@ -35,7 +35,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STRING = {'dir', 'exe', 'extra', 'title', 'route', 'renderdocdir'}
-SWITCH = {'pulse', 'force', 'renderdoc', 'oracle', 'plain'}
+SWITCH = {'pulse', 'force', 'renderdoc', 'oracle', 'plain', 'stock'}
 STATE_DIR = os.environ.get('REXNATIVE_LIVE_STATE') or os.path.join(
     os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'rexnative-live')
 STATE = os.path.join(STATE_DIR, 'state.json')
@@ -354,6 +354,9 @@ def main(argv):
             '--rexnative_d3d_trace_dir=' + wine(os.path.join(live, 'trace')),
             '--rexnative_resolve_dump=' + wine(os.path.join(live, dumps)),
             '--rexnative_texture_audit=1']
+        if o['stock']:  # the game without the player's extras (live.ps1 -Stock)
+            with open(os.path.join(HERE, 'stock_flags.txt'), encoding='utf-8') as f:
+                native += [l.strip() for l in f if l.strip() and not l.startswith('#')]
         if o['oracle']:
             native += ['--rexnative=false', '--rexnative_beside_xenos=true',
                        '--rexnative_render_thread=false', '--rexnative_hdr=false']
