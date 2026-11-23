@@ -1,0 +1,89 @@
+From c99818c0aacfd9f06ec29b321e7e97b33b9906c8 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 11:47:45 +0000
+Subject: [PATCH] gpu: a gamma render target's sRGB view gets the PWL value
+ decoded with the sRGB curve
+
+kSysFlagColor#GammaSrgbView: with kSysFlagConvertColor#ToGamma, the pixel shader's PWL gamma color is decoded with the sRGB curve, so a host render target written through an sRGB view (blending in linear color) stores the PWL value the console's EDRAM holds. ReXNative's renderer blends into k_8_8_8_8_GAMMA targets through such a view; linear color written as it was came out as the sRGB curve's value, about three times the PWL one near black.
+---
+ .../xenos/pipeline/shader/dxbc_translator.h   | 13 ++++++++++++
+ .../pipeline/shader/dxbc_translator_om.cpp    | 21 ++++++++++++++++++-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator.h b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+index d7e508b6..1f262e6d 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator.h
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+@@ -201,6 +201,15 @@ class DXBCShaderTranslator : public ShaderTranslator {
+      * coverage are disabled. Ignored when the shader has kill instructions or writes depth.
+      */
+     kSysFlagROVDepthStencilEarlyWriteShift,
++    /**
++     * With kSysFlagConvertColor#ToGamma: the PWL gamma value decoded with the sRGB curve, for a
++     * host render target written through an sRGB view (blending in linear color): the view's
++     * encode then stores the PWL gamma value the console's EDRAM holds.
++     */
++    kSysFlagColor0GammaSrgbViewShift,
++    kSysFlagColor1GammaSrgbViewShift,
++    kSysFlagColor2GammaSrgbViewShift,
++    kSysFlagColor3GammaSrgbViewShift,
+ 
+     kSysFlagCount,
+ 
+@@ -225,6 +234,10 @@ class DXBCShaderTranslator : public ShaderTranslator {
+     kSysFlagROVDepthWrite = 1u << kSysFlagROVDepthWriteShift,
+     kSysFlagROVStencilTest = 1u << kSysFlagROVStencilTestShift,
+     kSysFlagROVDepthStencilEarlyWrite = 1u << kSysFlagROVDepthStencilEarlyWriteShift,
++    kSysFlagColor0GammaSrgbView = 1u << kSysFlagColor0GammaSrgbViewShift,
++    kSysFlagColor1GammaSrgbView = 1u << kSysFlagColor1GammaSrgbViewShift,
++    kSysFlagColor2GammaSrgbView = 1u << kSysFlagColor2GammaSrgbViewShift,
++    kSysFlagColor3GammaSrgbView = 1u << kSysFlagColor3GammaSrgbViewShift,
+   };
+   static_assert(kSysFlagCount <= 32, "Too many flags in the system constants");
+ 
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+index 375cd1c4..1fdf1d79 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+@@ -878,6 +878,7 @@ void DXBCShaderTranslator::CompletePixelShaderWriteToRTVs() {
+   }
+ 
+   u32 gamma_temp = PushSystemTemp();
++  u32 srgb_temp = PushSystemTemp();
+   for (u32 i = 0; i < 4; ++i) {
+     if (!(shader_writes_color_targets & (1 << i))) {
+       continue;
+@@ -907,11 +908,29 @@ void DXBCShaderTranslator::CompletePixelShaderWriteToRTVs() {
+         PreSaturatedLinearToPWLGamma(a_, system_temp_color, j, system_temp_color, j, gamma_temp, 0,
+                                      gamma_temp, 1);
+       }
++      // Through a host sRGB view: the PWL value decoded with the sRGB curve, so the view's encode
++      // writes the PWL value back (exact for 8 bits) while the blender works in linear color.
++      a_.OpAnd(dxbc::Dest::R(gamma_temp, 0b0001), LoadFlagsSystemConstant(),
++               dxbc::Src::LU(kSysFlagColor0GammaSrgbView << i));
++      a_.OpIf(true, dxbc::Src::R(gamma_temp, dxbc::Src::kXXXX));
++      // gamma_temp.xyz: ((c + 0.055) / 1.055) ^ 2.4; srgb_temp.xyz: c / 12.92, then c >= 0.04045.
++      a_.OpMAd(dxbc::Dest::R(gamma_temp, 0b0111), dxbc::Src::R(system_temp_color),
++               dxbc::Src::LF(1.0f / 1.055f), dxbc::Src::LF(0.055f / 1.055f));
++      a_.OpLog(dxbc::Dest::R(gamma_temp, 0b0111), dxbc::Src::R(gamma_temp));
++      a_.OpMul(dxbc::Dest::R(gamma_temp, 0b0111), dxbc::Src::R(gamma_temp), dxbc::Src::LF(2.4f));
++      a_.OpExp(dxbc::Dest::R(gamma_temp, 0b0111), dxbc::Src::R(gamma_temp));
++      a_.OpMul(dxbc::Dest::R(srgb_temp, 0b0111), dxbc::Src::R(system_temp_color),
++               dxbc::Src::LF(1.0f / 12.92f));
++      a_.OpGE(dxbc::Dest::R(system_temp_color, 0b0111), dxbc::Src::R(system_temp_color),
++              dxbc::Src::LF(0.04045f));
++      a_.OpMovC(dxbc::Dest::R(system_temp_color, 0b0111), dxbc::Src::R(system_temp_color),
++                dxbc::Src::R(gamma_temp), dxbc::Src::R(srgb_temp));
++      a_.OpEndIf();
+       a_.OpEndIf();
+     }
+     a_.OpMov(dxbc::Dest::O(i), dxbc::Src::R(system_temp_color));
+   }
+-  PopSystemTemp();
++  PopSystemTemp(2);
+ }
+ 
+ void DXBCShaderTranslator::CompletePixelShaderWriteMotionVectors() {
+-- 
+2.55.0.windows.5
+

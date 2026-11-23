@@ -51,6 +51,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <bit>
 #include <cfloat>
 #include <cstddef>
@@ -125,6 +126,10 @@ REXCVAR_DEFINE_BOOL(rexnative_gamma_targets, true, "ReXNative",
                     "Write k_8_8_8_8_GAMMA render targets in the console's piecewise-linear "
                     "gamma, as its EDRAM holds them (resolves and the front buffer then match "
                     "the Xenos plugin); false: linear values, darker mid-tones");
+REXCVAR_DEFINE_BOOL(rexnative_gamma_blend_pwl, true, "ReXNative",
+                    "A draw that blends into a k_8_8_8_8_GAMMA render target stores the console's "
+                    "PWL gamma value (exact where it covers the pixel); false: the sRGB curve's "
+                    "value, too bright near black");
 REXCVAR_DEFINE_BOOL(rexnative_memexport, true, "ReXNative",
                     "Run the draws whose shaders write guest memory (memexport: Bink video, GPU "
                     "particles), with shared memory as a UAV (false: skip them)");
@@ -318,6 +323,15 @@ constexpr D3D12_RESOURCE_STATES kSharedReadState = D3D12_RESOURCE_STATE_NON_PIXE
 
 // The RTV format of a draw that blends into a k_8_8_8_8_GAMMA target (BuildPipelineKey).
 constexpr DXGI_FORMAT kGammaBlendFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
+// SDK patch 0043's flag (the PWL color decoded with the sRGB curve for an sRGB view), 0 with an
+// SDK source tree that lacks it: such a build keeps writing linear color through the view.
+template <typename T, typename = void>
+struct GammaSrgbViewFlagOf : std::integral_constant<uint32_t, 0> {};
+template <typename T>
+struct GammaSrgbViewFlagOf<T, std::void_t<decltype(T::kSysFlagColor0GammaSrgbView)>>
+    : std::integral_constant<uint32_t, uint32_t(T::kSysFlagColor0GammaSrgbView)> {};
+constexpr uint32_t kGammaSrgbViewFlag = GammaSrgbViewFlagOf<DxbcShaderTranslator>::value;
 
 // reg::RB_COLOR_INFO / RB_BLENDCONTROL::rt_register_indices live in the plugin DLL (not exported).
 constexpr uint32_t kColorInfoRegs[4] = {
@@ -4606,13 +4620,21 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
   // shader converts its color to the guest's PWL gamma before the write, the bytes the EDRAM
   // would hold (Iron Brigade's Scaleform draws its intro video into one: without this, half as
   // bright as on the console). A draw that blends goes through the target's sRGB view instead
-  // (BuildPipelineKey, kGammaBlendFormat) and writes linear color.
+  // (BuildPipelineKey, kGammaBlendFormat), so the blender works in linear color. Its color is
+  // then the PWL value decoded with the sRGB curve (SDK patch 0043, kGammaSrgbViewFlag), and
+  // the view's encode stores the PWL value itself: linear color written as it is came out as the
+  // sRGB curve's value, which near black is about three times the PWL one (Iron Brigade's title
+  // screen had grey blacks next to the Xenos plugin's). Without the patch: linear color.
   if (REXCVAR_GET(rexnative_gamma_targets))
     for (uint32_t i = 0; i < 4; ++i)
-      if (targets.color[i] && key.rtv[i] != kGammaBlendFormat &&
+      if (targets.color[i] &&
           regs.Get<reg::RB_COLOR_INFO>(kColorInfoRegs[i]).color_format ==
-              xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)
-        flags |= DxbcShaderTranslator::kSysFlagConvertColor0ToGamma << i;
+              xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
+        if (key.rtv[i] != kGammaBlendFormat)
+          flags |= DxbcShaderTranslator::kSysFlagConvertColor0ToGamma << i;
+        else if (kGammaSrgbViewFlag && REXCVAR_GET(rexnative_gamma_blend_pwl))
+          flags |= (DxbcShaderTranslator::kSysFlagConvertColor0ToGamma | kGammaSrgbViewFlag) << i;
+      }
   sys.flags = flags;
   sys.tessellation_factor_range_min = regs.Get<float>(XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
   sys.tessellation_factor_range_max = regs.Get<float>(XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL) + 1.0f;
