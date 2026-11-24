@@ -81,7 +81,7 @@ def _vector_math_lines(work):
 def _options_differ(work, gen):
     """The generated code was made with other register options than the game's (its _init.cpp
     records them as `.name = value,`), or another vector math choice than the game's (the last
-    manifest written holds it)."""
+    manifest written holds it), or a DLL module has no generated code."""
     manifests = [f for f in os.listdir(work) if f.endswith('_manifest.toml')]
     if manifests:
         text = open(os.path.join(work, manifests[0]), encoding='utf-8', errors='replace').read()
@@ -89,6 +89,10 @@ def _options_differ(work, gen):
         had = text[i:].strip().splitlines() if i >= 0 else []
         if had != [l for l in _vector_math_lines(work) if l]:
             return True
+    # A DLL module with no generated code yet (one found by a newer rule, as the .dll modules
+    # were): codegen runs again, for the manifest to list it.
+    if any(not os.path.isdir(d) for d in _generated_dirs(work)[1:]):
+        return True
     want = options(work)
     for d in [gen] + _generated_dirs(work)[1:]:
         if not os.path.isdir(d):
@@ -581,8 +585,9 @@ XEX_MODULE_DLL, XEX_MODULE_PATCH = 0x8, 0x10
 
 def modules(work):
     """The game's XEX DLL modules, which ReXGlue recompiles as [[modules]] beside the entrypoint:
-    every .xex under game-data but default.xex whose module flags say DLL (Forza Horizon's
-    SpeechFacade_default.xex and XMediaFacade_default.xex). Each as a dict: file (relative to
+    every .xex or .dll under game-data but default.xex whose header is XEX2 and whose module flags
+    say DLL (Forza Horizon's SpeechFacade_default.xex and XMediaFacade_default.xex; Renegade Ops
+    names its own FragmentBundle_F.dll and three more, loaded at start-up). Each as a dict: file (relative to
     work), guest_path (relative to the game's root, which the guest loads it by), out (its
     generated folder) and span (its image's base address and size)."""
     root = os.path.join(work, 'game-data')
@@ -590,7 +595,7 @@ def modules(work):
     for dirpath, _, files in os.walk(root):
         for f in sorted(files):
             rel = os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, '/')
-            if not f.lower().endswith('.xex') or rel.lower() == 'default.xex':
+            if not f.lower().endswith(('.xex', '.dll')) or rel.lower() == 'default.xex':
                 continue
             path = os.path.join(dirpath, f)
             with open(path, 'rb') as fh:

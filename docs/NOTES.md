@@ -663,6 +663,13 @@ entrypoint's register options; the hints and the shared functions go to the bina
 holds their address (its title update patch can make the image larger), and the non-volatile
 live-in scan reads the modules' generated code too (63 functions of `XMediaFacade`).
 
+A module need not be named `.xex`: Renegade Ops loads `FragmentBundle_F.dll` (at 0x98000000)
+and three more `*Fragments_F.dll` at start-up, XEX2 files with the DLL flag. With `.xex` only,
+they were left out of the manifest and its main thread aborted at once ("Call to invalid or
+unregistered function at guest address 0x9800F238"). `.dll` files with an XEX2 header and the DLL
+flag are modules too since 2026-11-24 (Halo: Anniversary ships four Waves audio ones it does not
+load at start-up; they become modules at its next prepare).
+
 Their title update patches then failed: "XEX patch image key does not match the base XEX". A
 patch's header delta is a list of entries (a copy, a zero fill or LZX data) up to an empty one;
 ReXGlue passed the applier the first entry's length only. The main executable's patch is one LZX
