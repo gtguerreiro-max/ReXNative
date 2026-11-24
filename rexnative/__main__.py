@@ -171,6 +171,9 @@ def cmd_prepare(a):
         else:
             sources.append(s)
     refs = _refs(ports, a.refs.split(',') if a.refs else None)
+    if a.dlc_source:  # before the games' DLC steps (dlc.sources reads it)
+        os.environ['REXNATIVE_DLC_SOURCES'] = ';'.join(
+            a.dlc_source + [os.environ.get('REXNATIVE_DLC_SOURCES', '')])
     failed = []
     import time
     for s in sources:
@@ -340,7 +343,10 @@ def cmd_dlc(a):
         names = dlc.install(a.work, a.sources)
         print('%d package(s) installed in %s' % (len(names), os.path.join(a.work, 'run', 'userdata')))
         return
-    # No packages: the game's (or each prepared game's) DLC from archive.org's collection.
+    # No packages: the game's (or each prepared game's) DLC from the DLC sources.
+    if a.dlc_source:
+        os.environ['REXNATIVE_DLC_SOURCES'] = ';'.join(
+            a.dlc_source + [os.environ.get('REXNATIVE_DLC_SOURCES', '')])
     if os.path.exists(tu.game_xex(a.work)):
         works = [a.work]
     else:
@@ -431,8 +437,11 @@ def main(argv=None):
                         'install it before codegen (the code is recompiled from the patched '
                         'image); see `rexnative title-update`')
     s.add_argument('--dlc', action='store_true',
-                   help="download each game's DLC from archive.org's Xbox 360 DLC collection "
-                        '(msx360gcdlc; an archive.org login, see `rexnative dlc`) and install it')
+                   help="install each game's DLC from your DLC sources (--dlc-source or "
+                        '$REXNATIVE_DLC_SOURCES; none come with the tool), see `rexnative dlc`')
+    s.add_argument('--dlc-source', action='append', default=[], metavar='SOURCE',
+                   help='a DLC source: a folder of archives (one per game) or an archive.org item; '
+                        'repeatable, added to $REXNATIVE_DLC_SOURCES')
     s.add_argument('--project', action='store_true',
                    help='then make each game a built project that runs, as `rexnative project '
                         '--build --find-functions`, the layer made again over the functions found, '
@@ -465,12 +474,15 @@ def main(argv=None):
     s = sub.add_parser('dlc', parents=[lang_opt],
                        help="install a game's downloadable content (STFS packages, or folders "
                             'and archives holding them) where the game finds it; without them, '
-                            "fetch it from archive.org's Xbox 360 DLC collection (msx360gcdlc)")
+                            'from your DLC sources (--dlc-source or $REXNATIVE_DLC_SOURCES)')
     s.add_argument('work', help="the game's folder in prepare's --work (without sources: or "
                                 'the --work folder, every game in it)')
     s.add_argument('sources', nargs='*', help='packages, folders or .rar/.7z/.zip archives')
     s.add_argument('--list', action='store_true',
-                   help="the collection's archives for each game, nothing downloaded")
+                   help="the DLC sources' archives for each game, nothing downloaded")
+    s.add_argument('--dlc-source', action='append', default=[], metavar='SOURCE',
+                   help='a DLC source: a folder of archives (one per game) or an archive.org item; '
+                        'repeatable, added to $REXNATIVE_DLC_SOURCES')
     s.add_argument('--keep', action='store_true',
                    help='keep the downloaded archives in <work>/<game>/dlc-download')
     s.set_defaults(fn=cmd_dlc)

@@ -1103,8 +1103,8 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
                 status['steps']['title_update'] = {'error': str(e)}
                 log('  title update: %s; going on without it' % e)
             save()
-        # Its downloadable content from archive.org's collection (dlc.py). Content, not code:
-        # a failure (no archive.org login) is recorded and the game goes on.
+        # Its downloadable content from the DLC sources (dlc.py; none set: skipped). Content,
+        # not code: a failure (no archive.org login) is recorded and the game goes on.
         if dlc:
             from . import dlc as dlcmod
             try:

@@ -68,10 +68,25 @@ they are in `~/Games/ReXNative/common`.
 
 ## Downloadable content
 
-`--dlc` (or `python -m rexnative dlc <work>`, for games prepared before) takes each game's DLC
-from the Internet Archive's Xbox 360 DLC collection
-([msx360gcdlc](https://archive.org/details/msx360gcdlc): one RAR per game). The collection lends
-its files to logged-in archive.org accounts only, so sign in once on this PC:
+No DLC comes with ReXNative, and it knows no place to get it from: you name your own sources.
+`--dlc` (or `python -m rexnative dlc <work>`, for games prepared before) installs each game's DLC
+from them, and with none set it skips the step. A source is a folder holding an archive
+(`.rar`, `.7z` or `.zip`) per game, or an Internet Archive item holding them (its id, or its
+`archive.org/details/<id>` address), each archive with `<title id>\00000002\<package>` inside:
+
+```powershell
+$env:REXNATIVE_DLC_SOURCES = "D:\My DLC;some-archive-item"   # several joined by ;
+python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --dlc
+python -m rexnative dlc D:\rexnative-work\<game> --dlc-source "D:\My DLC"   # or for one run
+python -m rexnative dlc D:\rexnative-work\<game> <packages, folders or archives>   # by hand
+```
+
+A game's archives are found by its title; `<work>\<game>\dlc-archives.txt` names them by hand
+(one file name a line, or `none`). A folder's archives are installed from where they are and
+left there. An Internet Archive item's are checked against its MD5, their packages for the
+game's title installed and the archive deleted; `<work>\<game>\dlc.json` records them, and an
+archive is fetched again only when the item's copy changes. Some items lend their files to
+logged-in archive.org accounts only; then sign in once on this PC:
 
 ```powershell
 pip install internetarchive
@@ -82,12 +97,8 @@ ia configure
 `%USERPROFILE%\.config\internetarchive\ia.ini`, where ReXNative reads them. An account that signs
 in with Google has no password: `scripts\ia-keys.ps1` opens archive.org/account/s3.php (signed in
 with Google in the browser, it shows the account's S3 keys) and keeps the two keys you paste in
-that ia.ini instead (`IA_ACCESS_KEY_ID` and `IA_SECRET_ACCESS_KEY` work too). A game's archives
-are found by its title;
-`<work>\<game>\dlc-archives.txt` names them by hand (one file name a line, or `none`). Each is
-checked against the collection's MD5, its packages for the game's title are installed and the
-archive deleted; `<work>\<game>\dlc.json` records them, and an archive is fetched again only when
-the collection's copy changes.
+that ia.ini instead (`IA_ACCESS_KEY_ID` and `IA_SECRET_ACCESS_KEY` work too). Use only content
+you are entitled to.
 
 ## Other commands
 

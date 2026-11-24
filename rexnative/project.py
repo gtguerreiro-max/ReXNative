@@ -38,8 +38,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the ReXNat
 FLAGS = ('-march=x86-64-v3 -mtune=generic -mprefer-vector-width=128 -ffp-model=precise '
          '-fno-math-errno -fno-char8_t -D_CRT_SECURE_NO_WARNINGS')
 # LLVM 20 (clang++, lld) for ReXGlue v0.11: $REXNATIVE_LLVM, else the first of these found.
-LLVM_DIRS = [os.environ.get('REXNATIVE_LLVM', ''), r'F:\Tools\LLVM-20.1.8\bin',
-             r'C:\Program Files\LLVM\bin']
+LLVM_DIRS = [os.environ.get('REXNATIVE_LLVM', ''), r'C:\Program Files\LLVM\bin']
 
 
 def llvm_dir():

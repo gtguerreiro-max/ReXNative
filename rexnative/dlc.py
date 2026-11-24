@@ -8,22 +8,24 @@ content. `rexnative deck` sends it along (userdata/ beside the game on the Deck)
 
   python -m rexnative dlc <work>/<game> <package | folder | .rar/.7z/.zip>...
 
-Without packages, the game's DLC comes from the Internet Archive's Xbox 360 DLC collection
-(archive.org item msx360gcdlc: a RAR per game, named after it, holding
-<title id>/00000002/<package>), as title updates come from XboxUnity:
+Without packages, the game's DLC comes from the DLC sources you set: none come with the tool.
+$REXNATIVE_DLC_SOURCES (several joined by `;`) or --dlc-source names each: a folder holding an
+archive (.rar/.7z/.zip) per game, or an Internet Archive item holding one (its id, or its
+archive.org/details/<id> address), each archive with <title id>/00000002/<package> inside:
 
-  python -m rexnative dlc <work>/<game> | <prepare's --work>  [--list]
-  python -m rexnative prepare ... --dlc
+  python -m rexnative dlc <work>/<game> | <prepare's --work>  [--list] [--dlc-source <source>]
+  python -m rexnative prepare ... --dlc [--dlc-source <source>]
 
 An archive is the game's when its name's words are the game's title's (roman numerals as
 digits; "1", "Complete Edition" and "Director's Cut" left out); <work>/dlc-archives.txt names
-them by hand, or says `none`. One whose listing names other titles only is not downloaded. Each
-is checked against the collection's MD5, installed as above (packages of another title left
-out) and deleted; <work>/dlc.json records what each installed, and an archive is fetched again
-only when the collection's copy changes. The collection lends its files to logged-in accounts
-only (HTTP 401 without): the account's cookies from the internetarchive tool's configuration
-(`ia configure` writes ia.ini), or its S3 keys (IA_ACCESS_KEY_ID and IA_SECRET_ACCESS_KEY, or
-ia.ini's [s3]). Nothing is downloaded unless asked.
+them by hand, or says `none`. Archive.org's: one whose listing names other titles only is not
+downloaded; each is checked against the item's MD5, installed as above (packages of another
+title left out) and deleted; <work>/dlc.json records what each installed, and an archive is
+fetched again only when the item's copy changes. Some items lend their files to logged-in
+accounts only (HTTP 401 without): the account's cookies from the internetarchive tool's
+configuration (`ia configure` writes ia.ini), or its S3 keys (IA_ACCESS_KEY_ID and
+IA_SECRET_ACCESS_KEY, or ia.ini's [s3]). A folder's archives are installed from where they are
+and left there. Nothing is downloaded unless asked, and nothing without a source.
 """
 import configparser
 import hashlib
@@ -178,9 +180,10 @@ def deck_items(work):
 
 # --- The Internet Archive's collection ----------------------------------------------------------
 
-ITEM = 'msx360gcdlc'
-METADATA_URL = 'https://archive.org/metadata/' + ITEM
-DOWNLOAD_URL = 'https://archive.org/download/' + ITEM + '/%s'
+METADATA_URL = 'https://archive.org/metadata/%s'
+DOWNLOAD_URL = 'https://archive.org/download/%s/%s'
+ARCHIVE_ITEM = re.compile(r'(?:https?://)?(?:www\.)?archive\.org/(?:details|download|metadata)/'
+                          r'([A-Za-z0-9._-]+)')
 # Words left out when names are compared: "Midnight Club: Los Angeles - Complete Edition" and
 # "Deus Ex: Human Revolution - Director's Cut" are the base game's archives; "Halo 1" and
 # "Overlord 1" are the first game's.
@@ -188,7 +191,7 @@ FILLER = {'the', 'complete', 'edition', 'director', 'directors', 's', 'cut', 'go
 ROMAN = {'ii': '2', 'iii': '3', 'iv': '4', 'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9'}
 # A path in an archive: <title id>/<content type>/<package>.
 PACKAGE_PATH = re.compile(r'(?<![0-9A-Fa-f])([0-9A-F]{8})[\\/](0000000[0-9A-F])[\\/]([0-9A-F]{8,64})')
-LOGIN = ('archive.org lends the DLC collection to logged-in accounts only%s: sign in with `ia '
+LOGIN = ('archive.org lends this item\'s files to logged-in accounts only%s: sign in with `ia '
          'configure` (pip install internetarchive), or set IA_ACCESS_KEY_ID and '
          'IA_SECRET_ACCESS_KEY to the account\'s S3 keys (archive.org/account/s3.php)')
 
@@ -209,18 +212,53 @@ def archive_game(name):
     return re.sub(r'\.DLC\..*$', '', name, flags=re.I)
 
 
-def catalog(cache={}):
-    """The collection's archives: [{'name', 'size' (int), 'md5'}] (its metadata is public)."""
-    if 'files' not in cache:
-        req = urllib.request.Request(METADATA_URL, headers={'User-Agent': title_update.USER_AGENT})
+def sources(extra=()):
+    """The DLC sources: `extra`, then $REXNATIVE_DLC_SOURCES (joined by `;` or new lines). None
+    come with the tool."""
+    raw = list(extra or []) + re.split(r'[;\n]', os.environ.get('REXNATIVE_DLC_SOURCES', ''))
+    out = []
+    for s in (s.strip().strip('"') for s in raw):
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def item_of(source):
+    """An Internet Archive item's id for a source that names one; None for a folder."""
+    if os.path.isdir(source):
+        return None
+    m = ARCHIVE_ITEM.match(source)
+    if m:
+        return m.group(1)
+    return source if re.fullmatch(r'[A-Za-z0-9._-]+', source) else None
+
+
+def catalog(source, cache={}):
+    """A source's archives: [{'name', 'size' (int), 'md5', and 'item' (archive.org) or 'path'
+    (a folder's file)}]. An item's metadata is public."""
+    if source in cache:
+        return cache[source]
+    item = item_of(source)
+    files = []
+    if item:
+        req = urllib.request.Request(METADATA_URL % urllib.parse.quote(item),
+                                     headers={'User-Agent': title_update.USER_AGENT})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = json.loads(r.read().decode('utf-8', 'replace'))
         # Plain file names only: a name is joined to the download folder.
-        cache['files'] = [{'name': f['name'], 'size': int(f.get('size') or 0),
-                           'md5': f.get('md5', '').lower()}
-                          for f in data.get('files', [])
-                          if f.get('format') == 'RAR' and _plain_name(f.get('name', ''))]
-    return cache['files']
+        files = [{'name': f['name'], 'size': int(f.get('size') or 0),
+                  'md5': f.get('md5', '').lower(), 'item': item}
+                 for f in data.get('files', [])
+                 if f.get('format') in ('RAR', '7z', 'ZIP') and _plain_name(f.get('name', ''))]
+    elif os.path.isdir(source):
+        for n in sorted(os.listdir(source)):
+            p = os.path.join(source, n)
+            if os.path.isfile(p) and n.lower().endswith(prepare.ARCHIVES):
+                files.append({'name': n, 'size': os.path.getsize(p), 'md5': '', 'path': p})
+    else:
+        raise RuntimeError('%s: neither a folder nor an archive.org item' % source)
+    cache[source] = files
+    return files
 
 
 def _plain_name(name):
@@ -238,7 +276,7 @@ def archives_for(work, files):
         names = [n for n in names if n and n.lower() != 'none']
         missing = [n for n in names if n not in by_name]
         if missing:
-            raise SystemExit('%s: not in the collection: %s' % (hand, ', '.join(missing)))
+            raise SystemExit('%s: not in the DLC sources: %s' % (hand, ', '.join(missing)))
         return [by_name[n] for n in names]
     from .deck import title_of
     want = words(title_of(work) or os.path.basename(work))
@@ -313,13 +351,14 @@ def _open(url, auth, offset=0, end=None, timeout=120):
         raise
 
 
-def archive_packages(name, auth):
-    """The (title id, content type, package) paths an archive holds, from archive.org's listing
-    of it; else from its first 64 KB (each file's header comes before its data); [] when neither
-    names one."""
+def archive_packages(entry, auth):
+    """The (title id, content type, package) paths an archive.org archive holds, from archive.org's
+    listing of it; else from its first 64 KB (each file's header comes before its data); [] when
+    neither names one."""
     found = []
+    url = DOWNLOAD_URL % (urllib.parse.quote(entry['item']), urllib.parse.quote(entry['name']))
     try:
-        with _open(DOWNLOAD_URL % urllib.parse.quote(name) + '/', auth) as r:
+        with _open(url + '/', auth) as r:
             found = PACKAGE_PATH.findall(urllib.parse.unquote(r.read().decode('utf-8', 'replace')))
     except NotLoggedIn:
         raise
@@ -327,7 +366,7 @@ def archive_packages(name, auth):
         pass
     if not found:
         try:
-            with _open(DOWNLOAD_URL % urllib.parse.quote(name), auth, 0, 65535) as r:
+            with _open(url, auth, 0, 65535) as r:
                 found = PACKAGE_PATH.findall(r.read(65536).decode('latin-1'))
         except NotLoggedIn:
             raise
@@ -338,8 +377,8 @@ def archive_packages(name, auth):
 
 def download(entry, folder, auth, log=print):
     """The archive in folder (a part a stopped run left goes on from where it stopped), checked
-    against the collection's size and MD5. A connection that stops early keeps the part for the
-    next run (RuntimeError)."""
+    against the item's size and MD5. A connection that stops early keeps the part for the next
+    run (RuntimeError)."""
     if not _plain_name(entry['name']):
         raise RuntimeError('%r: not a plain file name' % entry['name'])
     os.makedirs(folder, exist_ok=True)
@@ -362,7 +401,8 @@ def download(entry, folder, auth, log=print):
         log('  downloading %s (%.1f MB%s)' % (entry['name'], size / 1e6,
                                              ', from %.1f MB' % (done / 1e6) if done else ''))
         t0, start, shown = time.time(), done, done
-        with _open(DOWNLOAD_URL % urllib.parse.quote(entry['name']), auth, done) as r:
+        with _open(DOWNLOAD_URL % (urllib.parse.quote(entry['item']),
+                                   urllib.parse.quote(entry['name'])), auth, done) as r:
             if done and r.status != 206:  # the server sends it whole
                 md5, done, start, shown = hashlib.md5(), 0, 0, 0
             with open(part, 'ab' if done else 'wb') as f:
@@ -385,7 +425,7 @@ def download(entry, folder, auth, log=print):
             entry['name'], done / 1e6, size / 1e6))
     if entry['md5'] and md5.hexdigest() != entry['md5']:
         os.remove(part)
-        raise RuntimeError('%s: MD5 %s, the collection lists %s (removed)' % (
+        raise RuntimeError('%s: MD5 %s, the item lists %s (removed)' % (
             entry['name'], md5.hexdigest(), entry['md5']))
     os.replace(part, path)
     return path
@@ -401,20 +441,32 @@ def _save_record(work, rec):
         json.dump(rec, f, indent=1, sort_keys=True)
 
 
-def fetch(work, log=print, list_only=False, keep=False):
-    """Fetches the game's archives from the collection and installs their packages; returns
-    {archive: {'md5', 'titles', 'installed'}}. list_only: says what it would fetch, downloads
-    nothing. keep: the downloaded archives stay in <work>/dlc-download."""
+def fetch(work, log=print, list_only=False, keep=False, extra_sources=()):
+    """Fetches the game's archives from the DLC sources (sources()) and installs their packages;
+    returns {archive: {'md5', 'titles', 'installed'}}. list_only: says what it would fetch,
+    downloads nothing. keep: the downloaded archives stay in <work>/dlc-download. Without a
+    source it does nothing."""
     work = os.path.abspath(work)
+    srcs = sources(extra_sources)
+    if not srcs:
+        log('  no DLC source set ($REXNATIVE_DLC_SOURCES or --dlc-source): skipped')
+        return {}
     title_id = int(xex.read(title_update.game_xex(work))['title_id'], 16)
     tid, kind = '%08X' % title_id, '%08X' % MARKETPLACE
-    entries = archives_for(work, catalog())
+    files = []
+    for s in srcs:
+        try:
+            files += catalog(s)
+        except (OSError, ValueError, RuntimeError, http.client.HTTPException) as x:
+            log('  DLC source %s: %s' % (s, x))
+    entries = archives_for(work, files)
     if not entries:
-        log('  no archive in the collection for %s (%s); <work>/dlc-archives.txt names them by '
+        log('  no archive in the DLC sources for %s (%s); <work>/dlc-archives.txt names them by '
             'hand' % (os.path.basename(work), tid))
         return {}
-    auth = {} if list_only else credentials()
-    if not list_only and not auth:
+    online = any('item' in e for e in entries)
+    auth = {} if list_only or not online else credentials()
+    if online and not list_only and not auth:
         raise NotLoggedIn(LOGIN % '')
     try:
         rec = _record(work)
@@ -425,7 +477,9 @@ def fetch(work, log=print, list_only=False, keep=False):
     out, failed = {}, []
     for e in entries:
         have = rec.get(e['name'])
-        if have and have.get('md5') == e['md5']:
+        # A folder's archive has no MD5 listed: its size stands in for it.
+        stamp = e['md5'] or 'size:%d' % e['size']
+        if have and have.get('md5') == stamp:
             log('  %s: installed before (%d packages)' % (e['name'], len(have.get('installed', []))))
             out[e['name']] = have
             continue
@@ -440,7 +494,7 @@ def fetch(work, log=print, list_only=False, keep=False):
             log('  %s: FAILED: %s' % (e['name'], x))
             failed.append(e['name'])
             continue
-        rec[e['name']] = {'md5': e['md5'], 'titles': titles, 'installed': sorted(names)}
+        rec[e['name']] = {'md5': stamp, 'titles': titles, 'installed': sorted(names)}
         _save_record(work, rec)
         out[e['name']] = rec[e['name']]
     if failed:
@@ -451,7 +505,11 @@ def fetch(work, log=print, list_only=False, keep=False):
 
 def _fetch_one(work, e, auth, root, tid, kind, keep, log):
     """One archive: (the packages it installed, the titles its listing names)."""
-    paths = archive_packages(e['name'], auth)
+    if 'path' in e:
+        # A folder's archive: installed from where it is (packages of another title left out)
+        # and left there.
+        return install(work, [e['path']], log), []
+    paths = archive_packages(e, auth)
     titles = sorted({p[0] for p in paths})
     mine = sorted(p[2] for p in paths if p[0] == tid and p[1] == kind)
     if titles and tid not in titles:

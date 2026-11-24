@@ -263,8 +263,9 @@ and Perfect Dark have patches, none for the frame rate.
 
 ## Downloadable content
 
-`prepare --dlc` and `rexnative dlc <work>` fetch a game's DLC from the Internet Archive's Xbox
-360 DLC collection (`msx360gcdlc`, `rexnative/dlc.py`): a RAR per game, its paths
+`prepare --dlc` and `rexnative dlc <work>` fetch a game's DLC from the DLC sources the user sets
+(`$REXNATIVE_DLC_SOURCES` or `--dlc-source`: folders or Internet Archive items; none come with
+the tool since 2026-11-24, `rexnative/dlc.py`): an archive per game, its paths
 `<title id>/00000002/<package>`. The archive is matched by the game's title (roman numerals as
 digits; "1", "Complete Edition" and "Director's Cut" left out), and archive.org's listing of it
 (or its first 64 KB, where the first file's header is) says which titles it holds before
