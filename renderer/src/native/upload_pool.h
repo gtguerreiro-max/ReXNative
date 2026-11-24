@@ -12,14 +12,90 @@
 #include <rex/logging.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace rexnative {
 
+namespace settings {
+std::filesystem::path Path(std::string_view name);
+}
+
+// How many recycled blocks each pool of a game needed at its peak in earlier runs, kept in
+// <cache root>\rexnative\upload_blocks.txt ("<pool> <blocks>" lines): the next run creates them
+// at start-up, during its loading, instead of one by one during play (2 to 16 ms each on the PC,
+// more on the Steam Deck; Halo: Combat Evolved Anniversary created 3 to 8 a session, Darwinia
+// 24). Written at once when a pool grows (the game is usually killed, not shut down).
+class PoolMemory {
+ public:
+  static uint32_t Recall(const char* pool) {
+    State& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    Load(s);
+    auto it = s.blocks.find(pool);
+    return it == s.blocks.end() ? 0 : it->second;
+  }
+  static void Remember(const char* pool, uint32_t blocks) {
+    State& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    Load(s);
+    uint32_t& have = s.blocks[pool];
+    if (blocks <= have || s.path.empty()) return;
+    have = blocks;
+    std::error_code ec;
+    std::filesystem::create_directories(s.path.parent_path(), ec);
+    const std::filesystem::path tmp = s.path.string() + ".tmp";
+    if (std::FILE* f = std::fopen(tmp.string().c_str(), "wb")) {
+      for (const auto& [name, n] : s.blocks) std::fprintf(f, "%s %u\n", name.c_str(), n);
+      std::fclose(f);
+      std::filesystem::rename(tmp, s.path, ec);
+    }
+  }
+
+ private:
+  struct State {
+    std::mutex mutex;
+    bool loaded = false;
+    std::filesystem::path path;
+    std::map<std::string, uint32_t> blocks;
+  };
+  static State& state() {
+    static State s;
+    return s;
+  }
+  static void Load(State& s) {
+    if (s.loaded) return;
+    s.loaded = true;
+    std::filesystem::path dir = settings::Path("app.cache_root");
+    if (dir.empty()) {
+      const std::filesystem::path user = settings::Path("app.user_root");
+      if (!user.empty()) dir = user / "cache";
+    }
+    if (dir.empty()) return;
+    s.path = dir / "rexnative" / "upload_blocks.txt";
+    if (std::FILE* f = std::fopen(s.path.string().c_str(), "rb")) {
+      char name[64];
+      unsigned n = 0;
+      while (std::fscanf(f, "%63s %u", name, &n) == 2) s.blocks[name] = std::min(n, 64u);
+      std::fclose(f);
+    }
+  }
+};
+
 class UploadPool {
  public:
+  // Blocks created after the reserved ones (during play), every pool together, and their time:
+  // the stats log's hitch line reads and resets them.
+  static inline std::atomic<uint32_t> grown_blocks{0};
+  static inline std::atomic<uint64_t> grown_ns{0};
   struct Alloc {
     ID3D12Resource* resource;
     uint64_t offset;
@@ -39,7 +115,11 @@ class UploadPool {
   // Creates `blocks` recycled blocks now. A block created during play costs 2-16 ms (16 ms
   // for a 32 MB block at race start, while the driver also creates hundreds of textures), so
   // reserve as many as the race start keeps in flight.
-  void Reserve(uint32_t blocks) {
+  // name: the pool's name in PoolMemory, which then also reserves what this game's earlier runs
+  // needed (at most 32 blocks) and remembers it when the pool grows.
+  void Reserve(uint32_t blocks, const char* name = nullptr) {
+    name_ = name;
+    if (name_) blocks = std::max(blocks, std::min(PoolMemory::Recall(name_), 32u));
     reserved_ += blocks;
     for (uint32_t i = 0; i < blocks; ++i) {
       std::unique_ptr<Block> b = CreateBlock(block_size_);
@@ -78,7 +158,11 @@ class UploadPool {
     for (size_t i = 0; i < retired_.size();) {
       if (retired_[i]->fence <= completed) {
         retired_[i]->used = 0;
-        if (retired_[i]->size == block_size_) free_.push_back(std::move(retired_[i]));
+        if (retired_[i]->size == block_size_) {
+          free_.push_back(std::move(retired_[i]));
+        } else if (retired_[i]->size <= kBigKeep && (!big_ || big_->size < retired_[i]->size)) {
+          big_ = std::move(retired_[i]);  // the largest one seen kept, up to kBigKeep
+        }
         retired_[i] = std::move(retired_.back());
         retired_.pop_back();
       } else {
@@ -125,6 +209,11 @@ class UploadPool {
           "ReXNative: upload block {} of {} MB created during play in {:.2f} ms (pool "
           "of {} MB blocks, {} reserved)",
           created_, size >> 20, ms, block_size_ >> 20, reserved_);
+    if (size == block_size_ && ++recycled_ > reserved_ && name_) PoolMemory::Remember(name_, recycled_);
+    if (created_ > reserved_) {
+      grown_blocks.fetch_add(1, std::memory_order_relaxed);
+      grown_ns.fetch_add(NowNs() - t0, std::memory_order_relaxed);
+    }
     return b;
   }
   bool NewBlock(uint64_t size, uint64_t fence) {
@@ -132,6 +221,10 @@ class UploadPool {
     if (size == block_size_ && !free_.empty()) {
       b = std::move(free_.back());
       free_.pop_back();
+    } else if (size > block_size_ && big_ && big_->size >= size) {
+      // The last large block, kept (a level's large textures come again and again: Limbo's and
+      // The Bureau's 41 MB uploads made a block each time).
+      b = std::move(big_);
     } else {
       b = CreateBlock(size);
       if (!b) return false;
@@ -150,6 +243,10 @@ class UploadPool {
   Block* current_ = nullptr;
   uint64_t frame_fence_ = 0;  // the latest Allocate's fence
   uint32_t created_ = 0, reserved_ = 0;
+  uint32_t recycled_ = 0;        // block_size_ blocks created (all kept: recycled)
+  const char* name_ = nullptr;   // PoolMemory's name for this pool, or none
+  static constexpr uint64_t kBigKeep = uint64_t(128) << 20;
+  std::unique_ptr<Block> big_;   // the largest single-request block released, kept for reuse
   std::vector<std::unique_ptr<Block>> active_, previous_, retired_, free_;
 };
 

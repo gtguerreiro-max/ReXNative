@@ -199,6 +199,10 @@ struct NativeRenderer::Csv {
   // Window for the log summary.
   uint64_t frames = 0, draws = 0, draw_ns = 0, swap_ns = 0, frame_ns = 0, hook_ns = 0,
            hook_wait_ns = 0, generated = 0;
+  // The window's hitches: what can stop a frame mid-game (logged when any happened).
+  uint64_t pso_created = 0, held = 0, partial = 0, pso_wait_us = 0, translations = 0,
+           slow_frames = 0, worst_frame_ns = 0;
+  double translate_us = 0, translate_max_us = 0;
   // Profile: the window's stage ticks.
   uint64_t stage_ticks[profile::kStageCount] = {}, track_calls = 0;
   TextureCache::Stats tex_prev;                  // texture counters at the previous CSV row
@@ -1996,6 +2000,18 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   w.hook_ns += s.hook_ns;
   w.hook_wait_ns += s.hook_wait_ns;
   w.generated += s.generated;
+  {
+    const DrawRenderer::Stats& ds = draw_->stats();
+    w.pso_created += ds.pso_created;
+    w.held += s.frames_held;
+    w.partial += ds.frames_partial;
+    w.pso_wait_us += ds.pso_wait_us;
+    w.translations += ds.translations;
+    w.translate_us += ds.translate_us;
+    w.translate_max_us = std::max(w.translate_max_us, ds.translate_max_us);
+    w.worst_frame_ns = std::max(w.worst_frame_ns, frame_ns);
+    if (frame_ns > 50'000'000) ++w.slow_frames;
+  }
   if (profile::On()) {
     for (uint32_t i = 0; i < profile::kStageCount; ++i) w.stage_ticks[i] += profile::g.ticks[i];
     w.track_calls += profile::g.track_calls;
@@ -2017,6 +2033,22 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
           ? std::format(", frame generation: {} of {} frames ({} reset)", w.generated, w.frames,
                         frame_generation_ ? frame_generation_->TakeResets() : 0)
           : std::string());
+  // What stopped frames in this window, when anything did (the Steam Deck's logs say which):
+  // new pipelines and frames held for them or shown without some draws, shaders translated on
+  // the render thread, upload blocks created during play, frames over 50 ms.
+  {
+    const uint32_t grown = UploadPool::grown_blocks.exchange(0, std::memory_order_relaxed);
+    const uint64_t grown_ns = UploadPool::grown_ns.exchange(0, std::memory_order_relaxed);
+    if (w.pso_created || w.held || w.partial || w.translations || grown || w.slow_frames) {
+      REXLOG_INFO(
+          "ReXNative hitches: {} new pipelines, {} frames held ({:.1f} ms waiting), {} shown "
+          "without some draws; {} shaders translated ({:.1f} ms, longest {:.1f} ms); {} upload "
+          "blocks created ({:.1f} ms); {} frames over 50 ms (worst {:.1f} ms)",
+          w.pso_created, w.held, w.pso_wait_us / 1000.0, w.partial, w.translations,
+          w.translate_us / 1000.0, w.translate_max_us / 1000.0, grown, grown_ns / 1e6,
+          w.slow_frames, w.worst_frame_ns / 1e6);
+    }
+  }
   // The audio mix over the same frames: underruns are periods a stream had nothing queued (a
   // gap, a click), the sound the Steam Deck's players heard as missing or odd.
   if (host::AudioStats a; host::GetAudioStats(&a)) {
@@ -2049,6 +2081,9 @@ void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
   }
   w.frames = w.draws = w.draw_ns = w.swap_ns = w.frame_ns = w.hook_ns = w.hook_wait_ns =
       w.generated = 0;
+  w.pso_created = w.held = w.partial = w.pso_wait_us = w.translations = w.slow_frames =
+      w.worst_frame_ns = 0;
+  w.translate_us = w.translate_max_us = 0;
 }
 
 void NativeRenderer::ResetFrameCounters() {

@@ -1060,6 +1060,24 @@ guest memory (memexport) still wait for theirs. The prewarm's compiles run below
 (a draw's at normal), so they do not take the CPU from the game's threads. A stored pipeline's use used to be marked on another record (the records were sorted
 apart from their hashes), so pipelines in use could be forgotten.
 
+## Upload memory remembered, and the hitch line
+
+Vertex data, constants and texture uploads go through pools of 16 MB UPLOAD-heap blocks
+(`renderer/src/native/upload_pool.h`), recycled once the GPU is done with them. A pool started
+with 4 (12 for constants) and grew during play: a block takes 2 to 16 ms to create on the PC,
+more on the Steam Deck, and the games' logs showed it at every session (Sega Rally Revo about 12
+blocks in its first 600 frames, Burnout CRASH! 5 in a tenth of a second, Darwinia up to 24). Each
+pool now remembers the blocks this game needed at its peak in `<cache root>exnativeupload_blocks.txt` (`textures`, `vertices`, `constants`; written as soon as it grows, at most 32
+blocks reserved), and the next run creates them at start-up, during its loading. A request larger
+than a block got a block of its own, released after its frame and made again the next time (Limbo
+and The Bureau upload 41 MB at once): the largest such block, up to 128 MB, is now kept for the
+next.
+
+What stops a frame mid-game is logged with the frame statistics, every 150 frames, when anything
+did: `ReXNative hitches: N new pipelines, N frames held (ms waiting), N shown without some draws;
+N shaders translated (ms, longest ms); N upload blocks created (ms); N frames over 50 ms (worst
+ms)`. A Steam Deck's log then says which of them a stutter was.
+
 ## Validating the adapter
 
 Each hand-made port's layer was regenerated without using that port, and compared with the one

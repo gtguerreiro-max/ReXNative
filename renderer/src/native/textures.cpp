@@ -184,7 +184,7 @@ TextureCache::TextureCache(ID3D12Device* device, const uint8_t* physical_membase
     : device_(device), membase_(physical_membase) {
   upload_lists_.resize(1);
   upload_.SetDevice(device_);
-  upload_.Reserve(4);  // the race start keeps 3 in flight (HitchFix)
+  upload_.Reserve(4, "textures");  // the race start keeps 3 in flight (HitchFix)
   StartSpareHeap();
   D3D12_FEATURE_DATA_D3D12_OPTIONS8 options8 = {};
   if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS8, &options8,

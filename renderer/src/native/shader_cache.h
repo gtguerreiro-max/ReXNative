@@ -47,6 +47,12 @@ class ShaderCache {
   const DxbcShader* Find(uint64_t hash);
 
   const ShaderCacheStats& stats() const { return stats_; }
+  // The longest translation since the last call (a frame's), then 0 again.
+  double TakeLongestUs() {
+    const double us = longest_us_;
+    longest_us_ = 0;
+    return us;
+  }
 
  private:
   DxbcShaderTranslator translator_;
@@ -54,6 +60,7 @@ class ShaderCache {
   std::mutex load_mutex_;  // shaders_, disasm_buffer_, the Load half of stats_
   std::unordered_map<uint64_t, std::unique_ptr<DxbcShader>> shaders_;
   ShaderCacheStats stats_;
+  double longest_us_ = 0;  // TakeLongestUs
 };
 
 }  // namespace rexnative

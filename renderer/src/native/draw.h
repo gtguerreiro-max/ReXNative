@@ -126,6 +126,8 @@ class DrawRenderer {
     uint64_t pso_generic = 0;   // draws on unspecialized shaders while a specialization compiles
     uint64_t pso_wait_us = 0;   // the frame waiting for the pipelines of its skipped draws
     uint64_t frames_partial = 0;  // frames shown without draws whose pipelines still compiled
+    uint64_t translations = 0;    // shaders translated this frame (on the render thread)
+    double translate_us = 0, translate_max_us = 0;
     uint64_t upload_bytes = 0;  // guest memory copied into shared memory
     uint64_t uploads = 0;       // copy regions recorded
     uint64_t textures = 0, textures_missing = 0;  // bindings; missing = null SRV bound

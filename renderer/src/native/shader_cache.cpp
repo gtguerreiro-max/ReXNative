@@ -100,6 +100,7 @@ DxbcShader::Translation* ShaderCache::Translate(DxbcShader& shader, uint64_t mod
     double us = Us(t);
     stats_.translate_us += us;
     stats_.max_translate_us = std::max(stats_.max_translate_us, us);
+    longest_us_ = std::max(longest_us_, us);
     ++stats_.translations;
     if (!REXCVAR_GET(rexnative_shader_dump_dir).empty() && translation->IsValid()) {
       char name[64];

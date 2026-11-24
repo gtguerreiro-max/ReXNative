@@ -917,6 +917,8 @@ struct DrawRenderer::Impl {
   rex::kernel::GuestAddressSpace* memory = nullptr;
   const uint8_t* membase = nullptr;
   ShaderCache shaders;
+  uint64_t translations_seen = 0;  // shaders.stats() at the previous EndFrame
+  double translate_us_seen = 0;
   BoolSpecializer vs_bools{shaders}, ps_bools{shaders};
   bool bool_specialize = REXCVAR_GET(rexnative_bool_specialize);
   ComPtr<ID3D12RootSignature> root_signature;
@@ -1866,8 +1868,8 @@ bool DrawRenderer::Impl::Initialize() {
   constant_upload.SetDevice(device);
   // Race start keeps 3 vertex and 10 constant blocks in flight; creating one there takes up to
   // 16 ms.
-  vertex_upload.Reserve(4);
-  constant_upload.Reserve(12);
+  vertex_upload.Reserve(4, "vertices");
+  constant_upload.Reserve(12, "constants");
   root_signature = CreateBindlessRootSignature(device, &root_signature_hash);
   if (!root_signature) return false;
   root_signature_ds = CreateBindlessRootSignature(device, nullptr, true);
@@ -5987,6 +5989,14 @@ bool DrawRenderer::FrameIncomplete() const {
 
 void DrawRenderer::EndFrame(uint64_t completed_fence) {
   impl_->WaitForPipelines();  // after the frame's submission: the GPU runs it meanwhile
+  {
+    const ShaderCacheStats& ss = impl_->shaders.stats();
+    stats_.translations = ss.translations - impl_->translations_seen;
+    stats_.translate_us = ss.translate_us - impl_->translate_us_seen;
+    stats_.translate_max_us = impl_->shaders.TakeLongestUs();
+    impl_->translations_seen = ss.translations;
+    impl_->translate_us_seen = ss.translate_us;
+  }
   stats_.views =
       impl_->views_allocated - (kViewTableStart + kFirstTexture) - impl_->free_views.size();
   stats_.watch_faults = impl_->watch_faults.exchange(0, std::memory_order_relaxed);
