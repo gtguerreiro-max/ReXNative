@@ -390,12 +390,12 @@ class Upscaler {
   bool scene_reset_ = false;
   uint64_t last_ns_ = 0;
   float frame_ms_ = 0.0f;
-  // WatchFsrCost's: FSR 4 runs, the GPU's busy and paced time over the window so far.
+  // WatchFsrCost's: FSR 4 runs, the GPU's busy, paced and frame time over the window so far.
   static constexpr uint32_t kFsrWindowFrames = 120, kFsrWindows = 2;
   static constexpr uint64_t kFsrSettleFrames = 600;
-  void WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns);
+  void WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns, uint64_t interval_ns);
   bool fsr4_ = false, fsr_downgrade_ = false, fsr_downgrade_due_ = false;
-  uint64_t busy_sum_ns_ = 0, paced_sum_ns_ = 0;
+  uint64_t busy_sum_ns_ = 0, paced_sum_ns_ = 0, interval_sum_ns_ = 0;
   uint32_t busy_frames_ = 0, busy_windows_ = 0;
   int32_t phase_count_ = 0;
   float jitter_[2] = {};

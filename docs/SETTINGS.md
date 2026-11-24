@@ -150,15 +150,18 @@ configuration file (`run/<game>.toml`) or on the command line.
 - `rexnative.fsr_auto` (default true) with `rexnative.fsr_version = "auto"` (the HUD's Newest):
   FSR 4 costs about the same time a frame whatever the render size, 5.1 ms on the Steam Deck in
   Diablo III's town at 1120x584 (FSR 3.1 3.1 ms; the scene's own draws 4.1 ms), a third of a
-  60 fps frame. Where the GPU is busy for at least `rexnative.fsr_auto_share` (0.9) of each
-  frame's paced time for two windows of 120 frames in a row, after the first 600, FSR 4 gives way
+  60 fps frame. Where the GPU is busy for at least `rexnative.fsr_auto_share` (0.9) of the game's
+  frame time for two windows of 120 frames in a row, after the first 600, FSR 4 gives way
   to FSR 3.1 for the rest of the run ("FSR 4 leaves the GPU no room ... FSR 3.1 for the rest of
   this run" in the log; the HUD's upscaler line shows what runs). Where FSR 3.1 leaves no room
   either, the upscaler goes off for the run and the scene keeps its own MSAA, the console's
   anti-aliasing: Iron Brigade at 60 fps (FPS Boost) on the Deck ran at 48.7 fps with FSR 3.1 (the
   GPU 17.5 ms a frame) and 58.6 with its MSAA (14.4 ms). Nothing is saved: the next run starts at
-  FSR 4 again. A game held by its CPU (the GPU's time waiting for it is not counted)
-  keeps FSR 4, which 3.1 would not make faster; an explicit `fsr_version` 4 or 3 is kept.
+  FSR 4 again. The game's frame time is whole refreshes of the display at its own pace: a game
+  that keeps itself at 30 fps on a 60 Hz display has 33.3 ms (Forza Horizon and Overlord II on the
+  Deck, FSR 4 busy 19 ms of it, keep FSR 4), one that falls short of 60 (48.7 fps) has the
+  16.7 ms it misses. A game held by its CPU (the GPU's time waiting for it is not counted) keeps
+  FSR 4, which 3.1 would not make faster; an explicit `fsr_version` 4 or 3 is kept.
 - `rexnative.battery_saver` (the HUD's Battery saver, on the Picture page under Antialiasing, which
   shows "- MSAA on the battery" while it holds the upscaler off; off by default, on for the Deck):
   on the battery (a Steam

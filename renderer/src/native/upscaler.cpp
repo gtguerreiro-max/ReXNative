@@ -658,10 +658,11 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
           "rate or frame generation gives each frame more",
           dynamic_->run_ns() * 1e-6, render_height_, double(paced_ns) * 1e-6);
   }
-  WatchFsrCost(frame, gpu_busy_ns, paced_ns);
   const uint64_t now = NowNs();
-  frame_ms_ = last_ns_ ? float(double(now - last_ns_) * 1e-6) : 0.0f;
+  const uint64_t interval_ns = last_ns_ ? now - last_ns_ : 0;
+  frame_ms_ = float(double(interval_ns) * 1e-6);
   last_ns_ = now;
+  WatchFsrCost(frame, gpu_busy_ns, paced_ns, interval_ns);
   DlssJitter(frame, double(render_width_) / double(OutputWidth()), jitter_[0], jitter_[1]);
   return resized;
 }
@@ -670,26 +671,35 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
 // Deck, Diablo III's town, against FSR 3.1's 3.1 ms and the scene's own 4.1: about a third of a
 // 60 fps frame). Where the GPU is busy for most of each frame's time, the newest (auto) gives way
 // to FSR 3.1 for the rest of the run: kFsrWindows windows of kFsrWindowFrames frames in a row
-// with the GPU busy for at least --rexnative_fsr_auto_share (0.9) of the paced frame time, after the first
-// kFsrSettleFrames (loading, the first pipelines). And where FSR 3.1 leaves no room either, the
-// upscaler goes off for the run, the scene's own MSAA (the console's anti-aliasing) in its place:
+// with the GPU busy for at least --rexnative_fsr_auto_share (0.9) of the game's frame time, after
+// the first kFsrSettleFrames (loading, the first pipelines). That time is whole refreshes of the
+// display at the game's own pace: a game that keeps itself at 30 fps on a 60 Hz display has two
+// (33.3 ms, where FSR 4's 19 ms on the Deck in Forza Horizon and Overlord II leave room), one
+// that falls short of 60 fps (48.7, 20.5 ms a frame) has one, the 16.7 ms it misses. And where
+// FSR 3.1 leaves no room either, the upscaler goes off for the run, the scene's own MSAA (the console's anti-aliasing) in its place:
 // Iron Brigade at 60 fps (FPS Boost) on the Steam Deck, 48.7 fps with FSR 3.1 (the GPU 17.5 ms a
 // frame), 58.6 with its MSAA (14.4 ms). Never back: the next run starts at FSR 4 again, and a game
 // the GPU has room for never leaves it. A game held by its CPU (the GPU waiting for it, which
 // gpu_busy_ns leaves out) keeps its upscaler: a cheaper one would not make it faster. FSR 3.1 that
 // is the newest this GPU has (no FSR 4 to give way) is kept too.
-void Upscaler::WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns) {
+void Upscaler::WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns,
+                            uint64_t interval_ns) {
   if (backend_ != Backend::kFsr || fsr_downgrade_ || !REXCVAR_GET(rexnative_fsr_auto) ||
-      REXCVAR_GET(rexnative_fsr_version) != "auto" || !gpu_busy_ns || !paced_ns ||
+      REXCVAR_GET(rexnative_fsr_version) != "auto" || !gpu_busy_ns || !paced_ns || !interval_ns ||
       frame < kFsrSettleFrames || (!fsr4_ && !g_fsr3_this_run.load(std::memory_order_relaxed)))
     return;
   busy_sum_ns_ += gpu_busy_ns;
   paced_sum_ns_ += paced_ns;
+  // A hitch (a save, a streamed area) counts as four refreshes at most.
+  interval_sum_ns_ += std::min(interval_ns, 4 * paced_ns);
   if (++busy_frames_ < kFsrWindowFrames) return;
-  const double share = double(busy_sum_ns_) / double(paced_sum_ns_);
+  // The game's pace in whole refreshes, a tenth of one short still counting (31 fps is 30's two).
+  const double refreshes = std::max(
+      1.0, std::floor(double(interval_sum_ns_) / double(paced_sum_ns_) + 0.1));
+  const double share = double(busy_sum_ns_) / (double(paced_sum_ns_) * refreshes);
   const double busy_ms = double(busy_sum_ns_) * 1e-6 / busy_frames_;
-  const double paced_ms = double(paced_sum_ns_) * 1e-6 / busy_frames_;
-  busy_sum_ns_ = paced_sum_ns_ = 0;
+  const double paced_ms = double(paced_sum_ns_) * refreshes * 1e-6 / busy_frames_;
+  busy_sum_ns_ = paced_sum_ns_ = interval_sum_ns_ = 0;
   busy_frames_ = 0;
   busy_windows_ = share >= REXCVAR_GET(rexnative_fsr_auto_share) ? busy_windows_ + 1 : 0;
   if (busy_windows_ < kFsrWindows) return;
