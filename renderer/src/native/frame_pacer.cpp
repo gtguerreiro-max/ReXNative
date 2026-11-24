@@ -52,9 +52,11 @@ void FramePacer::Detach() {
   SetEvent(thread_stop_.get());
   thread_.join();
   {
-    // The released swapchain completed its presents, whether it signalled them or not.
+    // The released swapchain completed its presents, whether it signalled them or not (a held
+    // frame on the display was retired at its first).
     std::lock_guard<std::mutex> lock(mutex_);
-    RetireLocked(presented_ - shown_, NowNs());
+    const bool head_retired = shown_ < presented_ && presents_[shown_ % kRing].retired;
+    RetireLocked(presented_ - shown_ - (head_retired ? 1 : 0), NowNs());
     shown_ = ready_ = presented_;
     ResetControlLocked();
   }
@@ -63,11 +65,14 @@ void FramePacer::Detach() {
   fence_ = nullptr;
 }
 
-void FramePacer::Presented(uint64_t fence_value, uint32_t presents) {
+void FramePacer::Presented(uint64_t fence_value, uint32_t presents, uint32_t holds) {
   std::lock_guard<std::mutex> lock(mutex_);
   presents_count_ += presents;
-  presents_[presented_++ % kRing] = {
-      .frame = ++swaps_, .number = presents_count_, .fence = fence_value, .presents = presents};
+  presents_[presented_++ % kRing] = {.frame = ++swaps_,
+                                     .number = presents_count_,
+                                     .fence = fence_value,
+                                     .presents = presents,
+                                     .holds = std::min(holds, presents - 1)};
   if (ready_ + 1 == presented_ && fence_) {
     fence_->SetEventOnCompletion(fence_value, fence_event_.get());
     armed_ = fence_value;
@@ -96,13 +101,22 @@ void FramePacer::Run() {
     if (r == WAIT_OBJECT_0 || shown_ == presented_) continue;
     Present& head = presents_[shown_ % kRing];
     if (head.shown++ == 0) head.first_shown_ns = now;
-    if (head.shown < head.presents) continue;
+    if (head.shown < head.presents) {
+      // A held frame is on the display: the next one may begin (Presented).
+      if (head.holds && !head.retired && head.shown + head.holds >= head.presents) {
+        head.retired = true;
+        RetireLocked(1, now);
+        lock.unlock();
+        retired_cv_.notify_one();
+      }
+      continue;
+    }
     Present p = head;
     // Shown implies finished; the fence's value may trail the present by a wakeup.
     if (!p.ready_ns) p.ready_ns = now;
     ++shown_;
     ready_ = std::max(ready_, shown_);
-    RetireLocked(1, now);
+    if (!p.retired) RetireLocked(1, now);
     ControlLocked(p, now);
     const int64_t delay = delay_ns_;
     lock.unlock();

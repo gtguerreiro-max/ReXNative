@@ -1491,7 +1491,7 @@ void NativeRenderer::ExecuteClassicSwap(const SwapCall& swap) {
   present_->AfterEndFrame();  // a capture's PNG
   const D3D12Device::EndFrameTimes& et = d.end_frame_times();
   if (pacer_ && et.presented)
-    pacer_->Presented(fence, et.frame_presents);
+    pacer_->Presented(fence, et.frame_presents, et.frame_holds);
   else if (pacer_)
     pacer_->RetireUnshown();
   ++frame_index_;
@@ -1846,7 +1846,7 @@ void NativeRenderer::ExecuteSwap(const SwapCall& swap) {
   stats_.stream_wait_ns = et.stream_wait_ns;
   stats_.present = et.presented ? et.presents : 0;
   if (pacer_ && et.presented)
-    pacer_->Presented(fence, et.frame_presents);
+    pacer_->Presented(fence, et.frame_presents, et.frame_holds);
   else if (pacer_)
     pacer_->RetireUnshown();
   ++frame_index_;

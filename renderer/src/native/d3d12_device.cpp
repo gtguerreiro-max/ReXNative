@@ -780,6 +780,8 @@ bool D3D12Device::EndFrame(bool present, std::span<ID3D12CommandList* const> fir
   back_index_ = (back_index_ + f.presents) % kBackBuffers;
   end_frame_times_.presented = shown;
   end_frame_times_.frame_presents = f.presents;
+  end_frame_times_.frame_holds = f.presents && !f.generated && f.image && !frame_image
+                                     ? f.presents - 1 : 0;
   end_frame_times_.presents += f.presents;
   stream_.Call([this, f = std::move(f)](List* list) { FinishFrame(list, f); });
   if (capture_next_) {

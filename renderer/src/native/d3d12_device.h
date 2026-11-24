@@ -172,6 +172,7 @@ class D3D12Device {
     uint64_t stream_ns = 0, stream_wait_ns = 0;
     bool presented = false;       // Present ran (a swapchain and a complete frame)
     uint32_t frame_presents = 0;  // the frame's Presents: its interval, or 2 with a generated frame
+    uint32_t frame_holds = 0;     // of them, its image again to hold it (present_interval_ - 1)
     uint64_t presents = 0;        // Presents so far, the frame's included
   };
   const EndFrameTimes& end_frame_times() const { return end_frame_times_; }

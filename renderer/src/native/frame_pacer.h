@@ -145,8 +145,11 @@ class FramePacer {
   void Detach();
   // Render thread, once per Swap: the frame was presented, in `presents` presents (a generated
   // frame's before it, frame_generation.h) and signals `fence_value` once the GPU finished it, or
-  // will not be presented (RetireUnshown). It is shown with its last present.
-  void Presented(uint64_t fence_value, uint32_t presents = 1);
+  // will not be presented (RetireUnshown). It is shown with its last present; with `holds` of
+  // them its image again (--rexnative_present_interval), with its first: the next frame begins
+  // while it is held. From its last, a game that waits for its own vblanks (most 30 fps ones)
+  // began each frame a hold late and missed them: 50 ms frames at an interval of 2, not 33.
+  void Presented(uint64_t fence_value, uint32_t presents = 1, uint32_t holds = 0);
   void RetireUnshown();
 
   // Game thread, once per frame after the Swap queued it: blocks until the next frame may
@@ -196,7 +199,9 @@ class FramePacer {
     uint64_t fence = 0;
     uint64_t ready_ns = 0;  // when the pacer saw the fence reach `fence`; 0: not yet
     uint32_t presents = 1;  // the frame's: 2 with a generated frame before it
+    uint32_t holds = 0;     // of them, its image again to hold it on the display
     uint32_t shown = 0;     // of them, shown
+    bool retired = false;   // retired before its last present (a held frame)
     uint64_t first_shown_ns = 0;
   };
 
