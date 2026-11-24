@@ -211,6 +211,7 @@ def installed(work):
 
 # What a work folder derives from the image codegen loaded: made again for the patched one.
 DERIVED = ('generated', 'layer', 'codegen.ok', 'switch_tables.toml', 'setjmp.toml', 'crt.toml',
+           'title_hooks.toml',
            os.path.join('run', 'image.bin'))
 
 

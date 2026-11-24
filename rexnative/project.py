@@ -94,6 +94,10 @@ target_link_libraries({name} PRIVATE {name}_common)
 if(EXISTS "${{CMAKE_CURRENT_SOURCE_DIR}}/src/cases_default.cpp")
     target_sources({name}_common PRIVATE src/cases_default.cpp)
 endif()
+# A game's own code hooks for its executable (rexnative/title_hooks, title_hooks.py).
+if(EXISTS "${{CMAKE_CURRENT_SOURCE_DIR}}/src/title_hooks.cpp")
+    target_sources({name}_common PRIVATE src/title_hooks.cpp)
+endif()
 {module_sources}
 set(REXNATIVE_DIR "{rexnative}" CACHE PATH "ReXNative")
 set(REXNATIVE_REXGLUE_SDK_SRC "" CACHE PATH "The source tree the ReXGlue SDK was built from")

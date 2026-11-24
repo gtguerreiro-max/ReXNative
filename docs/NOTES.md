@@ -261,6 +261,45 @@ installs; Asura's Wrath (TU 1), The Bureau (TU 1) and Brothers an "Unlock FPS" o
 for its first release (ReXNative installs TU 3); Crazy Taxi, Peggle 2, Forza Horizon, Minecraft
 and Perfect Dark have patches, none for the frame rate.
 
+## A game's own code hooks
+
+A fix that belongs to one executable lives in `rexnative/title_hooks/<title id>-<module hash>/`
+(`rexnative/title_hooks.py`): `hooks.toml` holds ReXGlue `[[midasm_hook]]` entries (a host
+function called at a guest address with the registers named) and `hooks.cpp` the functions. The
+hash is the one FPS Boost uses (the code as loaded, title update applied), so another title
+update or another build of the game gets none. Before codegen they are written to
+`<work>/title_hooks.toml` (the manifest includes it) and `<work>/src/title_hooks.cpp` (the
+game's CMakeLists builds it in), and codegen runs again when they changed; another executable's
+are taken out. The hash is known after a game's first build: the next one has its hooks. The
+functions can count the game's Swaps (`RexNativeTitleSwaps`) and run one of their own at each
+(`RexNativeSetTitleSwapHook`, on the thread that calls Swap).
+
+### Forza Horizon: one simulation step a frame
+
+Forza Horizon (title update 4, module `336A44DC03EC8782`) steps its simulation once per raise
+of an event its vblank callback raises every second vblank, whatever the render thread does; the
+render thread draws the newest step finished. A frame over two vblanks lets the simulation run
+ahead: one frame shows two steps of motion and the next none, at a flat 30 fps (the frame times
+on the display stay even). The hooks (`4D5309C9-336A44DC03EC8782`) count the steps begun
+(0x8241DC44, the main loop storing the step's time) and, at the callback's decision
+(0x824ABC50, `r11` not 0 raises), hold the raise while the steps are two ahead of the Swaps:
+the callback's vblank count stays, so the next vblank raises it, at most 50 ms later. After
+Pinyon Shift's step backpressure (issue #381; THIRD_PARTY_NOTICES.md), which raises a held step
+at the next swap instead. `rexnative.step_gate` (default true) turns it off;
+`rexnative.step_log` logs every 10 s the frames that showed 0, 1, 2 or more steps. On the Steam
+Deck, driving from the start (2026-11-24): in the first 10 s of the drive, 9 frames with no step
+and 13 with two of 297 without the gate, 2 and 3 of 298 with it; steady driving had one step in
+every frame either way, each frame two refreshes after the last.
+
+## A frame held on the display
+
+`rexnative.present_interval` (the HUD's Frame rate) 2 or 3 shows each frame for that many
+refreshes by presenting its image again. The frame pacer let the next frame begin once the
+frame's last present was shown: with frame latency 1 that is at the end of the hold, and a game
+that waits for its own vblanks (most 30 fps ones: Forza Horizon) then reached its Swap after
+the second vblank it waits for, and waited for two more: 50 ms frames at 2, not 33. A held frame
+is now shown at its first present, and the next one begins from there (`frame_pacer.cpp`).
+
 ## Downloadable content
 
 `prepare --dlc` and `rexnative dlc <work>` fetch a game's DLC from the DLC sources the user sets

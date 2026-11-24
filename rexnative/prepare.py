@@ -699,7 +699,8 @@ def _write_manifest(work, name):
     # game calls (setjmp_address, longjmp_address) and its XAPI fiber functions ([shim]), all
     # from `rexnative project --find-functions` (functions.jump_tables, .setjmp_longjmp,
     # .xapi_fibers).
-    includes = [f for f in ('switch_tables.toml', 'setjmp.toml', 'crt.toml')
+    # And a game's own code hooks ([[midasm_hook]], title_hooks.py) for its executable.
+    includes = [f for f in ('switch_tables.toml', 'setjmp.toml', 'crt.toml', 'title_hooks.toml')
                 if os.path.exists(os.path.join(work, f))]
     lines.append('includes = [%s]' % ', '.join('"%s"' % f for f in includes))
     opts = options(work)
@@ -937,6 +938,14 @@ def codegen(work, name, rexglue, max_rounds, log):
     except Exception as e:  # never a reason for a build to fail
         log('  FPS Boost: %s' % e)
         patches = fps_boost.fingerprint(work)
+    # The game's own code hooks (title_hooks.py), before codegen too: new or changed ones are
+    # in the code it writes, so it runs again.
+    from . import title_hooks
+    try:
+        if title_hooks.apply(work, log) and os.path.exists(done):
+            os.remove(done)
+    except Exception as e:  # never a reason for a build to fail
+        log('  title hooks: %s' % e)
     # Reused only when made under this name (prepare's older runs used names with '_'), by this
     # codegen tool, over the same patch file.
     if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and

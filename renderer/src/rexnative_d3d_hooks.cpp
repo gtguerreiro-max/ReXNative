@@ -251,8 +251,15 @@ std::atomic<int64_t> g_drawn_step_ns{0};
 // reprojection is zero and the jitter was the whole of the visible blur: the still frame pumped
 // (issue #1).
 std::atomic<int64_t> g_smooth_step_ns{0};
+// For a game's own code hooks (rexnative/title_hooks): the Swaps the game made so far, and a
+// function its hooks run at each, on the thread that calls Swap (Forza Horizon's simulation step
+// gate holds a step while the frames are two behind).
+std::atomic<uint64_t> g_title_swaps{0};
+std::atomic<void (*)()> g_title_swap_hook{nullptr};
 
 void NoteFrameBegin() {
+  g_title_swaps.fetch_add(1, std::memory_order_release);
+  if (void (*const hook)() = g_title_swap_hook.load(std::memory_order_acquire)) hook();
   const uint64_t now = rexnative::NowNs();
   g_drawn_step_ns.store(g_frame_step_ns, std::memory_order_relaxed);
   if (g_frame_begin_ns) {
@@ -2317,6 +2324,13 @@ extern "C" __declspec(dllexport) uint32_t rex_drawcount_api_counters(const uint6
 }
 
 bool RexNativeGame60Fps();  // games/pgr4/src/pgr4_hooks.cpp
+
+// A game's own code hooks (rexnative/title_hooks, src/title_hooks.cpp in its work folder): the
+// Swaps the game made so far, and a function to run at each one (nullptr: none).
+uint64_t RexNativeTitleSwaps() { return g_title_swaps.load(std::memory_order_acquire); }
+void RexNativeSetTitleSwapHook(void (*hook)()) {
+  g_title_swap_hook.store(hook, std::memory_order_release);
+}
 
 // The presentation interval KickOffEx (sub_826CACA0) hands to the GPU, read from the device
 // (Pgr4PresentationIntervalHook). While the native renderer paces the frames on the display the

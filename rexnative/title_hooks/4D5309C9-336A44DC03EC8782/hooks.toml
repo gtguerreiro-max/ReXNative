@@ -1,0 +1,15 @@
+# Forza Horizon, title update 4 (title 4D5309C9, module 336A44DC03EC8782): each frame shows one
+# step of the game's simulation (hooks.cpp; rexnative/title_hooks.py). Included by the manifest.
+
+# The vblank callback has decided whether to raise the simulation's step event: r11 not 0 raises
+# it (sub_824AA568 on the handle at 0x833CCD20) and restarts its vblank count (-13012(r31)).
+[[midasm_hook]]
+address = 0x824ABC50
+name = "rexnative_fh_step_raise"
+registers = ["r11"]
+
+# The main loop has its step's time in f31, about to store it (+448 of its owner): a step begins.
+[[midasm_hook]]
+address = 0x8241DC44
+name = "rexnative_fh_step_begun"
+registers = ["f31"]
