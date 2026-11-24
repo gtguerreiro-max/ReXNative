@@ -38,6 +38,7 @@
 #include <bit>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -529,6 +530,16 @@ bool NativeRenderer::Initialize() {
   }
   rt_ = std::make_unique<RenderTargets>();
   if (!rt_->Initialize(device_->device())) return false;
+  // The Steam Deck draws a game at its own resolution: 2x and 3x are a PC's (the HUD's Resolution,
+  // which it does not show on the Deck), and settings made from the PC's carried them along: Forza
+  // Horizon came to the Deck at 2x, far below its frame rate, with no setting there to take it
+  // back (2026-11-24). Steam sets SteamDeck=1 for its games (hud.cpp's SteamDeck()).
+  if (const char* deck = std::getenv("SteamDeck");
+      deck && std::strcmp(deck, "1") == 0 && REXCVAR_GET(rexnative_resolution_scale) > 1) {
+    REXLOG_INFO("ReXNative: resolution scale {}x is a PC's: 1x on the Steam Deck",
+                REXCVAR_GET(rexnative_resolution_scale));
+    rex::cvar::SetFlagByName("rexnative_resolution_scale", "1");
+  }
   rt_->SetResolutionScale(uint32_t(std::clamp(REXCVAR_GET(rexnative_resolution_scale), 1, 3)));
   if (rt_->resolution_scale() > 1)
     REXLOG_INFO("ReXNative: the screen-sized surfaces at {}x", rt_->resolution_scale());

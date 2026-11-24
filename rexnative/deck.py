@@ -69,6 +69,10 @@ DECK_SETTINGS = [
     # 33 ms against 46 ms, 0.2 W more), as did Jet Set Radio (2026-11-20). The settings HUD's Frame
     # latency changes it, live; 2 where a game's frames need the overlap.
     ('rexnative', 'frame_latency', '1'),
+    # The game at its own resolution: 2x and 3x (the PC HUD's Resolution, not shown on the Deck) came
+    # along from the PC's settings and halved Forza Horizon's frame rate there (2026-11-24). The
+    # renderer also takes 1x on the Deck whatever the file says (renderer.cpp).
+    ('rexnative', 'resolution_scale', '1'),
 ]
 
 

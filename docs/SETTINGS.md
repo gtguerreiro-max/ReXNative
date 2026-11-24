@@ -44,7 +44,8 @@ it. A value marked * takes effect at the next start.
 - **Picture page:** the resolution, the anti-aliasing (MSAA, or DLSS / FSR: the upscaler's own
   switch, as F7), the screen scaling (FSR 1 or bilinear) and its sharpening, and the texture
   filtering.
-- **Resolution** (`rexnative.resolution_scale`, 1 by default; not on the Steam Deck): 2x or 3x
+- **Resolution** (`rexnative.resolution_scale`, 1 by default; not on the Steam Deck, where the
+  renderer takes 1x whatever the file says and `rexnative deck` writes 1): 2x or 3x
   draws the game's screen-sized surfaces (the 3D scene, its post-processing and the front buffer)
   at two or three host pixels per guest pixel, a 1280x720 game at 2560x1440 or 3840x2160, as the
   Xbox One X (3x) and Series S (2x) run Xbox 360 games. The upscaler works at that size: DLSS's
