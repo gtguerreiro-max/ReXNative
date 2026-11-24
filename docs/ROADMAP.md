@@ -2,8 +2,9 @@
 
 ## Next
 
-- The ReXNative Manager's first release (the app that installs games on the Steam Deck:
-  [STEAM_DECK.md](STEAM_DECK.md#the-rexnative-manager)).
+- Out of Early Access: adapting a new game without a reference game (a database of the XDK's
+  D3D functions, with no game code in it), a setup that installs what a build needs, a prebuilt
+  SDK, DLSS optional in a build.
 - Frame generation on the Steam Deck with the fixes of 2026-11-20, and what it still gets wrong in
   Sega Rally Revo: dust behind the car in blocks, the car's shadow, foliage that shimmers.
 - Brothers and The Bureau (Unreal Engine 3): find their scene among the passes on one surface,
@@ -59,3 +60,6 @@
   Minecraft and Orcs Must Die!; frame generation tried in nine games. The XDK's spin waits
   sleep once they go on (spin_pause.h): half the power on the Steam Deck, and frame latency 1
   for every game installed there.
+- 2026-11-24: the first release, 0.1.0, in Early Access, with the ReXNative Manager 1.37.0;
+  `stable` follows the releases, `main` every change. No DLC source comes with ReXNative any
+  more: `--dlc` takes the sources you name.

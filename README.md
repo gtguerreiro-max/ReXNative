@@ -27,6 +27,11 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 > No game files, generated code or game data are in this repository. You need your own copy of
 > each game.
 
+> [!NOTE]
+> ReXNative is in **Early Access**: the [releases](https://github.com/gtguerreiro-max/ReXNative/releases)
+> are tested on the games below, but expect rough edges, and report them. `main` gets every change;
+> the `stable` branch is the latest release.
+
 ## Features
 
 - **Upscaling and anti-aliasing:** NVIDIA DLAA, DLSS Super Resolution and DLSS 5 neural rendering
@@ -44,7 +49,7 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
   choice for the next start (F9 switches for that run only): a game the native renderer does not
   draw right yet stays playable. A fault in the native path hands the game to it by itself.
 - **Games as they come:** archives, disc images and Xbox Live packages; the newest title update
-  and the game's DLC (`prepare --title-update --dlc`); a game's XEX DLL modules recompiled with
+  and the game's DLC from the sources you name (`prepare --title-update --dlc`); a game's XEX DLL modules recompiled with
   it; a D3D older than every reference drawn from its push buffer alone.
 - **FPS Boost:** Xenia canary's community patch that raises a game's frame rate ("60 FPS",
   "Unlock FPS"), for the exact version of its executable, put into the recompiled code when
@@ -82,10 +87,10 @@ python -m rexnative prepare "D:\Games\My Game.zip" --work D:\rexnative-work --ti
 
 The game is then in `D:\rexnative-work\<game>\run\`; F1 opens its settings.
 
-**On a Steam Deck:** the **ReXNative Manager**, a Windows app (first release soon), will do all of
-the above and the install for you, from your archive to the Deck's Steam library, with a mode
-for the Deck itself ([docs/STEAM_DECK.md](docs/STEAM_DECK.md#the-rexnative-manager)). Until
-then: `python -m rexnative deck D:\rexnative-work\<game> --host deck@<ip> --key <ssh key> --steam`
+**On a Steam Deck:** the **[ReXNative Manager](https://github.com/gtguerreiro-max/ReXNativeManager)**,
+a Windows app (in Early Access), does all of the above and the install for you, from your archive
+to the Deck's Steam library ([docs/STEAM_DECK.md](docs/STEAM_DECK.md#the-rexnative-manager)).
+Without it: `python -m rexnative deck D:\rexnative-work\<game> --host deck@<ip> --key <ssh key> --steam`
 ([docs/STEAM_DECK.md](docs/STEAM_DECK.md)).
 
 ## Documentation
