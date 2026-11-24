@@ -51,6 +51,18 @@ Changes to the ReXGlue SDK itself go in `sdk/patches/v0.11/` (see [sdk/README.md
 a fix that belongs in ReXGlue is better sent to [ReXGlue](https://github.com/rexglue/rexglue-sdk)
 too.
 
+Before pushing, `python scripts/check_public.py` looks through the tracked files for what must not
+be published (home network addresses, a user's own folder, a PC's name, private e-mails, and the
+patterns of a list you keep outside the repository); `--hook` installs it as a pre-push hook.
+
+## Branches and releases
+
+`main` is where changes land, every one of them: the ReXNative Manager's **dev** channel builds
+with it. `stable` is the last release, which its **stable** channel (the default) builds with. A
+release is a tested commit of main: `python scripts/release.py X.Y.Z --notes notes.md` tags it
+`vX.Y.Z`, moves `stable` to it and makes the GitHub release (pre-releases while ReXNative is in
+Early Access; `--dry-run` says what it would do). Pull requests go to `main`.
+
 ## License
 
 By contributing, you agree that your contribution is licensed under the [MIT License](LICENSE),
