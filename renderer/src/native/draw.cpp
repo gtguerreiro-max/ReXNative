@@ -81,6 +81,12 @@ REXCVAR_DEFINE_BOOL(rexnative_pipeline_wait, true, "ReXNative",
                     "With --rexnative_async_pipelines, a frame whose draws need pipelines still "
                     "compiling is not shown and waits for them at its end, up to 0.5 s (false: "
                     "show it without those draws)");
+REXCVAR_DEFINE_INT32(rexnative_pipeline_hold_min, 8, "ReXNative",
+                     "With --rexnative_pipeline_wait, a frame is held back (the previous one "
+                     "stays on screen while it waits) only when at least this many of its draws' "
+                     "pipelines are still compiling, as on a scene's first frame; a frame with "
+                     "fewer is shown without those draws, which appear a frame or a few later, "
+                     "so a new effect mid-game does not stutter (1: hold every such frame)");
 REXCVAR_DEFINE_BOOL(rexnative_generic_pipelines, true, "ReXNative",
                     "With --rexnative_async_pipelines, a draw whose bool or texture-sign "
                     "specialization is still compiling uses the pipeline of its unspecialized "
@@ -1207,6 +1213,12 @@ struct DrawRenderer::Impl {
   static constexpr std::chrono::milliseconds kPipelineWaitBudget{500};
   static constexpr std::chrono::milliseconds kPipelineMustWait{10000};
   bool pipeline_wait = false;
+  // --rexnative_pipeline_hold_min: a frame is held (and waits at its end) only when this many of
+  // its draws' pipelines still compile, a scene's first frame (180 at a race start); a frame
+  // mid-game with a new effect or two is shown without them instead of stuttering (50 to 170 ms
+  // a pipeline on the Steam Deck: Overlord II's levels held frame after frame).
+  uint32_t hold_min = 1;
+  bool Holds() const { return pipeline_wait && frame_pending.size() >= hold_min; }
   bool generic_pipelines = false;        // --rexnative_generic_pipelines (with worker threads)
   std::vector<Pipeline*> frame_pending;  // pipelines of the frame's skipped draws, once each
   PipelineStore store;
@@ -2017,6 +2029,7 @@ bool DrawRenderer::Impl::Initialize() {
   }
   if (REXCVAR_GET(rexnative_async_pipelines)) {
     pipeline_wait = REXCVAR_GET(rexnative_pipeline_wait);
+    hold_min = uint32_t(std::max(1, REXCVAR_GET(rexnative_pipeline_hold_min)));
     generic_pipelines = REXCVAR_GET(rexnative_generic_pipelines);
     int threads = REXCVAR_GET(rexnative_pipeline_threads);
     if (threads <= 0) threads = int(std::thread::hardware_concurrency() / 4);
@@ -2042,6 +2055,10 @@ void DrawRenderer::Impl::PipelineWorker(bool saves, bool on_wait) {
   std::call_once(library_open, [this] { library.Open(device, library_path, root_signature_hash); });
   std::unique_lock<std::mutex> lock(pso_mutex);
   auto has_work = [this] { return pso_stopping || !pso_jobs.empty() || !prewarm_jobs.empty(); };
+  // A prewarm job (a pipeline of earlier runs, compiled ahead) runs below normal priority, so the
+  // game's threads keep the CPU while it plays (4 cores on the Steam Deck); a job a draw is
+  // waiting for runs at normal priority.
+  int priority = THREAD_PRIORITY_NORMAL;
   for (;;) {
     if (on_wait) {
       pso_wait_cv.wait(lock, [this] { return pso_stopping || (pso_waiting && !pso_jobs.empty()); });
@@ -2057,10 +2074,13 @@ void DrawRenderer::Impl::PipelineWorker(bool saves, bool on_wait) {
       pso_cv.wait(lock, has_work);
     }
     if (pso_stopping) return;  // pending pipelines never get used
-    std::deque<PipelineJob>& queue = !pso_jobs.empty() ? pso_jobs : prewarm_jobs;
+    const bool ahead = pso_jobs.empty();
+    std::deque<PipelineJob>& queue = ahead ? prewarm_jobs : pso_jobs;
     const PipelineJob job = queue.front();
     queue.pop_front();
     lock.unlock();
+    const int want = ahead ? THREAD_PRIORITY_BELOW_NORMAL : THREAD_PRIORITY_NORMAL;
+    if (want != priority && SetThreadPriority(GetCurrentThread(), want)) priority = want;
     ComPtr<ID3D12PipelineState> pso;
     bool loaded;
     const auto t0 = std::chrono::steady_clock::now();
@@ -3049,7 +3069,16 @@ void DrawRenderer::Impl::PromotePipeline(Pipeline* p) {
 }
 
 void DrawRenderer::Impl::WaitForPipelines() {
-  if (pipeline_wait && !frame_pending.empty()) {
+  if (!frame_pending.empty() && !Holds()) {
+    // Shown without the draws of the pipelines still compiling (fewer than hold_min): no wait;
+    // the workers go on, and those draws come back as their pipelines are ready.
+    ++stats.frames_partial;
+    REXNATIVE_LOG_FIRST(8, INFO,
+                        "ReXNative pipelines: frame {} shown without the draws of {} pipeline(s) "
+                        "still compiling (a frame is held from {})",
+                        r.frame_index(), frame_pending.size(), hold_min);
+  }
+  if (Holds()) {
     const auto t0 = std::chrono::steady_clock::now();
     {
       std::unique_lock<std::mutex> lock(pso_mutex);
@@ -5953,8 +5982,7 @@ void DrawRenderer::LogResolve(const ResolveParams& p) {
 }
 
 bool DrawRenderer::FrameIncomplete() const {
-  const Impl& m = *impl_;
-  return m.pipeline_wait && !m.frame_pending.empty();
+  return impl_->Holds();
 }
 
 void DrawRenderer::EndFrame(uint64_t completed_fence) {

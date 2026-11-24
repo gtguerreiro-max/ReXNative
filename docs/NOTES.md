@@ -1049,8 +1049,15 @@ The pipelines a game creates are stored (`<cache_root>\rexnative\pipelines.bin`,
 pipeline library) and all of them are compiled again at start-up, in the background, most
 recently used first (at most 4096); none is forgotten (`--rexnative_pipeline_prewarm_sessions`
 and `--rexnative_pipeline_keep_sessions` limit them to the last N sessions). Only a pipeline the
-game never created before still holds a frame while it compiles (50 to 170 ms on the Steam
-Deck). A stored pipeline's use used to be marked on another record (the records were sorted
+game never created before still has to compile while the game plays (50 to 170 ms on the Steam
+Deck). A frame used to be held back for every such pipeline (the previous frame stayed on screen
+while it waited, up to 0.5 s): Overlord II's levels, played for the first time on the Deck,
+stuttered at each new effect or material. Since 2026-11-24 a frame is held only when it waits
+for at least `pipeline_hold_min` (8) at once, a scene's first frame (180 at a race's
+start); mid-game a frame waiting for one or two is shown without those draws, which come
+back a frame or a few later, as Dolphin's and RPCS3's asynchronous shaders do. Draws that write
+guest memory (memexport) still wait for theirs. The prewarm's compiles run below normal priority
+(a draw's at normal), so they do not take the CPU from the game's threads. A stored pipeline's use used to be marked on another record (the records were sorted
 apart from their hashes), so pipelines in use could be forgotten.
 
 ## Validating the adapter

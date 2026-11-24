@@ -1885,6 +1885,7 @@ void NativeRenderer::AppendCsvColumns(const FrameStats& s, uint64_t frame_ns, bo
       Uint("hash_copies", ds.hash_copies),
       Uint("pso_pending", ds.pso_pending),
       Uint("pso_wait_us", ds.pso_wait_us),
+      Uint("frames_partial", ds.frames_partial),
       Uint("held", s.frames_held),
       Uint("tex_stale", ds.textures_stale),
       Uint("coh_stale", ds.stale_pages),

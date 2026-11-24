@@ -133,6 +133,13 @@ configuration file (`run/<game>.toml`) or on the command line.
   `;`, for testing. `rexnative project` writes none now (rexnative/tweaks.py): it takes out Forza
   Horizon's `E68FE55ECD482EC5:c253.w=0.5`, which it wrote before `texel_unorm8` made that look
   the emulation's own, where the file still has that value.
+- `rexnative.pipeline_hold_min` (default 8): a pipeline the game never created before compiles
+  on worker threads (50 to 170 ms on the Steam Deck). A frame that waits for at least this many
+  of them, a scene's first, is held back while they compile (the previous one stays on screen);
+  a frame mid-game waiting for fewer is shown without those draws, which appear a frame or a few
+  later, instead of stuttering. 1 holds every such frame (before 2026-11-24);
+  `rexnative.pipeline_wait = false` holds none. Pipelines compiled ahead from earlier runs (the
+  prewarm) run below normal priority, so the game's own threads keep the CPU.
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 
