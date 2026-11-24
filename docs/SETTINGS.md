@@ -159,10 +159,13 @@ configuration file (`run/<game>.toml`) or on the command line.
   GPU 17.5 ms a frame) and 58.6 with its MSAA (14.4 ms). Nothing is saved: the next run starts at
   FSR 4 again. A game held by its CPU (the GPU's time waiting for it is not counted)
   keeps FSR 4, which 3.1 would not make faster; an explicit `fsr_version` 4 or 3 is kept.
-- `rexnative.battery_saver` (the HUD's Battery saver, off by default): on the battery (a Steam
+- `rexnative.battery_saver` (the HUD's Battery saver, on the Picture page under Antialiasing, which
+  shows "- MSAA on the battery" while it holds the upscaler off; off by default, on for the Deck):
+  on the battery (a Steam
   Deck, a laptop: GetSystemPowerStatus, which Proton reads from the system's power supply), the
   upscaler goes off and the scene keeps its own MSAA, the console's anti-aliasing; back on the
-  charger, the upscaler again. Checked every 120 frames, the change at the next frame. Overlord II
+  charger, the upscaler again. The power is looked at every 120 frames, and at once when the menu
+  changes the setting; the change takes effect at the next frame. Overlord II
   on the Steam Deck in the same place: the APU at 6.2 W with FSR 4, 5.9 with FSR 3.1, 4.7 with the
   MSAA (the GPU busy 63, 56 and 33 % of the time).
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still

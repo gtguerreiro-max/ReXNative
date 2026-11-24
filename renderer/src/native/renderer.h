@@ -194,6 +194,10 @@ class NativeRenderer {
   void RequestAntialiasing() { antialiasing_requested_.store(true, std::memory_order_relaxed); }
   // --rexnative_battery_saver: the upscaler off on the battery, on again on the charger.
   void WatchBattery();
+  // The settings menu's Battery saver changed: looked at the next frame, not up to 120 later.
+  void RequestBatteryCheck() { battery_check_.store(true, std::memory_order_relaxed); }
+  // Whether the Battery saver holds the upscaler off now (on the battery): the menu says so.
+  static bool UpscalerOffOnBattery();
   // --rexnative_present_interval changed: taken at the start of the next frame.
   void RequestFrameRate() { frame_rate_requested_.store(true, std::memory_order_relaxed); }
   // What the upscaler runs (Upscaler::Status): "AMD FSR 4.1.2 Quality, 853x480 to 1280x720";
@@ -338,6 +342,7 @@ class NativeRenderer {
   void SwitchUpscaler(bool on);
   std::atomic<bool> upscaler_switch_requested_{false};
   std::atomic<bool> antialiasing_requested_{false}, frame_rate_requested_{false};
+  std::atomic<bool> battery_check_{false};
   bool upscaler_bound_ = false;  // primary mode
   bool upscaler_on_ = false;
   uint32_t scene_msaa_ = 2;  // --rexnative_msaa, as far as the GPU has it

@@ -763,8 +763,12 @@ void NativeRenderer::ReadSceneMsaa() {
 // A machine with no battery, or whose status is unknown, counts as on the charger.
 extern std::atomic<bool> g_upscaler_off_on_battery;
 
+bool NativeRenderer::UpscalerOffOnBattery() {
+  return g_upscaler_off_on_battery.load(std::memory_order_relaxed);
+}
+
 void NativeRenderer::WatchBattery() {
-  if ((frame_index_ % 120) != 0) return;
+  if ((frame_index_ % 120) != 0 && !battery_check_.exchange(false, std::memory_order_relaxed)) return;
   bool on_battery = false;
   if (REXCVAR_GET(rexnative_battery_saver)) {
     SYSTEM_POWER_STATUS ps = {};

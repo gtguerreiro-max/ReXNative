@@ -177,6 +177,18 @@ std::vector<Option> MakeOptions() {
                },
                "The 3D scene's multisampling (most games draw 2x on the console), or the "
                "upscaler's temporal anti-aliasing (its options on the Upscaler page)."});
+  // Under Antialiasing, which it acts on: the upscaler off on the battery (renderer.cpp,
+  // WatchBattery), a third less of the APU's power on the Steam Deck in Overlord II. Both ways at
+  // the next frame; Antialiasing shows when it holds the upscaler off.
+  o.push_back({"Picture", "battery_saver", "Battery saver", {{"Off", "false"}, {"On", "true"}}, false,
+               [] { return Flag("rexnative_battery_saver"); },
+               [](const std::string& v) { return Bool("rexnative_battery_saver", v); },
+               [] {
+                 if (NativeRenderer* r = NativeRenderer::Get()) r->RequestBatteryCheck();
+               },
+               "On the battery, the upscaler waits for the charger and the console's anti-aliasing "
+               "(MSAA) takes its place: less power, the battery lasts longer (Overlord II on the "
+               "Steam Deck: 4.7 W against 6.2). Off: the upscaler on the battery too. At once."});
   // The finished picture (the front buffer, the game's HUD on it) scaled to a larger window
   // (present.cpp): FSR 1 or bilinear, only when the window is larger and the output is not HDR.
   // The upscaler (FSR 4, DLSS) works earlier, on the 3D scene alone, which has the depth and motion
@@ -318,14 +330,6 @@ std::vector<Option> MakeOptions() {
                remake,
                "Native AA keeps the game's resolution and only anti-aliases; the others render "
                "smaller (faster) and rebuild the picture."});
-  // The upscaler off on the battery (renderer.cpp, WatchBattery): a third less of the APU's power
-  // on the Steam Deck in Overlord II. At once, both ways.
-  o.push_back({"Upscaler", "battery_saver", "Battery saver", {{"Off", "false"}, {"On", "true"}}, false,
-               [] { return Flag("rexnative_battery_saver"); },
-               [](const std::string& v) { return Bool("rexnative_battery_saver", v); }, nullptr,
-               "On the battery, the upscaler off and the console's anti-aliasing (MSAA) in its "
-               "place: less power, the battery lasts longer (Overlord II on the Steam Deck: 4.7 W "
-               "against 6.2). Back on the charger, the upscaler again."});
   o.push_back({"Upscaler", "frame_generation", "Frame generation (FSR)", on_off, false,
                [] { return Flag("rexnative_frame_generation"); },
                [](const std::string& v) { return Bool("rexnative_frame_generation", v); },
@@ -832,6 +836,10 @@ bool Shown(const Option& o) { return !o.shown || o.shown(); }
 // mode and sizes.
 void UpscalerLine() {
   const std::string status = NativeRenderer::UpscalerStatus();
+  if (NativeRenderer::UpscalerOffOnBattery()) {
+    ImGui::TextDisabled("Now: off on the battery (Battery saver, Picture page): the console's MSAA");
+    return;
+  }
   ImGui::TextDisabled("Now: %s", !status.empty() ? status.c_str()
                                  : Flag("rexnative_upscaler") == "true"
                                      ? "waiting for the game's 3D scene, or unavailable (see the log)"
@@ -847,6 +855,9 @@ void Row(const Option& o, const Option** focused) {
     if (o.choices[i].value == value) shown = i;
   std::string text = o.choices[shown].label;
   if (o.restart && o.choices[shown].value != running) text += " *";
+  // The upscaler chosen, held off by the Battery saver on the battery: what runs now.
+  if (o.id == "antialiasing" && value == "upscaler" && NativeRenderer::UpscalerOffOnBattery())
+    text += " - MSAA on the battery";
   ImGui::PushID(o.id.data(), o.id.data() + o.id.size());
   const float height = ImGui::GetFrameHeight();
   const bool clicked = ImGui::Selectable("##row", false, 0, ImVec2(0.0f, height));
