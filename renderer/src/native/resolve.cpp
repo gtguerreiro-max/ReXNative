@@ -687,7 +687,11 @@ bool DecodeResolve(const uint8_t* base, const HookArgs& args, ResolveParams* out
     p.clear_depth = float(args.f[0]);
     p.clear_stencil =
         args.stencil >= 0 ? uint8_t(args.stencil) : uint8_t(Load32(base, args.sp + 92));
-    if (args.tiling == TilingCall::kEnd) {
+    // EndTiling's resolves, and the game's own between BeginTiling and EndTiling (The Bureau
+    // resolves its tiled G-buffer's four targets tile by tile itself): either way the GPU runs
+    // the tile with its origin at the EDRAM base.
+    if (args.tiling == TilingCall::kEnd ||
+        (args.tiling == TilingCall::kInside && Load32(base, device + kDevTileCount) > 1)) {
       const uint32_t tiles = std::min(Load32(base, device + kDevTileCount), kMaxTiles);
       for (uint32_t i = 0; i < tiles; ++i) {
         const uint32_t r = device + kDevTileRects + 16 * i;
@@ -1658,6 +1662,15 @@ bool Resolver::Resolve(CommandStream* list, const ResolveParams& p, Destination*
   if (x1 <= x0 || y1 <= y0) return true;  // nothing to copy or clear
   // A resolve taller than the predicated tiles: the surface is whole in the EDRAM again.
   if (rt->edram_rows && uint32_t(y1 - y0) > rt->edram_rows) rt->edram_rows = 0;
+  // A tile's resolve away from the EDRAM base (its origin at the base): the target holds only
+  // the tiles' rows there, before the copy reads it (SyncEdram). Set after the clear only, the
+  // fills of the next G-buffer target's first tile (256 tiles further on) landed in this one's
+  // second and third tiles as they were resolved: The Bureau's G-buffer was black below row 256
+  // and its lights left the ground dark.
+  if (p.edram_y > 0 && y1 > p.edram_y) {
+    const uint32_t rows = uint32_t(y1 - p.edram_y);
+    if (!rt->edram_rows || rt->edram_rows < rows) rt->edram_rows = rows;
+  }
   const int32_t dx = p.dest_x + (x0 - p.x0), dy = p.dest_y + (y0 - p.y0);
   const int32_t copy_x1 = std::min<int32_t>(x1, x0 + int32_t(p.dest_width) - dx);
   const int32_t copy_y1 = std::min<int32_t>(y1, y0 + int32_t(p.dest_height) - dy);
