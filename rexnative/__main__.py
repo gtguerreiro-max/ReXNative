@@ -272,7 +272,7 @@ def cmd_deck(a):
         print('nothing sent')
         return
     if a.steam:
-        added = deck.add_to_steam(d, games)
+        added = deck.add_to_steam(d, games, minutes=a.busy_wait)
         if added is None:
             sys.exit('the Deck stayed in use: no shortcut added, no game tried')
         if not added:
@@ -281,7 +281,7 @@ def cmd_deck(a):
     if a.try_seconds:
         rows = []
         for g in games:
-            r = deck.try_game(d, g, a.try_seconds)
+            r = deck.try_game(d, g, a.try_seconds, minutes=a.busy_wait)
             if r:
                 rows.append('| %s | %s | %s | %s | %s |' % (
                     r['title'], 'yes' if r['running'] else 'NO',
@@ -490,6 +490,10 @@ def main(argv=None):
     s.add_argument('--reinstall', action='store_true',
                    help="send games their user removed from the Deck too (<root>/.removed/<slug>; "
                         "without it they are left out)")
+    s.add_argument('--busy-wait', type=int, default=120, metavar='MINUTES',
+                   help='how long to wait for a Deck in use (a game, or an app through Steam) before '
+                        'Steam is closed for the shortcuts or a game is tried (default 120); then '
+                        'the shortcuts are not added and the command fails with "no shortcut added"')
     s.add_argument('--try', dest='try_seconds', type=int, default=0, metavar='SECONDS',
                    help='start each game from Steam, read its log and take a capture after '
                         'SECONDS, then close it')

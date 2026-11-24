@@ -505,15 +505,18 @@ def wait_idle(deck, log=print, minutes=120):
         if not playing(deck):
             return True
         if i == 0:
-            log('a game is running on the Deck: waiting for it to end')
+            log('the Deck is in use (a game, or another app, runs through Steam): waiting up to %d min'
+                % minutes)
         time.sleep(30)
     return False
 
 
-def add_to_steam(deck, games, log=print):
+def add_to_steam(deck, games, log=print, minutes=120):
     """Every game's shortcut, with Steam closed for it (Game Mode starts it again): True when
-    all were added, False when some were not, None when the Deck stayed in use."""
-    if not wait_idle(deck, log):
+    all were added, False when some were not, None when the Deck stayed in use (minutes: how long
+    to wait for it; the ReXNative Manager waits 2, as the Manager open on the Deck counts as in use
+    and it adds the shortcut itself when the Manager closes)."""
+    if not wait_idle(deck, log, minutes):
         log('the Deck stayed in use: the shortcuts are not added')
         return None
     # In Game Mode gamescope-session.target upholds steam-launcher.service: Steam closed with
@@ -590,9 +593,9 @@ def app_id(deck, g):
 FRAME_LINE = re.compile(r'frames (\d+) \| per frame: draws ([\d.]+).*?frame ([\d.]+) ms')
 
 
-def try_game(deck, g, seconds, log=print):
+def try_game(deck, g, seconds, log=print, minutes=120):
     """Starts the game from Steam, reads its log and takes a capture after `seconds`."""
-    if not wait_idle(deck, log):
+    if not wait_idle(deck, log, minutes):
         log('%s: not tried, the Deck stayed in use' % g['title'])
         return None
     appid = app_id(deck, g)
