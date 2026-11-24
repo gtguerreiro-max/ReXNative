@@ -73,6 +73,11 @@ DECK_SETTINGS = [
     # along from the PC's settings and halved Forza Horizon's frame rate there (2026-11-24). The
     # renderer also takes 1x on the Deck whatever the file says (renderer.cpp).
     ('rexnative', 'resolution_scale', '1'),
+    # No NVIDIA GPU: DLSS 5 off (Forza Horizon's, on for the PC, had NGX tried and failing again and
+    # again there) and the upscaler's type automatic, which is FSR on the Deck (a PC's "dlss" left
+    # it without an upscaler).
+    ('rexnative', 'dlss5', 'false'),
+    ('rexnative', 'upscaler_backend', '"auto"'),
 ]
 
 
