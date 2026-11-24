@@ -51,9 +51,44 @@ def options(work):
     return out
 
 
+VECTOR_MATH = ('vmaddfp', 'vnmsubfp', 'vmsum3fp128', 'vmsum4fp128', 'vrefp', 'vrsqrtefp',
+               'vexptefp', 'fres', 'frsqrte')
+
+
+def vector_math(work):
+    """The game's choice of ReXGlue's exact vector math ([vector_math] in the manifest), from
+    vector-math.txt in its work folder (lines `vmsum4fp128 = exact`); every other instruction
+    keeps ReXGlue's default, "fast". Forza Horizon's collisions need vmsum3fp128 and vmsum4fp128
+    exact: the fast dot product (the host's dpps) gives an infinity where the console's overflows
+    to a NaN, and the game's cars and destructible objects then pass through each other, as they
+    did in Xenia until its dot product gave the NaN too (xenia aa284307, February 2020)."""
+    out = {}
+    p = os.path.join(work, 'vector-math.txt')
+    if os.path.exists(p):
+        for line in open(p, encoding='utf-8'):
+            k, eq, v = line.split('#')[0].partition('=')
+            k, v = k.strip(), v.strip().strip('"').lower()
+            if eq and k in VECTOR_MATH and v in ('fast', 'exact'):
+                out[k] = v
+    return out
+
+
+def _vector_math_lines(work):
+    vm = vector_math(work)
+    return ['', '[vector_math]'] + ['%s = "%s"' % (k, vm[k]) for k in sorted(vm)] if vm else []
+
+
 def _options_differ(work, gen):
     """The generated code was made with other register options than the game's (its _init.cpp
-    records them as `.name = value,`)."""
+    records them as `.name = value,`), or another vector math choice than the game's (the last
+    manifest written holds it)."""
+    manifests = [f for f in os.listdir(work) if f.endswith('_manifest.toml')]
+    if manifests:
+        text = open(os.path.join(work, manifests[0]), encoding='utf-8', errors='replace').read()
+        i = text.find('\n[vector_math]\n')
+        had = text[i:].strip().splitlines() if i >= 0 else []
+        if had != [l for l in _vector_math_lines(work) if l]:
+            return True
     want = options(work)
     for d in [gen] + _generated_dirs(work)[1:]:
         if not os.path.isdir(d):
@@ -657,6 +692,9 @@ def _write_manifest(work, name):
         if entries[i + 1]:
             lines.append('[modules.functions]')
             lines += _function_lines(entries[i + 1])
+    # The game's exact vector math (vector-math.txt), for the executable and its modules: a
+    # top-level table, which codegen shares with them. It stays last (_options_differ reads it).
+    lines += _vector_math_lines(work)
     path = os.path.join(work, '%s_manifest.toml' % name)
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
