@@ -223,12 +223,14 @@ namespace {
 // Set once the device or swapchain failed; the native path stops.
 std::atomic<bool> g_failed{false};
 
-// The automatic frame latency settled on 2 (frame_pacer.h): the game's setting from now on, as
-// if the player had picked 2 in the HUD, saved so the next start begins there.
-void KeepAutoLatency() {
-  rex::cvar::SetFlagByName("rexnative_frame_latency", "2");
-  if (!hud::SaveSetting("rexnative_frame_latency", "2"))
-    REXLOG_WARN("ReXNative: frame latency 2 kept for this run; the settings file was not written");
+// The automatic frame latency settled on 2 or 3 (frame_pacer.h): the game's setting from now on,
+// saved so the next start begins there; automatic stays on (from 2 it may still go to 3).
+void KeepAutoLatency(uint32_t latency) {
+  const std::string value = std::to_string(latency);
+  rex::cvar::SetFlagByName("rexnative_frame_latency", value);
+  if (!hud::SaveSetting("rexnative_frame_latency", value))
+    REXLOG_WARN("ReXNative: frame latency {} kept for this run; the settings file was not written",
+                latency);
 }
 
 // --rexnative_debug_game_cost_us: a heavy game's logic on the game thread, for tests.
@@ -1127,7 +1129,7 @@ void NativeRenderer::QueueSwap(uint8_t* base, const HookArgs& args) {
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
     pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
                             REXCVAR_GET(rexnative_frame_latency_auto));
-  if (pacer_ && pacer_->TakeAutoDecision()) KeepAutoLatency();
+  if (const uint32_t kept = pacer_ ? pacer_->TakeAutoDecision() : 0) KeepAutoLatency(kept);
   const uint64_t pace_wait = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
   DebugGameCost();
   const uint64_t t2 = NowNs();
@@ -1269,7 +1271,7 @@ void NativeRenderer::OnSwap(uint8_t* base, const HookArgs& args) {
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
     pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
                             REXCVAR_GET(rexnative_frame_latency_auto));
-  if (pacer_ && pacer_->TakeAutoDecision()) KeepAutoLatency();
+  if (const uint32_t kept = pacer_ ? pacer_->TakeAutoDecision() : 0) KeepAutoLatency(kept);
   stats_.pace_wait_ns = (pacer_ ? pacer_->WaitToBegin() : 0) + FrontEndLimit();
   DebugGameCost();
   stats_.guest_begin_ns = NowNs();
@@ -1471,7 +1473,7 @@ void NativeRenderer::ClassicSwap() {
   if (pacer_ && REXCVAR_GET(rexnative_frame_latency) > 0)
     pacer_->SetFrameLatency(uint32_t(REXCVAR_GET(rexnative_frame_latency)),
                             REXCVAR_GET(rexnative_frame_latency_auto));
-  if (pacer_ && pacer_->TakeAutoDecision()) KeepAutoLatency();
+  if (const uint32_t kept = pacer_ ? pacer_->TakeAutoDecision() : 0) KeepAutoLatency(kept);
   if (pacer_) pacer_->WaitToBegin();
 }
 

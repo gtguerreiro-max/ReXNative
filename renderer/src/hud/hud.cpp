@@ -226,10 +226,11 @@ std::vector<Option> MakeOptions() {
                "How often a frame is shown. Whether the game itself runs faster depends on "
                "the game."});
   o.push_back({"Display", "frame_latency", "Frame latency",
-               {{"Auto (1-2)", "auto"}, {"1", "1"}, {"2", "2"}, {"3", "3"}}, false,
+               {{"Auto (1-3)", "auto"}, {"1", "1"}, {"2", "2"}, {"3", "3"}}, false,
                [] {
                  const int n = FlagInt("rexnative_frame_latency");
-                 if (n <= 1 && Flag("rexnative_frame_latency_auto") == "true")
+                 // At 2 automatic is the automatic latency's 2, which may still go to 3.
+                 if (n <= 2 && Flag("rexnative_frame_latency_auto") == "true")
                    return std::string("auto");
                  return std::to_string(std::clamp(n, 1, 3));
                },

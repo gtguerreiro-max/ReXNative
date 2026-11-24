@@ -58,7 +58,9 @@
 //   before. A try costs one frame of latency for a few seconds, no stutter. kAutoMisses frames
 //   the GPU finished after their slot, shown late within kAutoMissWindowNs (not a stall, nor the
 //   first kHeadroomFrames after a start or a new pace), bring the next try forward to at once.
-// - kAutoProbeGain faster at 2: 2, and once, kAutoConfirmNs later, 1 again to confirm it (a try
+// - kAutoProbeGain faster at 2, or late half as often (kAutoMisses or more late frames in the
+//   kAutoProbeMeasureNs before the try: a game at its own pace, which stutters hardly slow on
+//   average) and no slower: 2, and once, kAutoConfirmNs later, 1 again to confirm it (a try
 //   during a loading screen can look faster): kAutoProbeEarlyLoss slower at 1 after
 //   kAutoProbeEarlyNs ends the try, and kAutoProbeSure slower over all it measured makes 2 the
 //   game's for good (a second alone is noise: one 10 % slower ended a try 4.8 % slower), saved
@@ -73,7 +75,19 @@
 //   more where it was not sure).
 // Neither the headroom nor a frame's own time from beginning to finished tells whether 1 would
 // do: a game that waits inside its frame for its own pace (most 30 fps ones) leaves no slack.
-// Only from 1 to 2: a setting of 2 or 3 is kept as it is.
+//
+// From 2 to 3 (`automatic` at 2: the automatic latency's 2 for good, saved with automatic still
+// on). A game that keeps up at 2 on average can still show a frame late every few seconds where
+// a frame's work peaks (Forza Horizon on the Steam Deck streaming its map: 1 to 10 frames over
+// 50 ms in each 150 at 2, none at 3, with the delay D keeping the time from a frame's start to
+// the display at 32 to 44 ms). The mean interval hardly moves, so the late frames are counted:
+// each slot a shown frame missed. kAutoMisses late frames within kAutoMissWindowNs start a try
+// of 3 (settled kAutoProbeSettleNs, measured kAuto3MeasureNs); half the late frames of the
+// kAuto3MeasureNs before it, or fewer, and no slower, keeps 3, and kAuto3ConfirmNs later 2 is
+// tried again: kAutoMisses late frames at 2 end that try at once and make 3 the game's for good
+// (saved in its settings as 2 is); fewer, and 2 stays, 3 tried again once frames are late again
+// (kAuto3CooldownNs after, twice as long each time, up to kAutoProbePeriodMaxNs). A setting of 3,
+// or of 2 or 1 without `automatic`, is kept as it is.
 //
 // "Shown" is the swapchain's frame latency waitable object: vkd3d-proton releases it once per
 // present when vkWaitForPresentKHR returns, but only in FIFO (with other present modes once the
@@ -127,12 +141,13 @@ class FramePacer {
   // Whether frames are paced: a swapchain is attached and L > 0.
   bool pacing() const { return waitable_ && frame_latency() > 0; }
   // Game thread, before WaitToBegin: L from now on (1-3; the settings HUD's Frame latency, live),
-  // and with 1 whether the pacer may go to 2 while frames miss their slot (automatic latency
-  // above). A change starts the delay estimate over, as for a new swapchain.
+  // and with 1 or 2 whether the pacer may go one higher while frames miss their slot (automatic
+  // latency above). A change starts the delay estimate over, as for a new swapchain.
   void SetFrameLatency(uint32_t frames, bool automatic = false);
-  // Game thread: true once when the automatic latency settled on 2 for this game; the caller
-  // makes it the setting (rexnative_frame_latency = 2, saved in the game's settings file).
-  bool TakeAutoDecision() { return auto_decided_.exchange(false, std::memory_order_acq_rel); }
+  // Game thread: once, the latency the automatic latency settled on for this game (2 or 3; 0:
+  // none); the caller makes it the setting (rexnative_frame_latency, saved in the game's
+  // settings file).
+  uint32_t TakeAutoDecision() { return auto_decided_.exchange(0, std::memory_order_acq_rel); }
   // The mean time from a frame beginning (the game reading its input) to the display showing it,
   // over the frames shown since the last call, in ms (0: none): the stats line's latency.
   double TakeShownLatencyMs();
@@ -192,6 +207,12 @@ class FramePacer {
   static constexpr double kAutoProbeKeep = 1.03;  // over the whole try, more than this: 2 for now
   static constexpr double kAutoProbeSure = 1.10;  // and more than this: 2 for good
   static constexpr uint32_t kShownRing = 512;       // shown times: 3 s at 144 fps and more
+  // From 2 to 3 (above).
+  static constexpr uint64_t kAuto3MeasureNs = 6'000'000'000;
+  static constexpr uint64_t kAuto3ConfirmNs = 60'000'000'000;
+  static constexpr uint64_t kAuto3CooldownNs = 30'000'000'000;
+  static constexpr double kAuto3Slower = 1.02;  // the interval at 3 over the one at 2, at most
+  static constexpr uint32_t kLateRing = 128;    // late frames' times: 6 s of every one at 20 fps
 
   struct Present {
     uint64_t frame = 0;   // the frame's number (Swaps since the pacer started, from 1)
@@ -214,6 +235,13 @@ class FramePacer {
   // mutex_ held, from ControlLocked: the automatic latency's step for a shown present that
   // `missed` slots of `interval`. True when it changed L (the control started over).
   bool AutoLatencyLocked(const Present& p, uint64_t shown_ns, int64_t missed, int64_t interval);
+  // mutex_ held, from AutoLatencyLocked at a setting of 2: the step from 2 to 3 (above).
+  bool AutoLatency3Locked(uint64_t shown_ns);
+  // mutex_ held: the late frames shown in [from_ns, to_ns).
+  uint32_t LateLocked(uint64_t from_ns, uint64_t to_ns) const;
+  // mutex_ held: the median of the last kIntervalFrames shown intervals (0 with fewer than
+  // kIntervalMinFrames).
+  int64_t MedianIntervalLocked() const;
   // mutex_ held: the mean interval between the presents shown in the last `window_ns` (ms; 0
   // with fewer than 10).
   double MeanShownIntervalLocked(uint64_t now_ns, uint64_t window_ns) const;
@@ -226,7 +254,7 @@ class FramePacer {
   // The setting (SetFrameLatency); L differs from it while the automatic latency tries 2 or 1.
   std::atomic<uint32_t> base_latency_;
   std::atomic<bool> automatic_{false};
-  std::atomic<bool> auto_decided_{false};  // TakeAutoDecision
+  std::atomic<uint32_t> auto_decided_{0};  // TakeAutoDecision
   enum class AutoState { kAt1, kTrying2, kAt2, kTrying1, kDone };
   AutoState auto_state_ = AutoState::kAt1;            // mutex_
   std::array<uint64_t, kAutoMisses> auto_miss_ns_{};  // mutex_: when the last misses were shown
@@ -238,6 +266,23 @@ class FramePacer {
   uint64_t auto_probe_period_ns_ = kAutoProbePeriodNs;
   uint64_t auto_confirm_period_ns_ = kAutoConfirmNs;  // the next confirmation of 2 when unsure
   double auto_probe_base_ms_ = 0;  // the mean interval before the try
+  uint32_t auto_probe_base_late_ = 0;  // the late frames before it (LateLocked)
+  // At 1, a try late frames started (not the GPU's misses): when the next may start, the wait
+  // after one that did not help (twice as long each time), and whether this try is one.
+  uint64_t auto_late_ok_ns_ = 0;
+  uint64_t auto_late_backoff_ns_ = kAuto3CooldownNs;
+  bool auto_late_try_ = false;
+  // From 2 to 3 (mutex_): its state, the try's end, the earliest next step, the wait before the
+  // next try of 3, and the late frames and mean interval before the try.
+  enum class Auto3State { kAt2, kTrying3, kAt3, kTrying2, kDone };
+  Auto3State auto3_state_ = Auto3State::kAt2;
+  uint64_t auto3_end_ns_ = 0, auto3_next_ns_ = 0;
+  uint64_t auto3_cooldown_ns_ = kAuto3CooldownNs;
+  uint32_t auto3_base_late_ = 0;
+  double auto3_base_ms_ = 0;
+  // When late frames were shown (mutex_): one entry per slot a shown frame missed.
+  std::array<uint64_t, kLateRing> late_ns_{};
+  uint64_t late_count_ = 0;
   const bool low_latency_;
   const int64_t margin_ns_;
   const std::unique_ptr<AsyncFile> log_;

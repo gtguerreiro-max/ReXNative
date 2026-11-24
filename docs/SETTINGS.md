@@ -117,17 +117,26 @@ configuration file (`run/<game>.toml`) or on the command line.
 - `rexnative.menu_fps` limits the frame rate: 60 by default, so menus made for a console's 60 Hz
   keep their speed on a faster display; 30 for a game the console ran at 30; 0 for no limit.
 - `rexnative.frame_latency` (the HUD's Frame latency) and `rexnative.frame_latency_auto` (on: the
-  HUD's "Auto (1-2)" with latency 1). At 1 the game, the render thread and the GPU work one frame
-  after the other, the least input delay; a heavy game then misses the display's pace (Blur on
+  HUD's "Auto (1-3)" with latency 1 or 2). At 1 the game, the render thread and the GPU work one
+  frame after the other, the least input delay; a heavy game then misses the display's pace (Blur on
   the Steam Deck: half its stretches slow at 1, almost none at 2). Auto tries 2 for 4 s, 5 s after
   the game settles and then every 15 s (less often each time it does not help, and at once when
-  frames start missing their slot). When frames come at least 5 % sooner at 2 it keeps 2, tries 1
-  once 20 s later for about a second to confirm it, and then makes 2 the game's setting for good:
-  `frame_latency = 2` written in its settings file, as if picked in the HUD (a game that needed 2
-  will need it again; trying 1 now and then would only stutter). A setting of 2 or 3 is left as
-  it is. The log says each step ("frame latency 2 for this game (automatic: a frame every 41.7 ms
-  at 1, 33.3 ms at 2; saved in its settings)"). `rexnative.debug_game_cost_us` and
-  `rexnative.debug_frame_cost_us` make a fast PC's frames as heavy as a handheld's, for testing it.
+  frames start missing their slot, or 4 come late within 3 s). When frames come at least 5 % sooner
+  at 2, or late half as often and no slower (a game at its own 30 fps, whose stutters hardly change
+  the mean), it keeps 2, tries 1 once 20 s later for about a second to confirm it, and then makes 2
+  the game's setting for good: `frame_latency = 2` written in its settings file, as if picked in the
+  HUD (a game that needed 2 will need it again; trying 1 now and then would only stutter), automatic
+  still on. From 2 (that one, or 2 picked with automatic on) it goes to 3 where frames keep coming
+  late at 2: 4 late frames within 3 s try 3 for 6 s, which it keeps with half the late frames or
+  fewer and no slower; a minute later 2 is tried again, and 4 late frames there make 3 the game's
+  setting for good (fewer: back to 2, trying 3 again on late frames, less often each time). Forza
+  Horizon on the Steam Deck streaming its map: 1 to 10 frames over 50 ms in each 150 at 2, none at
+  3, with 32 to 44 ms from a frame's start to the display (the delay before each frame takes up what
+  3 adds). A setting of 3, or 1 or 2 without automatic, is left as it is. The log says each step
+  ("frame latency 2 for this game (automatic: a frame every 41.7 ms at 1, 33.3 ms at 2; saved in its
+  settings)", "frame latency 3 for this game (automatic: 5 frames late at 2 in 0.8 s, 0 in 6 s at 3;
+  saved in its settings)"). `rexnative.debug_game_cost_us` and `rexnative.debug_frame_cost_us` make
+  a fast PC's frames as heavy as a handheld's, for testing it.
 - `rexnative.upscaler_depth_test`: the upscaler takes the frame's last pass of the scene whose
   draws test depth, not only write it (Diablo III, whose menus draw the hero in a pass of its own).
 - `rexnative.scene_late_draws`: scene detection takes an 8-bit surface without MSAA as the scene
