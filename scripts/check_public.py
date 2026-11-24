@@ -19,7 +19,9 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The repository looked at: the one this script is in, or $CHECK_PUBLIC_ROOT (the hook runs main's
+# copy for a worktree checked out before the script existed).
+ROOT = os.environ.get('CHECK_PUBLIC_ROOT') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EMAIL = (r'[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com|anthropic\.com|example\.)'
          r'[A-Za-z0-9.-]+\.(?!invalid\b)[a-z]{2,}')
 GENERIC = [
@@ -127,7 +129,19 @@ def check_commits(spec):
 
 HOOK = """#!/bin/sh
 # Installed by scripts/check_public.py --hook: nothing private goes to the public repository.
-exec python "$(git rev-parse --show-toplevel)/scripts/check_public.py" --pre-push
+# A worktree checked out before the script existed runs origin/main's copy.
+top=$(git rev-parse --show-toplevel)
+script="$top/scripts/check_public.py"
+tmp=
+if [ ! -f "$script" ]; then
+    tmp=$(mktemp) || exit 1
+    git show origin/main:scripts/check_public.py > "$tmp" || { rm -f "$tmp"; exit 1; }
+    script=$tmp
+fi
+CHECK_PUBLIC_ROOT="$top" python "$script" --pre-push
+rc=$?
+[ -n "$tmp" ] && rm -f "$tmp"
+exit $rc
 """
 
 
