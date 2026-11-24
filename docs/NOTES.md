@@ -1297,7 +1297,16 @@ what both renderers lacked and canary had tested:
   their depth instead of clipping; triangle fans restart after a primitive reset index;
   k_10_11_11 and k_11_11_10 textures (Spelunky's 384x384) and the 8-bit format aliases.
 The two Forza Horizon traces, stock, stayed within 87-90 dB of the build before the last of these
-and kept the contact shadow. Edge no longer has a DXBC translator (its shaders go SPIR-V to DXIL
+and kept the contact shadow. An A/B of the Manager's test scenes of 13 games (the build before
+against this one, built on its own SDK copy) found no regression once each scene was replayed long
+enough: a scene replayed right after the rebuild (2 loops at no frame limit) showed black intro
+videos, Midnight Club without its sky and Fable II with a dark frame, all draws skipped while
+their new pipelines compiled (every shader's translation changed); with 6 loops each was back
+(Iron Brigade's intro 71 dB from the old build, Midnight Club 52 dB, Fable II 48 dB, Blur as near
+its reference as before). What did move: Midnight Club's MAX-blended glints on a truck, now
+weighted by their alpha (MIN/MAX factors; not checked against the console), and edge pixels in
+Fable II from the texel values (0.5 levels on average). Spelunky's missing text is unchanged:
+its k_10_11_11 texture is not the cause. Compare a scene only after its pipelines are built. Edge no longer has a DXBC translator (its shaders go SPIR-V to DXIL
 since July 2026), so its "results as the Xenos gives" work (exact RCP/RSQ, vertex math rounded
 toward zero, centroid interpolation) would have to be written for DXBC anew. Left for later, most
 useful first: resolves the CPU reads (Minecraft's save thumbnails), occlusion queries that wait

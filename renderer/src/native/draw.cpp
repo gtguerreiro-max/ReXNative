@@ -629,8 +629,9 @@ static_assert(offsetof(PipelineKey, depth_bias) == 28 && offsetof(PipelineKey, d
 // Bump when PipelineKey's layout or the meaning of a field changes: keys are stored on disk
 // (PipelineStore) and an old file is then discarded.
 // 2: depth bias zero with dynamic depth bias; 3: pixel shaders specialized for unsigned textures;
-// 4: tessellation
-constexpr uint32_t kPipelineKeyVersion = 4;
+// 4: tessellation; 5: SDK patches 0049-0055 (the pixel modification bit that was textures_unorm8
+// is now rt0_premult_rgb_src_alpha, and the translation of every shader changed)
+constexpr uint32_t kPipelineKeyVersion = 5;
 
 enum class BlendFactor : uint8_t {
   kZero,
@@ -3404,8 +3405,7 @@ void DrawRenderer::Impl::WriteFanIndices(const DrawState& s, uint32_t count, boo
     FanAsList(guest, count, reinterpret_cast<uint32_t*>(out),
               [=](uint32_t v) { return reset && (v & mask_ge) == reset_ge; });
   } else {
-    uint16_t reset_ge = uint16_t(reset_index);
-    if (endian == xenos::Endian::k8in16) reset_ge = uint16_t((reset_ge >> 8) | (reset_ge << 8));
+    const uint16_t reset_ge = xenos::GPUSwap(uint16_t(reset_index), endian);
     FanAsList(guest, count, reinterpret_cast<uint16_t*>(out),
               [=](uint16_t v) { return reset && v == reset_ge; });
   }
