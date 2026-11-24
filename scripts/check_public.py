@@ -6,9 +6,10 @@ It looks through every tracked file (at HEAD, at the revision given, or on disk 
 folder, a PC's default name, e-mail addresses other than GitHub's noreply ones, and the patterns
 in a list kept outside the repository, so that the list itself stays private:
 $REXNATIVE_PUBLIC_DENY, else ~/.config/rexnative/public-deny.txt (one regular expression a line,
-# for comments; a name, a drive's folder, a private source). As a pre-push hook it also checks
-the commits being pushed: their authors' and committers' e-mails and their messages. Exit code
-1, with each line found, when something is there.
+# for comments; a name, a drive's folder, a private source). As a pre-push hook it looks at the
+files the pushed commits change (what was public before is not looked at again) and at those
+commits' authors' and committers' e-mails and their messages. Exit code 1, with each line found,
+when something is there.
 
 Third-party addresses are not private: the copyright holders in THIRD_PARTY_NOTICES.md and the
 upstream authors on an SDK patch's From: line are left alone.
@@ -94,11 +95,18 @@ def compile_all():
     return private, re.compile(EMAIL, re.I), private_list
 
 
-def check(rev='HEAD'):
+def changed(base, rev):
+    """The files rev changes from base (what a push adds; what was public before is not looked at
+    again, so an old branch with text since removed from main still goes)."""
+    out = git('diff', '--name-only', '--diff-filter=d', base, rev, check=False)
+    return [f for f in out.decode('utf-8').splitlines() if f and not f.lower().endswith(SKIP_EXT)]
+
+
+def check(rev='HEAD', files=None):
     private, email, private_list = compile_all()
     never = re.compile(r'(?!)')
     hits = []
-    for f in files_at(rev):
+    for f in files_at(rev) if files is None else files:
         text = read(rev, f).decode('utf-8', 'replace')
         if f in THIRD_PARTY:
             scan(text, f, private, never, hits)
@@ -170,7 +178,12 @@ def main():
             if len(parts) != 4 or parts[1] == zero:
                 continue  # a deletion
             local, remote = parts[1], parts[3]
-            hits, private_list = check(local)
+            if remote == zero:  # a new branch: what it adds to what origin has
+                base = git('merge-base', local, 'origin/main', check=False).decode().strip()
+            else:
+                base = remote
+            files = changed(base, local) if base else None
+            hits, private_list = check(local, files)
             found += hits
             spec = [local, '--not', '--remotes'] if remote == zero else ['%s..%s' % (remote, local)]
             found += check_commits(spec)
