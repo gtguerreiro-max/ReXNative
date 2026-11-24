@@ -670,6 +670,14 @@ unregistered function at guest address 0x9800F238"). `.dll` files with an XEX2 h
 flag are modules too since 2026-11-24 (Halo: Anniversary ships four Waves audio ones it does not
 load at start-up; they become modules at its next prepare).
 
+FragmentBundle_F.dll then loaded, but its functions were never registered: "BaseHeap::AllocFixed
+invalid base alignment: base=98019000". The runtime allocates every binary's function table in
+the 0x80000000 heap (64 KiB pages), by default right after the image; this module's image is at
+0x98000000, in the 4 KiB heap above. `prepare` gives a module outside 0x80000000-0x8FFFFFFF a
+`function_table_base` of its own (`_module_table_bases`): after the images and tables of the
+game's binaries in that heap, each table counted at its largest ((image size + 64 KiB) * 2).
+Modules inside that heap keep codegen's choice.
+
 Their title update patches then failed: "XEX patch image key does not match the base XEX". A
 patch's header delta is a list of entries (a copy, a zero fill or LZX data) up to an empty one;
 ReXGlue passed the applier the first entry's length only. The main executable's patch is one LZX

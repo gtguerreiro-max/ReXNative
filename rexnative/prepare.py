@@ -93,6 +93,15 @@ def _options_differ(work, gen):
     # were): codegen runs again, for the manifest to list it.
     if any(not os.path.isdir(d) for d in _generated_dirs(work)[1:]):
         return True
+    # Or one generated with its function table elsewhere than _module_table_bases says.
+    mods = modules(work)
+    for i, at in _module_table_bases(work, mods).items():
+        d = os.path.join(work, *mods[i]['out'].split('/'))
+        for f in glob.glob(os.path.join(d, '*_pch.h')):
+            m = re.search(r'#define REX_FUNC_TABLE_BASE (0x[0-9A-Fa-f]+)',
+                          open(f, encoding='utf-8', errors='replace').read())
+            if m and int(m.group(1), 16) != at:
+                return True
     want = options(work)
     for d in [gen] + _generated_dirs(work)[1:]:
         if not os.path.isdir(d):
@@ -332,6 +341,43 @@ def _function_table_base(work):
     if base_alloc <= patched:
         return None
     return base + ((base_alloc + 0xFFFF) & ~0xFFFF)
+
+
+# The runtime allocates every binary's function table in the 0x80000000 heap (64 KiB pages):
+# (code size + a 64 KiB thunk reserve) * 2 bytes, right after the image unless the manifest says
+# where (function_table_base).
+TABLE_HEAP = (0x80000000, 0x90000000)
+
+
+def _module_table_bases(work, mods):
+    """{module index: function table base} for the DLL modules loaded outside the 0x80000000 heap:
+    their table cannot follow their image there (Renegade Ops' FragmentBundle_F.dll at 0x98000000,
+    4 KiB pages: "AllocFixed invalid base alignment: base=98019000", its functions never
+    registered). Each goes after the images and tables of the game's binaries in that heap, a
+    table counted at its largest (image size + reserve) * 2. Modules in that heap keep codegen's
+    own choice."""
+    lo, hi = TABLE_HEAP
+    away = [i for i, m in enumerate(mods) if not lo <= m['span'][0] < hi]
+    if not away:
+        return {}
+    spans = []
+    path = entry_xex(os.path.join(work, 'game-data'))
+    if path:
+        try:
+            base, size = xex.image_span(path)
+            table = _function_table_base(work) or base + size
+            spans.append((base, size, table))
+        except (OSError, ValueError, struct.error):
+            pass
+    spans += [(m['span'][0], m['span'][1], m['span'][0] + m['span'][1])
+              for m in mods if lo <= m['span'][0] < hi]
+    end = max([lo] + [max(b + s, t + (s + 0x10000) * 2) for b, s, t in spans])
+    out = {}
+    for i in away:
+        end = (end + 0xFFFF) & ~0xFFFF
+        out[i] = end
+        end += (mods[i]['span'][1] + 0x10000) * 2
+    return out
 
 
 def _shares(work):
@@ -684,6 +730,7 @@ def _write_manifest(work, name):
     if entries[0]:
         lines.append('[entrypoint.functions]')
         lines += _function_lines(entries[0])
+    tables_at = _module_table_bases(work, mods)
     for i, m in enumerate(mods):
         lines += ['', '[[modules]]', 'file_path = "%s"' % m['file'],
                   'guest_path = "%s"' % m['guest_path'],
@@ -694,6 +741,8 @@ def _write_manifest(work, name):
         lines.append('includes = [%s]' % ('"%s"' % tables if os.path.exists(
             os.path.join(work, tables)) else ''))
         lines += ['%s = %s' % (k, str(v).lower()) for k, v in opts.items()]
+        if i in tables_at:
+            lines.append('function_table_base = 0x%08X' % tables_at[i])
         if entries[i + 1]:
             lines.append('[modules.functions]')
             lines += _function_lines(entries[i + 1])
