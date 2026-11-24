@@ -177,16 +177,24 @@ std::vector<Option> MakeOptions() {
                },
                "The 3D scene's multisampling (most games draw 2x on the console), or the "
                "upscaler's temporal anti-aliasing (its options on the Upscaler page)."});
+  // The finished picture (the front buffer, the game's HUD on it) scaled to a larger window
+  // (present.cpp): FSR 1 or bilinear, only when the window is larger and the output is not HDR.
+  // The upscaler (FSR 4, DLSS) works earlier, on the 3D scene alone, which has the depth and motion
+  // it needs. Not on the Steam Deck, whose 1280x800 screen shows a 720p game at its own size: the
+  // scaling never ran there (docked to a TV, gamescope scales the Deck's picture itself).
   o.push_back({"Picture", "upscaling", "Screen scaling", {{"Bilinear", "false"}, {"AMD FSR 1", "true"}},
                false, [] { return Flag("rexnative_fsr"); },
                [](const std::string& v) { return Bool("rexnative_fsr", v); }, nullptr,
-               "How the game's picture is scaled to the screen. FSR 1 keeps edges sharp; "
-               "bilinear is softer."});
+               "The finished picture (the game's resolution, its HUD on it) scaled up to a larger "
+               "window: FSR 1 keeps edges sharp, bilinear is softer. FSR 4 and DLSS work earlier, "
+               "on the 3D scene; for them up to the screen's size, use Resolution 2x or 3x.",
+               [] { return !SteamDeck(); }});
   o.push_back({"Picture", "sharpening", "FSR sharpening",
                {{"Soft", "1"}, {"Medium", "0.5"}, {"Sharp", "0.2"}, {"Sharpest", "0"}}, false,
                [] { return Nearest(Find("sharpening"), std::atof(Flag("rexnative_fsr_sharpness").c_str())); },
                [](const std::string& v) { return Assignments{{"rexnative_fsr_sharpness", v}}; },
-               nullptr, "How much FSR 1 sharpens the scaled picture (RCAS)."});
+               nullptr, "How much FSR 1 sharpens the picture it scales up to the window (RCAS).",
+               [] { return !SteamDeck() && Flag("rexnative_fsr") == "true"; }});
   o.push_back({"Picture", "anisotropy", "Texture filtering",
                {{"Game's", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}}, true,
                [] { return Nearest(Find("anisotropy"), FlagInt("rexnative_anisotropy")); },

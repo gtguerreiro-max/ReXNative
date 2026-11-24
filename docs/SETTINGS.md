@@ -44,6 +44,15 @@ it. A value marked * takes effect at the next start.
 - **Picture page:** the resolution, the anti-aliasing (MSAA, or DLSS / FSR: the upscaler's own
   switch, as F7), the screen scaling (FSR 1 or bilinear) and its sharpening, and the texture
   filtering.
+- **Screen scaling** (`rexnative.fsr`, FSR 1 by default; `rexnative.fsr_sharpness`, 0.2): the last
+  step, the finished picture (the game's resolution, its HUD and menus on it) scaled up to a
+  larger window, FSR 1 (EASU, then RCAS's sharpening) or bilinear; only when the window is larger
+  than the picture, and not with HDR output. The upscaler (FSR 4, FSR 3.1, DLSS) works earlier
+  and on the 3D scene alone, whose depth and motion it needs: the finished picture has neither, so
+  it cannot scale that. For the upscaler up to the screen's size, Resolution 2x or 3x draws the
+  whole picture at that size and the upscaler works there (FSR 1 then has nothing to scale). Not
+  shown on the Steam Deck, whose 1280x800 screen shows a 720p game at its own size: it never ran
+  there (docked to a TV, gamescope scales the Deck's picture, with Steam's scaling filter).
 - **Resolution** (`rexnative.resolution_scale`, 1 by default; not on the Steam Deck, where the
   renderer takes 1x whatever the file says and `rexnative deck` writes 1): 2x or 3x
   draws the game's screen-sized surfaces (the 3D scene, its post-processing and the front buffer)
