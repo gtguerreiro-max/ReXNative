@@ -78,6 +78,9 @@ DECK_SETTINGS = [
     # it without an upscaler).
     ('rexnative', 'dlss5', 'false'),
     ('rexnative', 'upscaler_backend', '"auto"'),
+    # On the battery, the console's MSAA in place of the upscaler (renderer.cpp, WatchBattery): the
+    # APU at 4.7 W against 6.2 with FSR 4 in Overlord II; back on the charger, the upscaler again.
+    ('rexnative', 'battery_saver', 'true'),
 ]
 
 

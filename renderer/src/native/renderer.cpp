@@ -151,6 +151,11 @@ REXCVAR_DEFINE_INT32(rexnative_frame_latency, 3, "ReXNative",
                      "the pacing to the game's vblank wait (with --rexnative_csv the shown "
                      "presents are still logged)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(rexnative_battery_saver, false, "ReXNative",
+                    "On the battery (a Steam Deck, a laptop: GetSystemPowerStatus, which Proton "
+                    "reads from the system's power supply): the upscaler off, the scene's own MSAA "
+                    "in its place; back on the charger, the upscaler again. A third less of the "
+                    "APU's power on the Steam Deck in Overlord II (4.7 W against 6.2 with FSR 4)");
 REXCVAR_DEFINE_BOOL(rexnative_frame_latency_auto, true, "ReXNative",
                     "With --rexnative_frame_latency=1: frames that miss the display raise it to "
                     "2 for as long as they would at 1, and it comes back to 1 once they fit "
@@ -190,6 +195,7 @@ REXCVAR_DECLARE(int32_t, rexnative_trace_record);
 REXCVAR_DECLARE(int32_t, rexnative_texture_audit);
 REXCVAR_DECLARE(int32_t, rexnative_d3d_stats_frames);
 REXCVAR_DECLARE(bool, rexnative_dlss5_paused);
+REXCVAR_DECLARE(bool, rexnative_upscaler);
 REXCVAR_DECLARE(int32_t, rexnative_dlss5_passes);
 REXCVAR_DECLARE(bool, rexnative_luma_probe);
 
@@ -752,9 +758,34 @@ void NativeRenderer::ReadSceneMsaa() {
   }
 }
 
+// --rexnative_battery_saver: every 2 seconds or so, whether the machine runs on its battery; a
+// change turns the upscaler off or on again (Upscaler::Requested reads g_upscaler_off_on_battery).
+// A machine with no battery, or whose status is unknown, counts as on the charger.
+extern std::atomic<bool> g_upscaler_off_on_battery;
+
+void NativeRenderer::WatchBattery() {
+  if ((frame_index_ % 120) != 0) return;
+  bool on_battery = false;
+  if (REXCVAR_GET(rexnative_battery_saver)) {
+    SYSTEM_POWER_STATUS ps = {};
+    on_battery = GetSystemPowerStatus(&ps) && ps.ACLineStatus == 0 && ps.BatteryFlag != 128;
+  }
+  if (on_battery == g_upscaler_off_on_battery.load(std::memory_order_relaxed)) return;
+  g_upscaler_off_on_battery.store(on_battery, std::memory_order_relaxed);
+  if (REXCVAR_GET(rexnative_upscaler)) {
+    if (on_battery)
+      REXLOG_INFO("ReXNative: on the battery: the upscaler off, the scene's own MSAA in its place "
+                  "(--rexnative_battery_saver)");
+    else
+      REXLOG_INFO("ReXNative: on the charger: the upscaler again (--rexnative_battery_saver)");
+    antialiasing_requested_.store(true, std::memory_order_relaxed);
+  }
+}
+
 void NativeRenderer::BeginFrameModules() {
   if (frame_rate_requested_.exchange(false, std::memory_order_relaxed))
     device_->set_present_interval(uint32_t(std::max(1, REXCVAR_GET(rexnative_present_interval))));
+  WatchBattery();
   // A scene learned at run time (scene.h): the upscaler and the scene's targets are made again
   // for it, as when the antialiasing changes.
   if (SceneEndFrame(frame_index_) && (upscaler_ || Upscaler::Requested() || scene_msaa_ != 2))
@@ -823,7 +854,8 @@ void NativeRenderer::BeginFrameModules() {
     const uint32_t presents = frame_generation_on_ ? 2 : device_->present_interval();
     if (u->BeginFrame(frame_index_, device_->gpu_busy_ns(), uint64_t(1e9 * presents / hz)))
       rt_->SetSceneScale(u->scale());
-    // FSR 4 gave way to FSR 3.1 (--rexnative_fsr_auto): the upscaler made again at the next frame.
+    // FSR 4 gave way to FSR 3.1, or FSR 3.1 to the scene's MSAA (--rexnative_fsr_auto): the
+    // antialiasing made again at the next frame (Upscaler::Requested says which).
     if (u->TakeFsrDowngrade()) antialiasing_requested_.store(true, std::memory_order_relaxed);
   }
   frame_begun_ = true;

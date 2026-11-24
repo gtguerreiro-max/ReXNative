@@ -47,7 +47,8 @@ REXCVAR_DEFINE_STRING(rexnative_fsr_version, "auto", "ReXNative",
 REXCVAR_DEFINE_BOOL(rexnative_fsr_auto, true, "ReXNative",
                     "With --rexnative_fsr_version=auto: FSR 4 gives way to FSR 3.1 for the rest "
                     "of the run when the GPU has no room for it (busy for most of each frame's "
-                    "time); an explicit 4 or 3 is kept");
+                    "time), and FSR 3.1 to the scene's own MSAA when it has none either; an "
+                    "explicit 4 or 3 is kept");
 REXCVAR_DEFINE_DOUBLE(rexnative_fsr_auto_share, 0.9, "ReXNative",
                       "--rexnative_fsr_auto: the share of each frame's time the GPU is busy for "
                       "that makes FSR 4 give way (two windows of 120 frames in a row)");
@@ -195,7 +196,17 @@ std::array<int, 3> VersionNumbers(const char* name) {
 
 }  // namespace
 
-bool Upscaler::Requested() { return REXCVAR_GET(rexnative_upscaler) || NeuralPass::Requested(); }
+// The upscaler off for the rest of the run (--rexnative_fsr_auto): FSR 3.1 too left the GPU no room.
+std::atomic<bool> g_upscaler_off_this_run{false};
+// The upscaler off while the machine runs on its battery (--rexnative_battery_saver; the renderer
+// sets it, NativeRenderer::WatchBattery).
+std::atomic<bool> g_upscaler_off_on_battery{false};
+
+bool Upscaler::Requested() {
+  return (REXCVAR_GET(rexnative_upscaler) && !g_upscaler_off_this_run.load(std::memory_order_relaxed) &&
+          !g_upscaler_off_on_battery.load(std::memory_order_relaxed)) ||
+         NeuralPass::Requested();
+}
 
 std::string Upscaler::Status() {
   if (!g_status_on.load(std::memory_order_relaxed)) return {};
@@ -660,13 +671,17 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
 // 60 fps frame). Where the GPU is busy for most of each frame's time, the newest (auto) gives way
 // to FSR 3.1 for the rest of the run: kFsrWindows windows of kFsrWindowFrames frames in a row
 // with the GPU busy for at least --rexnative_fsr_auto_share (0.9) of the paced frame time, after the first
-// kFsrSettleFrames (loading, the first pipelines). Never back: the next run starts at FSR 4 again,
-// and a game the GPU has room for never leaves it. A game held by its CPU (the GPU waiting for
-// it, which gpu_busy_ns leaves out) keeps FSR 4: 3.1 would not make it faster.
+// kFsrSettleFrames (loading, the first pipelines). And where FSR 3.1 leaves no room either, the
+// upscaler goes off for the run, the scene's own MSAA (the console's anti-aliasing) in its place:
+// Iron Brigade at 60 fps (FPS Boost) on the Steam Deck, 48.7 fps with FSR 3.1 (the GPU 17.5 ms a
+// frame), 58.6 with its MSAA (14.4 ms). Never back: the next run starts at FSR 4 again, and a game
+// the GPU has room for never leaves it. A game held by its CPU (the GPU waiting for it, which
+// gpu_busy_ns leaves out) keeps its upscaler: a cheaper one would not make it faster. FSR 3.1 that
+// is the newest this GPU has (no FSR 4 to give way) is kept too.
 void Upscaler::WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns) {
-  if (backend_ != Backend::kFsr || !fsr4_ || fsr_downgrade_ || !REXCVAR_GET(rexnative_fsr_auto) ||
+  if (backend_ != Backend::kFsr || fsr_downgrade_ || !REXCVAR_GET(rexnative_fsr_auto) ||
       REXCVAR_GET(rexnative_fsr_version) != "auto" || !gpu_busy_ns || !paced_ns ||
-      frame < kFsrSettleFrames)
+      frame < kFsrSettleFrames || (!fsr4_ && !g_fsr3_this_run.load(std::memory_order_relaxed)))
     return;
   busy_sum_ns_ += gpu_busy_ns;
   paced_sum_ns_ += paced_ns;
@@ -679,10 +694,18 @@ void Upscaler::WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced
   busy_windows_ = share >= REXCVAR_GET(rexnative_fsr_auto_share) ? busy_windows_ + 1 : 0;
   if (busy_windows_ < kFsrWindows) return;
   fsr_downgrade_ = fsr_downgrade_due_ = true;
-  g_fsr3_this_run.store(true, std::memory_order_relaxed);
-  REXLOG_INFO("ReXNative upscaler: FSR 4 leaves the GPU no room (busy {:.1f} ms of each {:.1f} ms "
-              "frame): FSR 3.1 for the rest of this run (--rexnative_fsr_auto)",
-              busy_ms, paced_ms);
+  if (fsr4_) {
+    g_fsr3_this_run.store(true, std::memory_order_relaxed);
+    REXLOG_INFO("ReXNative upscaler: FSR 4 leaves the GPU no room (busy {:.1f} ms of each {:.1f} ms "
+                "frame): FSR 3.1 for the rest of this run (--rexnative_fsr_auto)",
+                busy_ms, paced_ms);
+  } else {
+    g_upscaler_off_this_run.store(true, std::memory_order_relaxed);
+    REXLOG_INFO("ReXNative upscaler: FSR 3.1 leaves the GPU no room either (busy {:.1f} ms of each "
+                "{:.1f} ms frame): off for the rest of this run, the scene's own MSAA in its place "
+                "(--rexnative_fsr_auto)",
+                busy_ms, paced_ms);
+  }
 }
 
 void Upscaler::NoteSceneResolve(const ResolveParams& p) {

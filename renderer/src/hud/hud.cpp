@@ -318,6 +318,14 @@ std::vector<Option> MakeOptions() {
                remake,
                "Native AA keeps the game's resolution and only anti-aliases; the others render "
                "smaller (faster) and rebuild the picture."});
+  // The upscaler off on the battery (renderer.cpp, WatchBattery): a third less of the APU's power
+  // on the Steam Deck in Overlord II. At once, both ways.
+  o.push_back({"Upscaler", "battery_saver", "Battery saver", {{"Off", "false"}, {"On", "true"}}, false,
+               [] { return Flag("rexnative_battery_saver"); },
+               [](const std::string& v) { return Bool("rexnative_battery_saver", v); }, nullptr,
+               "On the battery, the upscaler off and the console's anti-aliasing (MSAA) in its "
+               "place: less power, the battery lasts longer (Overlord II on the Steam Deck: 4.7 W "
+               "against 6.2). Back on the charger, the upscaler again."});
   o.push_back({"Upscaler", "frame_generation", "Frame generation (FSR)", on_off, false,
                [] { return Flag("rexnative_frame_generation"); },
                [](const std::string& v) { return Bool("rexnative_frame_generation", v); },

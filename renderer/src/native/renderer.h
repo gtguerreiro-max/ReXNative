@@ -192,6 +192,8 @@ class NativeRenderer {
   // The scene's antialiasing settings changed (--rexnative_msaa, --rexnative_upscaler and
   // its sizes): taken at the start of the next frame, the upscaler made again with them.
   void RequestAntialiasing() { antialiasing_requested_.store(true, std::memory_order_relaxed); }
+  // --rexnative_battery_saver: the upscaler off on the battery, on again on the charger.
+  void WatchBattery();
   // --rexnative_present_interval changed: taken at the start of the next frame.
   void RequestFrameRate() { frame_rate_requested_.store(true, std::memory_order_relaxed); }
   // What the upscaler runs (Upscaler::Status): "AMD FSR 4.1.2 Quality, 853x480 to 1280x720";

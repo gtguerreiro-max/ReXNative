@@ -189,8 +189,8 @@ class Upscaler {
     bool operator==(const SceneKind&) const = default;
   };
   bool ContextOutdated() const { return context_outdated_; }
-  // FSR 4 gave way to FSR 3.1 for the rest of the run (--rexnative_fsr_auto, WatchFsrCost): true
-  // once, when the upscaler is to be made again with it.
+  // FSR 4 gave way to FSR 3.1, or FSR 3.1 to the scene's MSAA, for the rest of the run
+  // (--rexnative_fsr_auto, WatchFsrCost): true once, when the antialiasing is to be made again.
   bool TakeFsrDowngrade() { return std::exchange(fsr_downgrade_due_, false); }
   bool UpdateContext() {
     kind_ = wanted_kind_;
