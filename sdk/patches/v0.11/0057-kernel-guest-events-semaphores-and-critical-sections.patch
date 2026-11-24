@@ -1,0 +1,2536 @@
+From 502fe4febfa8a6bfb99c239316cddb074fabd656 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 19:24:03 +0000
+Subject: [PATCH] kernel: guest events, semaphores and critical sections wait
+ in user space
+
+Under Proton every operation on a host event or semaphore is an ntsync
+system call, and a thread whose object is not signaled yet sleeps at once
+to be woken a few microseconds later. On top of that every guest wait
+wrote the thread's CPU time with GetThreadTimes, a wineserver round trip
+that blocks the thread. On the Steam Deck Iron Brigade's main thread made
+23,500 voluntary context switches a second and its three job workers about
+7,100 each, almost all of them on waits that were satisfied at once.
+
+With runtime.fast_waits (on by default):
+
+- An event or a semaphore keeps its state in an atomic word (FastState,
+  kernel/object/fast_sync.h). A set or a release with no queued thread
+  only changes the word; with threads queued it hands the signal to them
+  first, oldest first, one each for an auto reset event or a semaphore
+  count, all of them for a manual reset event. A set followed at once by a
+  reset still releases the queued threads, and a wait that starts later
+  cannot take a count meant for one. Semaphore limits and return values
+  are unchanged.
+- A wait takes the word if it can, spins runtime.wait_spin_us (6 us, TSC,
+  pause), then queues itself and sleeps on its own thread's park word
+  (WaitOnAddress: a futex under Wine, no syscall for a wake without a
+  sleeper). Stop, suspend and APC requests set the park word and wake it,
+  as their host callback wakes a host wait; the callback then runs at once.
+- Waits only the host can do (several objects, alertable, signal-and-wait)
+  move the object to its host primitive for good, with its state; threads
+  queued on it wait again there. The log names each object that moves.
+- A guest re-initialization of an NtCreate* body leaves the queued threads
+  asleep out of reach, as the console's new empty wait list does (and as
+  the replaced host primitive did).
+- RtlEnterCriticalSection spins for the same time by the clock with pause,
+  whatever the title's spin count, before it counts itself in the lock and
+  waits on the section's event, now such an event.
+- ResolveObject finds an existing object under the table's shared lock
+  alone, without the identity lock every Ke call queued on.
+- WriteKernelTime refreshes X_KTHREAD::kernel_time at most every 4 ms.
+
+runtime.fast_waits=false keeps every old path. runtime.wait_stats logs per
+thread, every 5 s, the waits by kind (taken at once, after the spin, after
+a sleep, on a host primitive) and the signals.
+
+Steam Deck LCD, GE-Proton11-12 (ntsync), same scenes, runtime.fast_waits
+false -> true in the same build (game CPU in % of one core):
+- Iron Brigade, FPS Boost 60 fps, MSAA (2 runs each): main thread 24,000 ->
+  1,900 voluntary context switches/s, its 3 job workers 7,300 -> 300 each;
+  game 266 -> 210 %, wineserver 27 -> 8 %, whole system 330 -> 271 %;
+  APU 14.9 -> 8.2 W, CPU cores 3,350 -> 2,400 MHz; 59.4 -> 60.0 fps.
+- Iron Brigade 30 fps (no FPS Boost), Deck defaults: game 208 -> 168 %,
+  wineserver 22 -> 11 %, APU 6.06 -> 5.71 W.
+- Forza Horizon 30 fps, driving, Deck defaults (2 runs each): game 236 ->
+  206 %, wineserver 13 -> 7 %, APU 6.54 -> 6.06 W.
+- Overlord II 30 fps, first level, Deck defaults: game 115 -> 94 %,
+  wineserver 10 -> 6 %, APU 6.13 -> 5.73 W.
+
+Unit tests: tests/unit/kernel/fast_wait_test.cpp (hand-off before a new
+wait, set+reset, pulse, a multi-object wait taking over a queued event,
+suspend, stop, timeout, and stress of semaphores, events and a critical
+section).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/site/pages/reference/cvars.md           |   3 +
+ docs/site/pages/runtime/kernel.md            |  14 +-
+ include/rex/kernel/object/event_object.h     |  24 +-
+ include/rex/kernel/object/fast_state.h       |  41 ++
+ include/rex/kernel/object/kernel_thread.h    |  13 +
+ include/rex/kernel/object/semaphore_object.h |  24 +-
+ include/rex/kernel/runtime_settings.h        |  10 +
+ include/rex/platform/sync.h                  |  20 +
+ src/base/CMakeLists.txt                      |   2 +-
+ src/base/threading_posix.cpp                 |  39 ++
+ src/base/threading_win.cpp                   |  21 +
+ src/kernel/CMakeLists.txt                    |   2 +
+ src/kernel/kernel_thread.cpp                 |  30 +-
+ src/kernel/object/event_object.cpp           |  58 +-
+ src/kernel/object/fast_sync.cpp              | 561 +++++++++++++++++++
+ src/kernel/object/fast_sync.h                | 125 +++++
+ src/kernel/object/object.cpp                 | 112 ++++
+ src/kernel/object/semaphore_object.cpp       |  42 ++
+ src/kernel/object_table.cpp                  |  27 +-
+ src/kernel/wait_stats.cpp                    | 264 +++++++++
+ src/kernel/wait_stats.h                      | 107 ++++
+ src/kernel/xboxkrnl/xboxkrnl_rtl.cpp         |  50 +-
+ src/kernel/xboxkrnl/xboxkrnl_threading.cpp   |   8 +-
+ tests/unit/CMakeLists.txt                    |   1 +
+ tests/unit/kernel/fast_wait_test.cpp         | 312 +++++++++++
+ 25 files changed, 1889 insertions(+), 21 deletions(-)
+ create mode 100644 include/rex/kernel/object/fast_state.h
+ create mode 100644 src/kernel/object/fast_sync.cpp
+ create mode 100644 src/kernel/object/fast_sync.h
+ create mode 100644 src/kernel/wait_stats.cpp
+ create mode 100644 src/kernel/wait_stats.h
+ create mode 100644 tests/unit/kernel/fast_wait_test.cpp
+
+diff --git a/docs/site/pages/reference/cvars.md b/docs/site/pages/reference/cvars.md
+index 6f296da1..b0be403a 100644
+--- a/docs/site/pages/reference/cvars.md
++++ b/docs/site/pages/reference/cvars.md
+@@ -287,6 +287,9 @@ These settings exist while the `rexkernel` module is connected. Declared by `Run
+ | `runtime.ignore_thread_priorities` | `bool` | `true` | live | Ignore the priorities that guest threads set. |
+ | `runtime.ignore_thread_affinities` | `bool` | `true` | live | Ignore the affinities that guest threads set. |
+ | `runtime.ffmpeg_verbose` | `bool` | `false` | live | Log FFmpeg messages during XMA decoding. |
++| `runtime.fast_waits` | `bool` | `true` | until launch | Guest events, semaphores and critical sections in user space: no system call without a waiter, a short spin before a sleep. |
++| `runtime.wait_spin_us` | `u32` | `6` | live | How long a guest wait or critical section spins before it sleeps, in microseconds, with `runtime.fast_waits`. 0 to 1000. |
++| `runtime.wait_stats` | `bool` | `false` | live | Log the guest threads' waits and signals per kind every 5 s. |
+ | `runtime.terminate_timeout_ms` | `u32` | `2000` | live | How long `Unload` waits for guest threads, in ms. 0 to 60000. |
+ 
+ ### kernel
+diff --git a/docs/site/pages/runtime/kernel.md b/docs/site/pages/runtime/kernel.md
+index 92b1010a..260d747d 100644
+--- a/docs/site/pages/runtime/kernel.md
++++ b/docs/site/pages/runtime/kernel.md
+@@ -44,7 +44,8 @@ Every console synchronization object starts with an `X_DISPATCH_HEADER`, a small
+ 
+ | `ObjectType` | Contents |
+ |---|---|
+-| `kEvent`, `kSemaphore`, `kMutant`, `kTimer` | The host primitive of the same name from `rex::platform`. |
++| `kEvent`, `kSemaphore` | A `FastState` in user space, and the host primitive of the same name from `rex::platform` that takes over the state for waits only the host can do (see [Waits in User Space](#waits-in-user-space)). |
++| `kMutant`, `kTimer` | The host primitive of the same name from `rex::platform`. |
+ | `kFile` | A `filesystem::IFile`. |
+ | `kNotifyListener` | A host event. |
+ | `kIOCompletion` | A host semaphore. |
+@@ -54,6 +55,17 @@ Every console synchronization object starts with an `X_DISPATCH_HEADER`, a small
+ 
+ The console keeps a guest block for each object, an `X_OBJECT_HEADER` followed by the object body. `AllocObjectBlock` allocates this block from the system heap or from a workspace. XAM enumerator objects take their blocks from the [title workspace](#title-workspace). `NtCreateEvent`, `NtCreateSemaphore`, `NtCreateMutant` and `NtCreateTimer` allocate this block, so `ObReferenceObjectByHandle` returns the body address for their handles. Every dispatcher body starts with an empty wait list, as the console writes it.
+ 
++### Waits in User Space
++
++Under Proton every operation on a host event or semaphore is a system call, and a thread whose object is not signaled yet sleeps at once. With `runtime.fast_waits` (on by default) an event or a semaphore keeps its state in an atomic word instead (`object/fast_sync.h`):
++
++- A set or a release with no thread queued only changes the word. With threads queued it hands the signal to them first, oldest first: an auto reset event or a semaphore count to one thread each, a manual reset event to all of them, so a set followed at once by a reset still releases the queued threads, and a wait that starts later cannot take a count meant for one.
++- A wait takes the word if it can, spins for `runtime.wait_spin_us` (6 by default, by the TSC, with `pause`), then queues itself and sleeps on its own thread's word (`WaitOnAddress`, a futex under Wine). A stop, a suspend or an APC request wakes it, as a host callback wakes a host wait.
++- A wait the host must do, on several objects, alertable, or `NtSignalAndWaitForSingleObjectEx`, moves the object to its host primitive for good, with its state, and the threads queued on it go on waiting there. The log names each object that moves.
++- `RtlEnterCriticalSection` spins for the same time, whatever the title's spin count, before it counts itself in the lock and waits on the section's event, which is such an event.
++
++`KeWaitForSingleObject` and the other waits refresh the thread's `kernel_time` at most every 4 ms then, because `GetThreadTimes` is a wineserver round trip under Wine. With `runtime.wait_stats` the runtime logs every 5 s, per thread, its waits by kind (taken at once, after the spin, after a sleep, or on a host primitive) and its signals.
++
+ ## Threads
+ 
+ Each guest thread is a host thread. A `KernelThread`, from `rex/kernel/object/kernel_thread.h`, holds the host thread, the guest register state, the guest `X_KTHREAD` block, the guest stack and a PCR, the processor control region that guest code reads through register r13. A `KernelThread` built with a host function instead of a guest entry point is a host worker of the runtime, such as `Kernel Dispatch`.
+diff --git a/include/rex/kernel/object/event_object.h b/include/rex/kernel/object/event_object.h
+index 35c2902f..54116ba6 100644
+--- a/include/rex/kernel/object/event_object.h
++++ b/include/rex/kernel/object/event_object.h
+@@ -21,6 +21,7 @@
+ #include <memory>
+ 
+ #include <rex/assert.h>
++#include <rex/kernel/object/fast_state.h>
+ #include <rex/kernel/object/object.h>
+ #include <rex/kernel/types/list.h>
+ #include <rex/kernel/types/memory.h>
+@@ -71,8 +72,29 @@ struct EventObject : IGuestEvent {
+ 
+   /** True for a notification event, false for a synchronization event that resets on a wait. */
+   std::atomic<bool> manual_reset{false};
+-  /** Host event that carries the signal state and wakes waiters. */
++  /**
++   * Host event, which carries the signal state once `fast` moved to it, and until then only
++   * exists for that move.
++   */
+   PublishedPtr<rex::platform::Event> event;
++  /** The signal state in user space, for waits on this event alone (runtime.fast_waits). */
++  FastState fast;
++
++  /**
++   * Moves the signal state to the host event for good, for a wait only the host can do: on
++   * several objects, alertable, or signal-and-wait.
++   *
++   * @return True when this call moved it.
++   */
++  REX_KERNEL_API bool UseHost();
++
++  /**
++   * Gives the event the type and state a guest initializer wrote.
++   *
++   * @param host_event Replaces the host event when it carries the state.
++   */
++  REX_KERNEL_API void Reinit(bool manual_reset_in, bool signaled,
++                             std::unique_ptr<rex::platform::Event> host_event);
+ 
+   /**
+    * Reads the type and the live state of an event.
+diff --git a/include/rex/kernel/object/fast_state.h b/include/rex/kernel/object/fast_state.h
+new file mode 100644
+index 00000000..5176be57
+--- /dev/null
++++ b/include/rex/kernel/object/fast_state.h
+@@ -0,0 +1,41 @@
++/**
++ * @file        kernel/object/fast_state.h
++ * @brief       User space state of a guest event or semaphore
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#pragma once
++
++#include <atomic>
++
++#include <rex/types.h>
++
++namespace rex::kernel {
++
++struct FastWaiter;
++
++/**
++ * The signal state of an event or a semaphore, kept in user space so that a signal with no waiter
++ * and a wait on a signaled object cost no system call. A thread that must sleep queues itself here
++ * and sleeps on its own word. Waits the host must do (on several objects, alertable ones) move the
++ * object to its host primitive for good, which then carries the state as before.
++ */
++struct FastState {
++  /** The low 32 bits hold the state: 0 or 1 for an event, the count of a semaphore. */
++  static constexpr u64 kValueMask = 0xFFFFFFFFull;
++  /** Set while the state moves to the host primitive. */
++  static constexpr u64 kMigrating = 1ull << 32;
++  /** Set once the host primitive carries the state. */
++  static constexpr u64 kHost = 1ull << 33;
++
++  std::atomic<u64> word{kHost};
++  /** The number of threads queued, read without the lock by the signalers. */
++  std::atomic<u32> queued{0};
++  std::atomic<u32> lock{0};
++  FastWaiter* head = nullptr; /**< The queued threads, oldest first. */
++  FastWaiter* tail = nullptr;
++};
++
++}  // namespace rex::kernel
+diff --git a/include/rex/kernel/object/kernel_thread.h b/include/rex/kernel/object/kernel_thread.h
+index ef89f3ec..eacb356e 100644
+--- a/include/rex/kernel/object/kernel_thread.h
++++ b/include/rex/kernel/object/kernel_thread.h
+@@ -280,6 +280,18 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+ 
+   rex::platform::Thread* GetThread() { return thread_.get(); }
+ 
++  /**
++   * The word this thread sleeps on in a wait on an event or a semaphore kept in user space. Bit 0
++   * is set when the object hands the thread its signal, bit 1 by a stop or suspend request.
++   */
++  std::atomic<u32>& GetParkWord() { return park_word_; }
++
++  /** True when a stop or suspend request must end this thread's wait, as CheckStop sees it. */
++  bool HasWaitInterrupt() const;
++
++  /** Wakes the thread from a wait on a user space object, to see a stop or suspend request. */
++  void InterruptFastWait();
++
+   kernel::ThreadState* GetThreadState() { return thread_state_.get(); }
+ 
+   PinCount pins; /**< Transient pins that keep the object alive while a caller uses it. */
+@@ -396,6 +408,7 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+   std::atomic<bool> abandoned_{false};
+   bool exited_ = false;
+   bool handles_closed_ = false;
++  std::atomic<u32> park_word_{0};
+ };
+ 
+ }  // namespace rex::kernel
+diff --git a/include/rex/kernel/object/semaphore_object.h b/include/rex/kernel/object/semaphore_object.h
+index a7abeb90..9fcfbf72 100644
+--- a/include/rex/kernel/object/semaphore_object.h
++++ b/include/rex/kernel/object/semaphore_object.h
+@@ -20,6 +20,7 @@
+ #include <memory>
+ 
+ #include <rex/assert.h>
++#include <rex/kernel/object/fast_state.h>
+ #include <rex/kernel/object/object.h>
+ #include <rex/kernel/types/list.h>
+ #include <rex/kernel/types/memory.h>
+@@ -50,9 +51,30 @@ struct SemaphoreObject {
+    */
+   REX_KERNEL_API explicit SemaphoreObject(const X_KSEMAPHORE& header);
+ 
+-  /** Host semaphore that carries the count and wakes waiters. */
++  /**
++   * Host semaphore, which carries the count once `fast` moved to it. Until then it only proves
++   * that the counts were valid.
++   */
+   PublishedPtr<rex::platform::Semaphore> semaphore;
+   u32 maximum_count = 0;
++  /** The count in user space, for waits on this semaphore alone (runtime.fast_waits). */
++  FastState fast;
++
++  /**
++   * Moves the count to a new host semaphore for good, for a wait only the host can do: on
++   * several objects, alertable, or signal-and-wait.
++   *
++   * @return True when this call moved it.
++   */
++  REX_KERNEL_API bool UseHost();
++
++  /**
++   * Gives the semaphore the count and limit a guest initializer wrote.
++   *
++   * @param host_semaphore Replaces the host semaphore when it carries the count.
++   */
++  REX_KERNEL_API void Reinit(u32 count, u32 limit,
++                             std::unique_ptr<rex::platform::Semaphore> host_semaphore);
+ 
+   /**
+    * Releases a semaphore.
+diff --git a/include/rex/kernel/runtime_settings.h b/include/rex/kernel/runtime_settings.h
+index 3f7ae88d..7593dbf8 100644
+--- a/include/rex/kernel/runtime_settings.h
++++ b/include/rex/kernel/runtime_settings.h
+@@ -30,6 +30,16 @@ class REX_KERNEL_API RuntimeSettings final : public SettingOwner {
+   REX_SETTING(bool, ignore_thread_priorities, true, "Ignore guest thread priorities");
+   REX_SETTING(bool, ignore_thread_affinities, true, "Ignore guest thread affinities");
+   REX_SETTING(bool, ffmpeg_verbose, false, "Log FFmpeg messages for XMA decoding");
++  REX_SETTING(bool, fast_waits, true,
++              "Guest events, semaphores and critical sections in user space: no system call "
++              "without a waiter, a short spin before a sleep",
++              kUntilLaunch);
++  REX_SETTING(u32, wait_spin_us, 6,
++              "Microseconds a guest wait or critical section spins before it sleeps, with "
++              "fast_waits",
++              Range{0, 1000});
++  REX_SETTING(bool, wait_stats, false,
++              "Log the guest threads' waits and signals per kind every 5 s");
+   REX_SETTING(u32, terminate_timeout_ms, 2000, "Time Unload waits for guest threads to exit",
+               Range{0, 60000});
+ 
+diff --git a/include/rex/platform/sync.h b/include/rex/platform/sync.h
+index f56d12e0..119883c9 100644
+--- a/include/rex/platform/sync.h
++++ b/include/rex/platform/sync.h
+@@ -13,6 +13,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <chrono>
+ #include <cstddef>
+ #include <memory>
+@@ -24,6 +25,25 @@
+ 
+ namespace rex::platform {
+ 
++/**
++ * Sleeps while a word holds a value, without a kernel object: WaitOnAddress on Windows (a futex
++ * under Wine), a futex on Linux. It may return early for no reason, so callers check their
++ * condition again.
++ *
++ * @param word The word to watch.
++ * @param expected The value the thread sleeps on.
++ * @param timeout The longest sleep, milliseconds::max() for no limit.
++ * @return False when the timeout elapsed.
++ */
++REX_API bool WaitOnWord(const std::atomic<u32>& word, u32 expected,
++                        std::chrono::milliseconds timeout);
++
++/** Wakes one thread sleeping in WaitOnWord on the word. Costs no system call without a sleeper. */
++REX_API void WakeOneOnWord(std::atomic<u32>& word);
++
++/** Wakes every thread sleeping in WaitOnWord on the word. */
++REX_API void WakeAllOnWord(std::atomic<u32>& word);
++
+ /** Event that clears its own signal once the last waiter returns from Wait. */
+ class REX_API Fence {
+  public:
+diff --git a/src/base/CMakeLists.txt b/src/base/CMakeLists.txt
+index 927b30d0..18662a75 100644
+--- a/src/base/CMakeLists.txt
++++ b/src/base/CMakeLists.txt
+@@ -169,7 +169,7 @@ target_link_libraries(
+ )
+ 
+ if (WIN32)
+-  target_link_libraries(rexbase PRIVATE winmm ws2_32)
++  target_link_libraries(rexbase PRIVATE winmm ws2_32 synchronization)
+ else ()
+   find_package(Iconv REQUIRED)
+   target_link_libraries(rexbase PUBLIC Iconv::Iconv)
+diff --git a/src/base/threading_posix.cpp b/src/base/threading_posix.cpp
+index a6af14ea..da6e5d3b 100644
+--- a/src/base/threading_posix.cpp
++++ b/src/base/threading_posix.cpp
+@@ -35,6 +35,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <span>
+ #include <string>
+ #include <string_view>
++#include <thread>
+ #include <type_traits>
+ #include <utility>
+ #include <vector>
+@@ -50,6 +51,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <mach/mach.h>
+ #else
+ #include <sys/eventfd.h>
++#include <linux/futex.h>
+ #endif
+ #include <sys/socket.h>
+ #include <sys/syscall.h>
+@@ -261,6 +263,43 @@ void SyncMemory() {
+   __sync_synchronize();
+ }
+ 
++#if REX_PLATFORM_LINUX || defined(__linux__)
++bool WaitOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::milliseconds timeout) {
++  timespec ts{};
++  timespec* tsp = nullptr;
++  if (timeout != std::chrono::milliseconds::max()) {
++    const auto ms = std::max<i64>(timeout.count(), 0);
++    ts.tv_sec = static_cast<time_t>(ms / 1000);
++    ts.tv_nsec = static_cast<long>((ms % 1000) * 1000000);
++    tsp = &ts;
++  }
++  const long result = syscall(SYS_futex, &word, FUTEX_WAIT_PRIVATE, expected, tsp, nullptr, 0);
++  return !(result == -1 && errno == ETIMEDOUT);
++}
++
++void WakeOneOnWord(std::atomic<u32>& word) {
++  syscall(SYS_futex, &word, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
++}
++
++void WakeAllOnWord(std::atomic<u32>& word) {
++  syscall(SYS_futex, &word, FUTEX_WAKE_PRIVATE, INT32_MAX, nullptr, nullptr, 0);
++}
++#else
++bool WaitOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::milliseconds timeout) {
++  // No futex here: a short sleep, which callers treat as an early return.
++  if (word.load(std::memory_order_acquire) != expected) {
++    return true;
++  }
++  const auto step = std::min(timeout, std::chrono::milliseconds(1));
++  std::this_thread::sleep_for(step);
++  return step < timeout;
++}
++
++void WakeOneOnWord(std::atomic<u32>&) {}
++
++void WakeAllOnWord(std::atomic<u32>&) {}
++#endif
++
+ void SleepFor(std::chrono::microseconds duration) {
+   timespec rqtp = DurationToTimeSpec(duration);
+   timespec rmtp = {};
+diff --git a/src/base/threading_win.cpp b/src/base/threading_win.cpp
+index 9e575853..8c473844 100644
+--- a/src/base/threading_win.cpp
++++ b/src/base/threading_win.cpp
+@@ -106,6 +106,27 @@ void SyncMemory() {
+   MemoryBarrier();
+ }
+ 
++bool WaitOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::milliseconds timeout) {
++  static_assert(sizeof(std::atomic<u32>) == sizeof(u32));
++  const DWORD milliseconds = timeout >= std::chrono::milliseconds(INFINITE)
++                                 ? INFINITE
++                                 : static_cast<DWORD>(std::max<i64>(timeout.count(), 0));
++  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): WaitOnAddress only reads the word
++  void* address = const_cast<std::atomic<u32>*>(&word);
++  if (::WaitOnAddress(address, &expected, sizeof(u32), milliseconds)) {
++    return true;
++  }
++  return GetLastError() != ERROR_TIMEOUT;
++}
++
++void WakeOneOnWord(std::atomic<u32>& word) {
++  ::WakeByAddressSingle(&word);
++}
++
++void WakeAllOnWord(std::atomic<u32>& word) {
++  ::WakeByAddressAll(&word);
++}
++
+ namespace {
+ 
+ struct SleepTimer {
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 2af78a5a..9f02bcff 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -81,6 +81,7 @@ set(REXKERNEL_SOURCES
+     kernel_init.cpp
+     export.cpp
+     object/event_object.cpp
++    object/fast_sync.cpp
+     object/file_object.cpp
+     object/mutant_object.cpp
+     object/semaphore_object.cpp
+@@ -89,6 +90,7 @@ set(REXKERNEL_SOURCES
+     object/notify_listener_object.cpp
+     object/symbolic_link_object.cpp
+     object/object.cpp
++    wait_stats.cpp
+     test_access.cpp
+     title_state.cpp
+     thread_state.cpp
+diff --git a/src/kernel/kernel_thread.cpp b/src/kernel/kernel_thread.cpp
+index 3c80d445..551bd687 100644
+--- a/src/kernel/kernel_thread.cpp
++++ b/src/kernel/kernel_thread.cpp
+@@ -41,6 +41,7 @@
+ #include <rex/kernel/title_runtime.h>
+ #include <rex/kernel/runtime_settings.h>
+ #include "kernel/delay_observer.h"
++#include "kernel/object/fast_sync.h"
+ #include "kernel/thread_registry.h"
+ #include "kernel/guest_stack.h"
+ #include "kernel/settings_access.h"
+@@ -157,6 +158,18 @@ bool KernelThread::ShouldStop() const {
+          (IsGuestThread() && StateOf(GetRuntime()).IsTerminatingTitle());
+ }
+ 
++bool KernelThread::HasWaitInterrupt() const {
++  if (exiting_ || !IsRunning()) {
++    return false;
++  }
++  return suspend_deferred_.load(std::memory_order_seq_cst) || ShouldStop();
++}
++
++void KernelThread::InterruptFastWait() {
++  park_word_.fetch_or(2, std::memory_order_seq_cst);
++  rex::platform::WakeOneOnWord(park_word_);
++}
++
+ void KernelThread::ThrowStop() {
+   throw rex::ThreadStop{GetCallingThread()->stop_exit_code_.load(std::memory_order_acquire)};
+ }
+@@ -170,6 +183,7 @@ bool KernelThread::ForceStop() {
+   if (!thread) {
+     return false;
+   }
++  InterruptFastWait();
+   while (GetSuspendCount() > 0 && Resume() == X_STATUS_SUCCESS) {}
+   const auto in_code = [](u64 pc, void* context) {
+     const auto* thread = static_cast<KernelThread*>(context);
+@@ -206,6 +220,7 @@ void KernelThread::RequestStop(i32 exit_code) {
+       thread_->QueueUserCallback([] {});
+     }
+   }
++  InterruptFastWait();
+   { std::lock_guard lock(suspend_wait_->mutex); }
+   suspend_wait_->cv.notify_all();
+ }
+@@ -511,6 +526,17 @@ void KernelThread::WriteKernelTime() {
+   if (!self || !self->guest_object_ptr_) {
+     return;
+   }
++  if (fast::Enabled()) {
++    // Every wait and delay comes here, and under Wine GetThreadTimes is a wineserver round trip
++    // that blocks the thread (a voluntary context switch on each guest wait): at most every 4 ms.
++    // The field is a statistic the console itself only updates on its clock ticks.
++    thread_local u64 next_refresh = 0;
++    const u64 now = fast::Ticks();
++    if (now < next_refresh) {
++      return;
++    }
++    next_refresh = now + 4000 * fast::TicksPerMicrosecond();
++  }
+   self->GetGuestObject<X_KTHREAD>()->kernel_time =
+       static_cast<u32>(rex::platform::GetCurrentThreadCPUTime().count());
+ }
+@@ -714,6 +740,7 @@ void KernelThread::EnqueueAPC(u32 normal_routine, u32 normal_context, u32 arg1,
+   }
+   // The user callback only wakes the thread. Alertable waits deliver APCs.
+   thread_->QueueUserCallback([]() {});
++  InterruptFastWait();
+ }
+ 
+ bool KernelThread::HasPendingAPCs() {
+@@ -1001,8 +1028,9 @@ X_STATUS KernelThread::Suspend(u32* out_suspend_count) {
+   if (thread_->SuspendIf(in_recompiled_code, nullptr)) {
+     return X_STATUS_SUCCESS;
+   }
+-  suspend_deferred_.store(true, std::memory_order_release);
++  suspend_deferred_.store(true, std::memory_order_seq_cst);
+   thread_->QueueUserCallback([] {});
++  InterruptFastWait();
+   return X_STATUS_SUCCESS;
+ }
+ 
+diff --git a/src/kernel/object/event_object.cpp b/src/kernel/object/event_object.cpp
+index 560c0273..7608a0ac 100644
+--- a/src/kernel/object/event_object.cpp
++++ b/src/kernel/object/event_object.cpp
+@@ -15,12 +15,26 @@
+ #include <rex/kernel/object/event_object.h>
+ #include <rex/platform/sync.h>
+ 
++#include "kernel/object/fast_sync.h"
++#include "kernel/wait_stats.h"
++
+ namespace rex::kernel {
+ 
++namespace {
++
++fast::Kind KindOf(bool manual_reset) {
++  return manual_reset ? fast::Kind::kManualEvent : fast::Kind::kAutoEvent;
++}
++
++}  // namespace
++
+ EventObject::EventObject(bool manual_reset_in, bool initial_state) : manual_reset(manual_reset_in) {
+   event = manual_reset ? rex::platform::Event::CreateManualResetEvent(initial_state)
+                        : rex::platform::Event::CreateAutoResetEvent(initial_state);
+   REX_ASSERT(event != nullptr);
++  if (event && fast::Enabled()) {
++    fast::Init(fast, initial_state ? 1 : 0);
++  }
+ }
+ 
+ EventObject::EventObject(const X_DISPATCH_HEADER& header) {
+@@ -39,6 +53,26 @@ EventObject::EventObject(const X_DISPATCH_HEADER& header) {
+   event = manual_reset ? rex::platform::Event::CreateManualResetEvent(initial_state)
+                        : rex::platform::Event::CreateAutoResetEvent(initial_state);
+   REX_ASSERT(event != nullptr);
++  if (event && fast::Enabled()) {
++    fast::Init(fast, initial_state ? 1 : 0);
++  }
++}
++
++bool EventObject::UseHost() {
++  return fast::MoveToHost(fast, [this](u32 value) {
++    if (value) {
++      event->Set();
++    } else {
++      event->Reset();
++    }
++  });
++}
++
++void EventObject::Reinit(bool manual_reset_in, bool signaled,
++                         std::unique_ptr<rex::platform::Event> host_event) {
++  manual_reset.store(manual_reset_in);
++  fast::Reinit(fast, KindOf(manual_reset_in), signaled ? 1 : 0,
++               [&] { event.Replace(std::move(host_event)); });
+ }
+ 
+ void EventObject::Query(u32* out_type, u32* out_state) {
+@@ -46,6 +80,10 @@ void EventObject::Query(u32* out_type, u32* out_state) {
+     *out_type = manual_reset ? 0x00 : 0x01;
+   }
+   if (out_state) {
++    if (u32 value = 0; fast::Read(fast, &value)) {
++      *out_state = value ? 1 : 0;
++      return;
++    }
+     rex::platform::Event* host = event.get();
+     auto result = rex::platform::Wait(host, false, std::chrono::milliseconds(0));
+     if (result == rex::platform::WaitResult::kSuccess) {
+@@ -58,17 +96,31 @@ void EventObject::Query(u32* out_type, u32* out_state) {
+ }
+ 
+ i32 EventObject::Set() {
+-  event->Set();
++  if (wait_stats::Enabled()) {
++    wait_stats::RecordSignal(wait_stats::Signal::kEvent);
++  }
++  if (fast::Set(fast, KindOf(manual_reset.load(std::memory_order_relaxed))) ==
++      fast::Result::kHost) {
++    event->Set();
++  }
+   return 1;
+ }
+ 
+ i32 EventObject::Pulse() {
+-  event->Pulse();
++  if (wait_stats::Enabled()) {
++    wait_stats::RecordSignal(wait_stats::Signal::kEvent);
++  }
++  if (fast::Pulse(fast, KindOf(manual_reset.load(std::memory_order_relaxed))) ==
++      fast::Result::kHost) {
++    event->Pulse();
++  }
+   return 1;
+ }
+ 
+ i32 EventObject::Reset() {
+-  event->Reset();
++  if (fast::Reset(fast) == fast::Result::kHost) {
++    event->Reset();
++  }
+   return 1;
+ }
+ 
+diff --git a/src/kernel/object/fast_sync.cpp b/src/kernel/object/fast_sync.cpp
+new file mode 100644
+index 00000000..61b06801
+--- /dev/null
++++ b/src/kernel/object/fast_sync.cpp
+@@ -0,0 +1,561 @@
++/**
++ * @file        kernel/object/fast_sync.cpp
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include "kernel/object/fast_sync.h"
++
++#include <algorithm>
++#include <limits>
++
++#include <rex/kernel/object/kernel_thread.h>
++#include <rex/platform.h>
++#include <rex/platform/sync.h>
++#include <rex/platform/thread.h>
++
++#include "kernel/settings_access.h"
++
++#if REX_ARCH_AMD64
++#if defined(_MSC_VER)
++#include <intrin.h>
++#else
++#include <x86intrin.h>
++#endif
++#endif
++
++namespace rex::kernel {
++
++/** A thread queued on a FastState. It lives on the waiting thread's stack. */
++struct FastWaiter {
++  FastWaiter* next = nullptr;
++  FastWaiter* prev = nullptr;
++  std::atomic<u32>* park = nullptr; /**< The waiting thread's park word. */
++  /** 0 while it waits, 1 once a signal is its, 2 once the object moved to its host primitive. */
++  std::atomic<u32> outcome{0};
++};
++
++}  // namespace rex::kernel
++
++namespace rex::kernel::fast {
++
++namespace {
++
++constexpr u64 kValueMask = FastState::kValueMask;
++constexpr u64 kMigrating = FastState::kMigrating;
++constexpr u64 kHost = FastState::kHost;
++constexpr u32 kGiven = 1;
++constexpr u32 kMoved = 2;
++/** Taken out of the queue by a guest initializer, as the kernel's InitializeListHead drops it. */
++constexpr u32 kOrphaned = 3;
++/** Park word bits: the thread's object chose it, or a stop or suspend request needs it. */
++constexpr u32 kParkSignal = 1;
++constexpr u32 kParkInterrupt = 2;
++
++std::atomic<u64> g_host_moves{0};
++thread_local u8 t_last_path = 0;
++
++void Lock(FastState& state) {
++  u32 spins = 0;
++  while (state.lock.exchange(1, std::memory_order_acquire)) {
++    while (state.lock.load(std::memory_order_relaxed)) {
++      if (++spins < 128) {
++        Pause();
++      } else {
++        // The holder may be off its core: give it the processor.
++        rex::platform::MaybeYield();
++        spins = 0;
++      }
++    }
++  }
++}
++
++void Unlock(FastState& state) {
++  state.lock.store(0, std::memory_order_release);
++}
++
++void Append(FastState& state, FastWaiter* node) {
++  node->prev = state.tail;
++  node->next = nullptr;
++  if (state.tail) {
++    state.tail->next = node;
++  } else {
++    state.head = node;
++  }
++  state.tail = node;
++}
++
++void Unlink(FastState& state, FastWaiter* node) {
++  if (node->prev) {
++    node->prev->next = node->next;
++  } else {
++    state.head = node->next;
++  }
++  if (node->next) {
++    node->next->prev = node->prev;
++  } else {
++    state.tail = node->prev;
++  }
++  node->next = node->prev = nullptr;
++  state.queued.fetch_sub(1, std::memory_order_seq_cst);
++}
++
++/**
++ * Takes the oldest queued thread out of the queue with an outcome and wakes it. Under the lock,
++ * which the woken thread takes once before it returns, so the node and the park word stay valid.
++ */
++void Satisfy(FastState& state, u32 outcome) {
++  FastWaiter* node = state.head;
++  Unlink(state, node);
++  node->outcome.store(outcome, std::memory_order_release);
++  node->park->fetch_or(kParkSignal, std::memory_order_seq_cst);
++  rex::platform::WakeOneOnWord(*node->park);
++}
++
++/** Waits out a move to the host primitive, which another thread does under the lock. */
++u64 Settled(const FastState& state, u64 word) {
++  u32 spins = 0;
++  while (word & kMigrating) {
++    if (++spins < 128) {
++      Pause();
++    } else {
++      rex::platform::MaybeYield();
++      spins = 0;
++    }
++    word = state.word.load(std::memory_order_seq_cst);
++  }
++  return word;
++}
++
++enum class Take : u8 { kTaken, kEmpty, kHost };
++
++Take TryTake(FastState& state, Kind kind) {
++  u64 word = state.word.load(std::memory_order_seq_cst);
++  for (;;) {
++    if (word & kMigrating) {
++      word = Settled(state, word);
++      continue;
++    }
++    if (word & kHost) {
++      return Take::kHost;
++    }
++    if (!(word & kValueMask)) {
++      return Take::kEmpty;
++    }
++    if (kind == Kind::kManualEvent) {
++      return Take::kTaken;
++    }
++    // The flags sit above the value, so taking one never borrows from them.
++    if (state.word.compare_exchange_weak(word, word - 1, std::memory_order_seq_cst)) {
++      return Take::kTaken;
++    }
++  }
++}
++
++/** Under the lock: hands what the word holds to the queued threads, oldest first. */
++void Hand(FastState& state, Kind kind) {
++  while (state.head) {
++    u64 word = state.word.load(std::memory_order_seq_cst);
++    if (!(word & kValueMask)) {
++      return;
++    }
++    if (kind == Kind::kManualEvent) {
++      while (state.head) {
++        Satisfy(state, kGiven);
++      }
++      return;
++    }
++    if (state.word.compare_exchange_weak(word, word - 1, std::memory_order_seq_cst)) {
++      Satisfy(state, kGiven);
++    }
++  }
++}
++
++/** Sets the value word with a compare and swap, keeping the flags, until it holds. */
++void Store(FastState& state, u32 value) {
++  u64 word = state.word.load(std::memory_order_seq_cst);
++  while (static_cast<u32>(word) != value &&
++         !state.word.compare_exchange_weak(word, (word & ~kValueMask) | value,
++                                           std::memory_order_seq_cst)) {}
++}
++
++u64 MeasureTicksPerMicrosecond() {
++  using clock = std::chrono::steady_clock;
++  const auto t0 = clock::now();
++  const u64 c0 = Ticks();
++  while (clock::now() - t0 < std::chrono::milliseconds(2)) {
++    Pause();
++  }
++  const auto t1 = clock::now();
++  const u64 c1 = Ticks();
++  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
++  return std::max<u64>(1, (c1 - c0) * 1000 / static_cast<u64>(std::max<i64>(ns, 1)));
++}
++
++}  // namespace
++
++u64 TicksPerMicrosecond() {
++  static std::atomic<u64> cached{0};
++  u64 value = cached.load(std::memory_order_relaxed);
++  if (!value) {
++    value = MeasureTicksPerMicrosecond();
++    cached.store(value, std::memory_order_relaxed);
++  }
++  return value;
++}
++
++bool Enabled() {
++  return GetRuntimeSettings().fast_waits.Get();
++}
++
++u64 Ticks() {
++#if REX_ARCH_AMD64
++  return __rdtsc();
++#else
++  return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                              std::chrono::steady_clock::now().time_since_epoch())
++                              .count());
++#endif
++}
++
++void Pause() {
++#if REX_ARCH_AMD64
++  _mm_pause();
++#elif defined(_MSC_VER)
++  __yield();
++#else
++  __asm__ __volatile__("yield");
++#endif
++}
++
++u64 SpinTicks() {
++  const u32 microseconds = GetRuntimeSettings().wait_spin_us.Get();
++  return microseconds ? microseconds * TicksPerMicrosecond() : 0;
++}
++
++void Init(FastState& state, u32 value) {
++  state.word.store(value, std::memory_order_relaxed);
++}
++
++bool IsHost(const FastState& state) {
++  return (state.word.load(std::memory_order_acquire) & kHost) != 0;
++}
++
++Result Set(FastState& state, Kind kind) {
++  if (!state.queued.load(std::memory_order_seq_cst)) {
++    u64 word = state.word.load(std::memory_order_seq_cst);
++    for (;;) {
++      if (word & kMigrating) {
++        word = Settled(state, word);
++        continue;
++      }
++      if (word & kHost) {
++        return Result::kHost;
++      }
++      if (word & kValueMask) {
++        std::atomic_thread_fence(std::memory_order_seq_cst);
++        break;
++      }
++      if (state.word.compare_exchange_weak(word, word | 1, std::memory_order_seq_cst)) {
++        break;
++      }
++    }
++    // A thread that queued meanwhile looked at the word before this set: hand it the signal.
++    if (!state.queued.load(std::memory_order_seq_cst)) {
++      return Result::kDone;
++    }
++    Lock(state);
++    if (!(state.word.load(std::memory_order_seq_cst) & kHost)) {
++      Hand(state, kind);
++    }
++    Unlock(state);
++    return Result::kDone;
++  }
++  Lock(state);
++  if (state.word.load(std::memory_order_seq_cst) & kHost) {
++    Unlock(state);
++    return Result::kHost;
++  }
++  if (kind == Kind::kManualEvent) {
++    Store(state, 1);
++    while (state.head) {
++      Satisfy(state, kGiven);
++    }
++  } else if (state.head && !(state.word.load(std::memory_order_seq_cst) & kValueMask)) {
++    // Straight to the oldest waiter: the event stays unsignaled.
++    Satisfy(state, kGiven);
++  } else {
++    Store(state, 1);
++    Hand(state, kind);
++  }
++  Unlock(state);
++  return Result::kDone;
++}
++
++Result Reset(FastState& state) {
++  u64 word = state.word.load(std::memory_order_seq_cst);
++  for (;;) {
++    if (word & kMigrating) {
++      word = Settled(state, word);
++      continue;
++    }
++    if (word & kHost) {
++      return Result::kHost;
++    }
++    if (!(word & kValueMask) ||
++        state.word.compare_exchange_weak(word, word & ~kValueMask, std::memory_order_seq_cst)) {
++      return Result::kDone;
++    }
++  }
++}
++
++Result Pulse(FastState& state, Kind kind) {
++  Lock(state);
++  if (state.word.load(std::memory_order_seq_cst) & kHost) {
++    Unlock(state);
++    return Result::kHost;
++  }
++  if (kind == Kind::kManualEvent) {
++    while (state.head) {
++      Satisfy(state, kGiven);
++    }
++  } else if (state.head) {
++    Satisfy(state, kGiven);
++  }
++  Store(state, 0);
++  Unlock(state);
++  return Result::kDone;
++}
++
++Result Release(FastState& state, u32 count, u32 limit, u32* previous) {
++  *previous = 0;
++  if (!count || count > static_cast<u32>(std::numeric_limits<i32>::max())) {
++    return Result::kLimit;
++  }
++  if (!state.queued.load(std::memory_order_seq_cst)) {
++    u64 word = state.word.load(std::memory_order_seq_cst);
++    for (;;) {
++      if (word & kMigrating) {
++        word = Settled(state, word);
++        continue;
++      }
++      if (word & kHost) {
++        return Result::kHost;
++      }
++      if (static_cast<u64>(static_cast<u32>(word)) + count > limit) {
++        return Result::kLimit;
++      }
++      if (state.word.compare_exchange_weak(word, word + count, std::memory_order_seq_cst)) {
++        break;
++      }
++    }
++    *previous = static_cast<u32>(word);
++    if (!state.queued.load(std::memory_order_seq_cst)) {
++      return Result::kDone;
++    }
++    Lock(state);
++    if (!(state.word.load(std::memory_order_seq_cst) & kHost)) {
++      Hand(state, Kind::kSemaphore);
++    }
++    Unlock(state);
++    return Result::kDone;
++  }
++  Lock(state);
++  u64 word = state.word.load(std::memory_order_seq_cst);
++  if (word & kHost) {
++    Unlock(state);
++    return Result::kHost;
++  }
++  // The queued threads take their counts in the same step, so no spinning thread takes one first.
++  for (;;) {
++    const u32 value = static_cast<u32>(word);
++    if (static_cast<u64>(value) + count > limit) {
++      Unlock(state);
++      return Result::kLimit;
++    }
++    const u32 queued = state.queued.load(std::memory_order_relaxed);
++    const u32 given = std::min(value + count, queued);
++    if (state.word.compare_exchange_weak(word, word + count - given, std::memory_order_seq_cst)) {
++      *previous = value;
++      for (u32 i = 0; i < given; ++i) {
++        Satisfy(state, kGiven);
++      }
++      break;
++    }
++  }
++  Unlock(state);
++  return Result::kDone;
++}
++
++bool Read(const FastState& state, u32* value) {
++  const u64 word = Settled(state, state.word.load(std::memory_order_seq_cst));
++  if (word & kHost) {
++    return false;
++  }
++  *value = static_cast<u32>(word);
++  return true;
++}
++
++u8 LastPath() {
++  return t_last_path;
++}
++
++WaitResult Wait(FastState& state, Kind kind, std::chrono::milliseconds timeout,
++                KernelThread* self) {
++  t_last_path = 0;
++  switch (TryTake(state, kind)) {
++    case Take::kTaken:
++      return WaitResult::kTaken;
++    case Take::kHost:
++      return WaitResult::kHost;
++    case Take::kEmpty:
++      break;
++  }
++  if (timeout.count() <= 0) {
++    return WaitResult::kTimeout;
++  }
++  // Spin a few microseconds: the signal usually comes from a thread running on another core.
++  // Not behind queued threads, which a signal reaches first.
++  t_last_path = 1;
++  if (const u64 spin = SpinTicks(); spin && !state.queued.load(std::memory_order_relaxed)) {
++    const u64 end = Ticks() + spin;
++    do {
++      for (int i = 0; i < 4; ++i) {
++        Pause();
++      }
++      const u64 word = state.word.load(std::memory_order_relaxed);
++      if (word & (kMigrating | kHost)) {
++        break;
++      }
++      if (word & kValueMask) {
++        switch (TryTake(state, kind)) {
++          case Take::kTaken:
++            return WaitResult::kTaken;
++          case Take::kHost:
++            return WaitResult::kHost;
++          case Take::kEmpty:
++            break;
++        }
++      }
++    } while (Ticks() < end);
++  }
++
++  using clock = std::chrono::steady_clock;
++  const bool infinite = timeout == std::chrono::milliseconds::max();
++  const auto deadline = infinite ? clock::time_point::max() : clock::now() + timeout;
++  thread_local std::atomic<u32> host_park{0};
++  std::atomic<u32>& park = self ? self->GetParkWord() : host_park;
++  for (;;) {
++    FastWaiter node;
++    node.park = &park;
++    Lock(state);
++    if (state.word.load(std::memory_order_seq_cst) & kHost) {
++      Unlock(state);
++      return WaitResult::kHost;
++    }
++    // Counted before the last look at the word: a signaler that misses this look sees the count.
++    state.queued.fetch_add(1, std::memory_order_seq_cst);
++    if (TryTake(state, kind) == Take::kTaken) {
++      state.queued.fetch_sub(1, std::memory_order_seq_cst);
++      Unlock(state);
++      return WaitResult::kTaken;
++    }
++    // Clears an old signal bit, keeps an interrupt: that one ends the sleep at once.
++    park.fetch_and(kParkInterrupt, std::memory_order_seq_cst);
++    Append(state, &node);
++    Unlock(state);
++    t_last_path = 2;
++
++    // A stop or suspend request sets the thread's flags, then the park word's interrupt bit.
++    bool interrupted = self && self->HasWaitInterrupt();
++    bool timed_out = false;
++    for (;;) {
++      const u32 outcome = node.outcome.load(std::memory_order_acquire);
++      if (outcome == kGiven || outcome == kMoved || interrupted) {
++        break;
++      }
++      std::chrono::milliseconds left = std::chrono::milliseconds::max();
++      if (!infinite) {
++        left = std::chrono::ceil<std::chrono::milliseconds>(deadline - clock::now());
++        if (left.count() <= 0) {
++          timed_out = true;
++          break;
++        }
++      }
++      rex::platform::WaitOnWord(park, 0, left);
++      if (park.load(std::memory_order_seq_cst) & kParkInterrupt) {
++        interrupted = true;
++      }
++    }
++
++    Lock(state);
++    // Taking the lock also waits for a signaler that is still waking this thread.
++    const u32 outcome = node.outcome.load(std::memory_order_acquire);
++    if (outcome == kOrphaned) {
++      // No signal reaches it any more: it ends on its timeout or a stop, as on the console.
++      Unlock(state);
++      return interrupted ? WaitResult::kInterrupted : WaitResult::kTimeout;
++    }
++    if (!outcome) {
++      Unlink(state, &node);
++      // A signal that reached the word but not this thread yet.
++      const bool taken = TryTake(state, kind) == Take::kTaken;
++      Unlock(state);
++      if (taken) {
++        return WaitResult::kTaken;
++      }
++      if (interrupted) {
++        return WaitResult::kInterrupted;
++      }
++      if (timed_out) {
++        return WaitResult::kTimeout;
++      }
++      continue;
++    }
++    Unlock(state);
++    return outcome == kGiven ? WaitResult::kTaken : WaitResult::kHost;
++  }
++}
++
++bool MoveToHost(FastState& state, const std::function<void(u32 value)>& publish) {
++  if (state.word.load(std::memory_order_acquire) & kHost) {
++    return false;
++  }
++  Lock(state);
++  u64 word = state.word.load(std::memory_order_seq_cst);
++  const bool moved = !(word & kHost);
++  if (moved) {
++    // Freezes the value: lock free signals and takes wait until the host carries it.
++    while (!state.word.compare_exchange_weak(word, word | kMigrating, std::memory_order_seq_cst)) {}
++    publish(static_cast<u32>(word));
++    state.word.store(kHost, std::memory_order_seq_cst);
++    while (state.head) {
++      Satisfy(state, kMoved);
++    }
++    g_host_moves.fetch_add(1, std::memory_order_relaxed);
++  }
++  Unlock(state);
++  return moved;
++}
++
++void Reinit(FastState& state, Kind kind, u32 value, const std::function<void()>& replace_host) {
++  Lock(state);
++  replace_host();
++  if (!(state.word.load(std::memory_order_seq_cst) & kHost)) {
++    // The new header has an empty wait list: the queued threads keep sleeping, unreachable.
++    while (FastWaiter* node = state.head) {
++      Unlink(state, node);
++      node->outcome.store(kOrphaned, std::memory_order_release);
++    }
++    Store(state, value);
++    Hand(state, kind);
++  }
++  Unlock(state);
++}
++
++u64 HostMoves() {
++  return g_host_moves.load(std::memory_order_relaxed);
++}
++
++}  // namespace rex::kernel::fast
+diff --git a/src/kernel/object/fast_sync.h b/src/kernel/object/fast_sync.h
+new file mode 100644
+index 00000000..e4a082af
+--- /dev/null
++++ b/src/kernel/object/fast_sync.h
+@@ -0,0 +1,125 @@
++/**
++ * @file        kernel/object/fast_sync.h
++ * @brief       Events and semaphores whose state lives in user space
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ *
++ * Under Proton every operation on a host event or semaphore is a system call (ntsync), and a
++ * thread whose object is not signaled yet sleeps at once, to be woken a few microseconds later by
++ * another core. Recompiled titles that hand work between threads thousands of times a second pay
++ * that on every hand-off. Here the state is an atomic word: a signal with no queued waiter only
++ * changes the word, a wait first takes the word, then spins a few microseconds, and only then
++ * queues itself and sleeps on its own thread's word (WaitOnAddress, a plain futex under Wine).
++ *
++ * The semantics stay the kernel's: a signal goes to the queued waiters first, oldest first (an
++ * auto reset event or a semaphore count to one waiter each, a manual reset event to all of them),
++ * and only what is left stays in the word; a semaphore never passes its limit. A thread that spins
++ * has not started to wait yet as far as the guest can tell. Waits the host must do (on several
++ * objects, alertable ones, signal-and-wait) move the object to its host primitive for good.
++ */
++
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <functional>
++
++#include <rex/kernel/object/fast_state.h>
++#include <rex/types.h>
++
++namespace rex::kernel {
++class KernelThread;
++}  // namespace rex::kernel
++
++namespace rex::kernel::fast {
++
++enum class Kind : u8 {
++  kManualEvent,
++  kAutoEvent,
++  kSemaphore,
++};
++
++/** True when runtime.fast_waits is on: new events, semaphores and critical sections use it. */
++bool Enabled();
++
++/** The time a wait or a critical section spins before it sleeps, in TSC ticks, 0 for none. */
++u64 SpinTicks();
++
++/** The TSC now, or a steady clock where there is none. */
++u64 Ticks();
++
++/** Ticks() per microsecond, measured once. */
++u64 TicksPerMicrosecond();
++
++/** One pause of a spin loop. */
++void Pause();
++
++/** Puts the state in user space with a value. Only for an object no other thread sees yet. */
++void Init(FastState& state, u32 value);
++
++/** True once the host primitive carries the state. */
++bool IsHost(const FastState& state);
++
++enum class Result : u8 {
++  kDone,
++  kHost,  /**< The host primitive carries the state: the caller uses it. */
++  kLimit, /**< A semaphore release that would pass the limit, which changed nothing. */
++};
++
++Result Set(FastState& state, Kind kind);
++Result Reset(FastState& state);
++/** Releases the current waiters (one for an auto reset event) and leaves the event unsignaled. */
++Result Pulse(FastState& state, Kind kind);
++
++/**
++ * @param count Above 0.
++ * @param previous Receives the count before the release, 0 when it fails.
++ */
++Result Release(FastState& state, u32 count, u32 limit, u32* previous);
++
++/**
++ * @return True with the value in *value, false when the host primitive carries the state.
++ */
++bool Read(const FastState& state, u32* value);
++
++enum class WaitResult : u8 {
++  kTaken,
++  kTimeout,
++  kInterrupted, /**< A stop or a suspend request: the caller checks them and waits again. */
++  kHost,        /**< The object moved to its host primitive: the caller waits on it. */
++};
++
++/**
++ * Takes one signal of the object: the event's (an auto reset event resets), or one count.
++ *
++ * @param timeout 0 to poll, milliseconds::max() for no limit.
++ * @param self The calling thread, whose stop and suspend requests end the wait. Null on a host
++ * thread without one, which sleeps on a word of its own.
++ */
++WaitResult Wait(FastState& state, Kind kind, std::chrono::milliseconds timeout, KernelThread* self);
++
++/** How the calling thread's latest Wait ended: 0 at once, 1 after a spin, 2 after a sleep. */
++u8 LastPath();
++
++/**
++ * Moves the state to the host primitive, for good. The queued threads wake and wait on the host.
++ *
++ * @param publish Called once, under the lock, with the value the host primitive must take.
++ * @return True when this call moved it.
++ */
++bool MoveToHost(FastState& state, const std::function<void(u32 value)>& publish);
++
++/**
++ * Gives the object a new value, as a guest initializer does. The queued threads stay asleep out of
++ * reach, as the kernel's new empty wait list leaves them.
++ *
++ * @param replace_host Called under the lock: replaces the host primitive, which carries the new
++ * state when the object is on the host already.
++ */
++void Reinit(FastState& state, Kind kind, u32 value, const std::function<void()>& replace_host);
++
++/** Counts objects that moved to the host since the start, for the wait stats. */
++u64 HostMoves();
++
++}  // namespace rex::kernel::fast
+diff --git a/src/kernel/object/object.cpp b/src/kernel/object/object.cpp
+index 09088261..b07d7b43 100644
+--- a/src/kernel/object/object.cpp
++++ b/src/kernel/object/object.cpp
+@@ -30,7 +30,10 @@
+ #include <rex/platform/sync.h>
+ #include <rex/kernel/object/object_table.h>
+ 
++#include "kernel/categories.h"
++#include "kernel/object/fast_sync.h"
+ #include "kernel/thread_wait.h"
++#include "kernel/wait_stats.h"
+ 
+ namespace rex::kernel {
+ 
+@@ -65,6 +68,51 @@ rex::platform::WaitHandle* HandleOf(ObjectData& data) {
+       data);
+ }
+ 
++/** The user space state of an event or a semaphore, for a wait on it alone. */
++struct FastTarget {
++  FastState* state = nullptr;
++  fast::Kind kind = fast::Kind::kAutoEvent;
++};
++
++FastTarget FastOf(ObjectData& data) {
++  if (auto* event = std::get_if<EventObject>(&data)) {
++    if (!fast::IsHost(event->fast)) {
++      return {&event->fast, event->manual_reset.load(std::memory_order_relaxed)
++                                ? fast::Kind::kManualEvent
++                                : fast::Kind::kAutoEvent};
++    }
++  } else if (auto* semaphore = std::get_if<SemaphoreObject>(&data)) {
++    if (!fast::IsHost(semaphore->fast)) {
++      return {&semaphore->fast, fast::Kind::kSemaphore};
++    }
++  }
++  return {};
++}
++
++/**
++ * Moves an event or a semaphore to its host primitive, for a wait only the host can do.
++ *
++ * @param why What needs the host, for the log.
++ */
++void UseHost(const ObjectPin& object, const char* why) {
++  bool moved = false;
++  const char* type = "";
++  if (auto* event = std::get_if<EventObject>(&object.GetData())) {
++    moved = event->UseHost();
++    type = "event";
++  } else if (auto* semaphore = std::get_if<SemaphoreObject>(&object.GetData())) {
++    moved = semaphore->UseHost();
++    type = "semaphore";
++  }
++  if (moved) {
++    static std::atomic<u32> logged{0};
++    if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
++      REXKRNL_INFO("fast waits: the {} at {:08X} moves to its host primitive for good ({})", type,
++                   object.GetKernelObject().guest_ptr, why);
++    }
++  }
++}
++
+ WaitTarget TargetOf(TitleRuntime& runtime, const ObjectPin& object) {
+   REX_ASSERT(object);
+   WaitTarget target;
+@@ -118,6 +166,23 @@ std::chrono::milliseconds TimeoutOf(u64* opt_timeout) {
+                      : std::chrono::milliseconds::max();
+ }
+ 
++wait_stats::Kind StatsKindOf(const ObjectData& data) {
++  switch (static_cast<ObjectType>(data.index())) {
++    case ObjectType::kEvent:
++      return wait_stats::Kind::kEvent;
++    case ObjectType::kSemaphore:
++      return wait_stats::Kind::kSemaphore;
++    case ObjectType::kMutant:
++      return wait_stats::Kind::kMutant;
++    case ObjectType::kTimer:
++      return wait_stats::Kind::kTimer;
++    case ObjectType::kThread:
++      return wait_stats::Kind::kThread;
++    default:
++      return wait_stats::Kind::kOther;
++  }
++}
++
+ X_STATUS MapResult(rex::platform::WaitResult result) {
+   switch (result) {
+     case rex::platform::WaitResult::kSuccess:
+@@ -220,6 +285,11 @@ void FreeObjectBlock(kernel::GuestAddressSpace* memory, u32 address, WorkspaceHe
+ 
+ X_STATUS Wait(TitleRuntime& runtime, const ObjectPin& object, [[maybe_unused]] u32 wait_reason,
+               [[maybe_unused]] u32 processor_mode, u32 alertable, u64* opt_timeout) {
++  // An alertable wait ends on a user APC, which only the host wait sees.
++  FastTarget fast_target = alertable ? FastTarget{} : FastOf(object.GetData());
++  if (alertable) {
++    UseHost(object, "an alertable wait");
++  }
+   WaitTarget target = TargetOf(runtime, object);
+   if (!target.handle) {
+     return X_STATUS_SUCCESS;
+@@ -227,9 +297,39 @@ X_STATUS Wait(TitleRuntime& runtime, const ObjectPin& object, [[maybe_unused]] u
+   const auto timeout = TimeoutOf(opt_timeout);
+   KernelThread::CheckStop();
+   KernelThread::WriteKernelTime();
++  wait_stats::Timer stats(StatsKindOf(object.GetData()), alertable != 0);
+   auto result = WaitGuest(
+       alertable, timeout,
+       [&](std::chrono::milliseconds left) {
++        if (fast_target.state) {
++          KernelThread* self =
++              KernelThread::IsInThread() ? KernelThread::GetCallingThread() : nullptr;
++          const auto fast_result = fast::Wait(*fast_target.state, fast_target.kind, left, self);
++          if (fast_result != fast::WaitResult::kHost) {
++            constexpr wait_stats::Path kPaths[] = {
++                wait_stats::Path::kImmediate, wait_stats::Path::kSpun, wait_stats::Path::kSlept};
++            stats.SetPath(kPaths[std::min<u8>(fast::LastPath(), 2)]);
++          }
++          // A stop, suspend or APC request also queued a host callback, which a host wait would
++          // have run: run it now, so it does not end a later alertable wait.
++          if (self && (self->GetParkWord().load() & 2)) {
++            self->GetParkWord().fetch_and(~2u);
++            (void)rex::platform::AlertableSleep(std::chrono::microseconds(0));
++          }
++          switch (fast_result) {
++            case fast::WaitResult::kTaken:
++              return rex::platform::WaitResult::kSuccess;
++            case fast::WaitResult::kTimeout:
++              return rex::platform::WaitResult::kTimeout;
++            case fast::WaitResult::kInterrupted:
++              return rex::platform::WaitResult::kUserCallback;
++            case fast::WaitResult::kHost:
++              fast_target = {};
++              UseHost(object, "another thread's wait");
++              target = TargetOf(runtime, object);
++              break;
++          }
++        }
+         return rex::platform::Wait(target.handle, true, left);
+       },
+       IsCallback);
+@@ -245,6 +345,8 @@ X_STATUS Wait(TitleRuntime& runtime, const ObjectPin& object, [[maybe_unused]] u
+ X_STATUS SignalAndWait(TitleRuntime& runtime, const ObjectPin& signal_object,
+                        const ObjectPin& wait_object, [[maybe_unused]] u32 wait_reason,
+                        [[maybe_unused]] u32 processor_mode, u32 alertable, u64* opt_timeout) {
++  UseHost(signal_object, "a signal-and-wait");
++  UseHost(wait_object, "a signal-and-wait");
+   WaitTarget signal = TargetOf(runtime, signal_object);
+   WaitTarget wait = TargetOf(runtime, wait_object);
+   if (!wait.handle) {
+@@ -252,6 +354,7 @@ X_STATUS SignalAndWait(TitleRuntime& runtime, const ObjectPin& signal_object,
+   }
+   KernelThread::CheckStop();
+   KernelThread::WriteKernelTime();
++  wait_stats::Timer stats(wait_stats::Kind::kSignalWait, alertable != 0);
+   bool signaled = !signal.handle;
+   auto result = WaitGuest(
+       alertable, TimeoutOf(opt_timeout),
+@@ -281,6 +384,8 @@ X_STATUS WaitMultiple(TitleRuntime& runtime, std::span<const ObjectPin> objects,
+   wait_handles.reserve(objects.size());
+   size_t idle_index = objects.size();
+   for (const ObjectPin& object : objects) {
++    UseHost(object,
++            wait_type ? "a wait on any of several objects" : "a wait on all of several objects");
+     WaitTarget target = TargetOf(runtime, object);
+     if (!target.handle) {
+       idle_index = std::min(idle_index, targets.size());
+@@ -295,6 +400,13 @@ X_STATUS WaitMultiple(TitleRuntime& runtime, std::span<const ObjectPin> objects,
+   const auto timeout = TimeoutOf(opt_timeout);
+   KernelThread::CheckStop();
+   KernelThread::WriteKernelTime();
++  const bool events_only = std::ranges::all_of(objects, [](const ObjectPin& object) {
++    const auto type = static_cast<ObjectType>(object.GetData().index());
++    return type == ObjectType::kEvent || type == ObjectType::kSemaphore;
++  });
++  wait_stats::Timer stats(
++      wait_type && events_only ? wait_stats::Kind::kMultiAny : wait_stats::Kind::kMultiOther,
++      alertable != 0);
+   if (wait_type) {
+     std::pair<rex::platform::WaitResult, size_t> result{rex::platform::WaitResult::kSuccess,
+                                                         idle_index};
+diff --git a/src/kernel/object/semaphore_object.cpp b/src/kernel/object/semaphore_object.cpp
+index 31b1cfaf..8995173f 100644
+--- a/src/kernel/object/semaphore_object.cpp
++++ b/src/kernel/object/semaphore_object.cpp
+@@ -16,11 +16,18 @@
+ #include <rex/kernel/object/semaphore_object.h>
+ #include <rex/platform/sync.h>
+ 
++#include "kernel/object/fast_sync.h"
++#include "kernel/wait_stats.h"
++
+ namespace rex::kernel {
+ 
+ SemaphoreObject::SemaphoreObject(i32 initial_count, i32 maximum_count_in)
+     : maximum_count(static_cast<u32>(maximum_count_in)) {
+   semaphore = rex::platform::Semaphore::Create(initial_count, maximum_count_in);
++  // Only valid counts: the host refused the others, and NtCreateSemaphore fails on them.
++  if (semaphore && fast::Enabled()) {
++    fast::Init(fast, static_cast<u32>(initial_count));
++  }
+ }
+ 
+ SemaphoreObject::SemaphoreObject(const X_KSEMAPHORE& header) {
+@@ -29,9 +36,44 @@ SemaphoreObject::SemaphoreObject(const X_KSEMAPHORE& header) {
+   const u32 count = std::min(u32{header.header.signal_state}, limit);
+   maximum_count = limit;
+   semaphore = rex::platform::Semaphore::Create(static_cast<i32>(count), static_cast<i32>(limit));
++  if (semaphore && fast::Enabled()) {
++    fast::Init(fast, count);
++  }
++}
++
++bool SemaphoreObject::UseHost() {
++  return fast::MoveToHost(fast, [this](u32 value) {
++    semaphore.Replace(
++        rex::platform::Semaphore::Create(static_cast<i32>(value), static_cast<i32>(maximum_count)));
++  });
++}
++
++void SemaphoreObject::Reinit(u32 count, u32 limit,
++                             std::unique_ptr<rex::platform::Semaphore> host_semaphore) {
++  maximum_count = limit;
++  fast::Reinit(fast, fast::Kind::kSemaphore, count,
++               [&] { semaphore.Replace(std::move(host_semaphore)); });
+ }
+ 
+ bool SemaphoreObject::Release(i32 release_count, i32* out_previous_count) {
++  if (wait_stats::Enabled()) {
++    wait_stats::RecordSignal(wait_stats::Signal::kSemaphore);
++  }
++  u32 previous = 0;
++  switch (fast::Release(fast, static_cast<u32>(release_count), maximum_count, &previous)) {
++    case fast::Result::kDone:
++      if (out_previous_count) {
++        *out_previous_count = static_cast<i32>(previous);
++      }
++      return true;
++    case fast::Result::kLimit:
++      if (out_previous_count) {
++        *out_previous_count = 0;
++      }
++      return false;
++    case fast::Result::kHost:
++      break;
++  }
+   i32 previous_count = 0;
+   const bool success = semaphore->Release(release_count, &previous_count);
+   if (out_previous_count) {
+diff --git a/src/kernel/object_table.cpp b/src/kernel/object_table.cpp
+index 6fd51670..a5f18f1d 100644
+--- a/src/kernel/object_table.cpp
++++ b/src/kernel/object_table.cpp
+@@ -34,6 +34,7 @@
+ #include <rex/kernel/object/object_pin.h>
+ #include <rex/kernel/object/object_table.h>
+ #include "kernel/title_state.h"
++#include "kernel/object/fast_sync.h"
+ 
+ namespace rex::kernel {
+ 
+@@ -82,15 +83,14 @@ std::unique_ptr<KernelObject> MakeGuestObject(u32 address, i32 as_type, X_DISPAT
+   }
+ }
+ 
+-void PublishHostState(ObjectData& live, ObjectData& fresh) {
++void PublishHostState(ObjectData& live, ObjectData& fresh, const X_DISPATCH_HEADER& header) {
+   if (auto* event = std::get_if<EventObject>(&live)) {
+     auto& other = std::get<EventObject>(fresh);
+-    event->manual_reset.store(other.manual_reset.load());
+-    event->event.Replace(other.event.Take());
++    event->Reinit(other.manual_reset.load(), header.signal_state != 0, other.event.Take());
+   } else if (auto* semaphore = std::get_if<SemaphoreObject>(&live)) {
+     auto& other = std::get<SemaphoreObject>(fresh);
+-    semaphore->maximum_count = other.maximum_count;
+-    semaphore->semaphore.Replace(other.semaphore.Take());
++    semaphore->Reinit(std::min(u32{header.signal_state}, other.maximum_count), other.maximum_count,
++                      other.semaphore.Take());
+   } else if (auto* mutant = std::get_if<MutantObject>(&live)) {
+     auto& other = std::get<MutantObject>(fresh);
+     mutant->Adopt(other);
+@@ -109,7 +109,7 @@ void RebuildHostState(KernelObject& object, u32 address, i32 as_type, X_DISPATCH
+   if (!fresh || fresh->GetType() != object.GetType()) {
+     return;
+   }
+-  PublishHostState(object.data, fresh->data);
++  PublishHostState(object.data, fresh->data, *header);
+ }
+ 
+ }  // namespace
+@@ -466,9 +466,22 @@ ObjectPin ObjectTable::ResolveObject(u32 address, i32 as_type) {
+   if (address == 0) {
+     return {};
+   }
+-  std::lock_guard lock(identity_mutex_);
+   void* native_ptr = memory_->TranslateVirtual(address);
+   auto* header = reinterpret_cast<X_DISPATCH_HEADER*>(native_ptr);
++  if (fast::Enabled()) {
++    // An object the address already has, of the header's type and with no initializer to apply:
++    // found under the shared lock alone, without the identity lock every thread queues on.
++    std::shared_lock table_lock(mutex_);
++    if (auto block = block_objects_.find(address); block != block_objects_.end()) {
++      KernelObject* hit = block->second;
++      if ((hit->owns_guest_block && !hit->reinit_pending.load()) ||
++          (!hit->owns_guest_block && TypeMatchesHeader(hit->GetType(), header->type))) {
++        hit->pins.Pin();
++        return ObjectPin(hit, 0);
++      }
++    }
++  }
++  std::lock_guard lock(identity_mutex_);
+   if (as_type == -1) {
+     as_type = header->type;
+   }
+diff --git a/src/kernel/wait_stats.cpp b/src/kernel/wait_stats.cpp
+new file mode 100644
+index 00000000..0bfbdf6f
+--- /dev/null
++++ b/src/kernel/wait_stats.cpp
+@@ -0,0 +1,264 @@
++/**
++ * @file        kernel/wait_stats.cpp
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include "kernel/wait_stats.h"
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <format>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <vector>
++
++#include <rex/kernel/object/kernel_thread.h>
++
++#include "kernel/categories.h"
++#include "kernel/object/fast_sync.h"
++#include "kernel/settings_access.h"
++
++namespace rex::kernel::wait_stats {
++
++namespace {
++
++constexpr size_t kKinds = static_cast<size_t>(Kind::kCount);
++constexpr size_t kPaths = static_cast<size_t>(Path::kCount);
++constexpr size_t kSignals = static_cast<size_t>(Signal::kCount);
++constexpr auto kReportEvery = std::chrono::seconds(5);
++constexpr auto kBlockedAbove = std::chrono::microseconds(5);
++
++constexpr const char* kKindNames[kKinds] = {"cs",    "event", "sem",   "mutant",  "timer", "thread",
++                                            "other", "any",   "multi", "sigwait", "delay", "yield"};
++constexpr const char* kSignalNames[kSignals] = {"event", "sem", "cs"};
++
++struct Counts {
++  std::array<std::array<u64, kPaths>, kKinds> waits{};
++  std::array<u64, kKinds> wait_ns{};
++  std::array<u64, kSignals> signals{};
++  u64 alertable = 0;
++};
++
++/** The counters of one thread. Only the thread writes them, the reporter reads them. */
++struct ThreadCounters {
++  std::array<std::array<std::atomic<u64>, kPaths>, kKinds> waits{};
++  std::array<std::atomic<u64>, kKinds> wait_ns{};
++  std::array<std::atomic<u64>, kSignals> signals{};
++  std::atomic<u64> alertable{0};
++  std::string name;
++  u32 thread_id = 0;
++  Counts last; /**< What the previous report saw, which only the reporter touches. */
++
++  Counts Read() const {
++    Counts out;
++    for (size_t k = 0; k < kKinds; ++k) {
++      for (size_t p = 0; p < kPaths; ++p) {
++        out.waits[k][p] = waits[k][p].load(std::memory_order_relaxed);
++      }
++      out.wait_ns[k] = wait_ns[k].load(std::memory_order_relaxed);
++    }
++    for (size_t s = 0; s < kSignals; ++s) {
++      out.signals[s] = signals[s].load(std::memory_order_relaxed);
++    }
++    out.alertable = alertable.load(std::memory_order_relaxed);
++    return out;
++  }
++};
++
++std::mutex g_threads_mutex;
++std::vector<std::unique_ptr<ThreadCounters>> g_threads;
++std::atomic<i64> g_next_report{0};
++std::chrono::steady_clock::time_point g_last_report;
++thread_local ThreadCounters* t_counters = nullptr;
++thread_local u32 t_suppress = 0;
++thread_local Path t_last_path = Path::kCount;
++
++void Bump(std::atomic<u64>& counter, u64 amount) {
++  counter.store(counter.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
++}
++
++ThreadCounters& Mine() {
++  if (!t_counters) {
++    auto counters = std::make_unique<ThreadCounters>();
++    if (KernelThread::IsInThread()) {
++      KernelThread* thread = KernelThread::GetCallingThread();
++      counters->name = thread->GetName();
++      counters->thread_id = thread->GetThreadID();
++    } else {
++      counters->name = "host";
++    }
++    std::lock_guard lock(g_threads_mutex);
++    t_counters = counters.get();
++    g_threads.push_back(std::move(counters));
++  }
++  return *t_counters;
++}
++
++void Report(std::chrono::steady_clock::time_point now) {
++  std::lock_guard lock(g_threads_mutex);
++  const double seconds = g_last_report.time_since_epoch().count() == 0
++                             ? std::chrono::duration<double>(kReportEvery).count()
++                             : std::chrono::duration<double>(now - g_last_report).count();
++  g_last_report = now;
++  struct Row {
++    double blocked;
++    std::string text;
++  };
++  std::vector<Row> rows;
++  for (auto& thread : g_threads) {
++    const Counts now_counts = thread->Read();
++    Counts d;
++    u64 any = 0;
++    double blocked = 0;
++    for (size_t k = 0; k < kKinds; ++k) {
++      for (size_t p = 0; p < kPaths; ++p) {
++        d.waits[k][p] = now_counts.waits[k][p] - thread->last.waits[k][p];
++        any += d.waits[k][p];
++      }
++      d.wait_ns[k] = now_counts.wait_ns[k] - thread->last.wait_ns[k];
++      blocked += static_cast<double>(d.waits[k][static_cast<size_t>(Path::kSlept)] +
++                                     d.waits[k][static_cast<size_t>(Path::kHostLong)]);
++    }
++    for (size_t s = 0; s < kSignals; ++s) {
++      d.signals[s] = now_counts.signals[s] - thread->last.signals[s];
++      any += d.signals[s];
++    }
++    d.alertable = now_counts.alertable - thread->last.alertable;
++    thread->last = now_counts;
++    if (!any) {
++      continue;
++    }
++    std::string text = std::format("'{}' ({:X}):", thread->name, thread->thread_id);
++    u64 total_ns = 0;
++    for (size_t k = 0; k < kKinds; ++k) {
++      const auto& w = d.waits[k];
++      const u64 n = w[0] + w[1] + w[2] + w[3] + w[4];
++      total_ns += d.wait_ns[k];
++      if (!n) {
++        continue;
++      }
++      // Per second: all, then user space immediate / spun / slept, then host quick / long.
++      text += std::format(" {} {:.0f} (i{:.0f} s{:.0f} z{:.0f} h{:.0f}/{:.0f})", kKindNames[k],
++                          n / seconds, w[0] / seconds, w[1] / seconds, w[2] / seconds,
++                          w[3] / seconds, w[4] / seconds);
++    }
++    for (size_t s = 0; s < kSignals; ++s) {
++      if (d.signals[s]) {
++        text += std::format(" | {}+ {:.0f}", kSignalNames[s], d.signals[s] / seconds);
++      }
++    }
++    if (d.alertable) {
++      text += std::format(" | alertable {:.0f}", d.alertable / seconds);
++    }
++    text += std::format(" | in waits {:.1f} ms/s", total_ns / 1e6 / seconds);
++    rows.push_back({blocked / seconds, std::move(text)});
++  }
++  std::sort(rows.begin(), rows.end(),
++            [](const Row& a, const Row& b) { return a.blocked > b.blocked; });
++  REXKRNL_INFO(
++      "wait stats over {:.1f} s, per second (i immediate, s spun, z slept, h host quick/long); "
++      "fast waits {}, spin {} us, "
++      "{} objects moved to the host",
++      seconds, fast::Enabled() ? "on" : "off", GetRuntimeSettings().wait_spin_us.Get(),
++      fast::HostMoves());
++  for (size_t i = 0; i < rows.size() && i < 16; ++i) {
++    REXKRNL_INFO("  wait stats {:.0f} blocked/s {}", rows[i].blocked, rows[i].text);
++  }
++}
++
++void MaybeReport() {
++  const auto now = std::chrono::steady_clock::now();
++  const i64 now_ns = now.time_since_epoch().count();
++  i64 next = g_next_report.load(std::memory_order_relaxed);
++  if (now_ns < next) {
++    return;
++  }
++  const i64 after =
++      now_ns +
++      std::chrono::duration_cast<std::chrono::steady_clock::duration>(kReportEvery).count();
++  if (!g_next_report.compare_exchange_strong(next, after, std::memory_order_relaxed)) {
++    return;
++  }
++  if (next == 0) {
++    // The first call only starts the clock.
++    std::lock_guard lock(g_threads_mutex);
++    g_last_report = now;
++    for (auto& thread : g_threads) {
++      thread->last = thread->Read();
++    }
++    return;
++  }
++  Report(now);
++}
++
++}  // namespace
++
++bool Enabled() {
++  return GetRuntimeSettings().wait_stats.Get();
++}
++
++void NotePath(Path path) {
++  t_last_path = path;
++}
++
++Path TakePath() {
++  const Path path = t_last_path;
++  t_last_path = Path::kCount;
++  return path;
++}
++
++void RecordWait(Kind kind, std::chrono::nanoseconds took, Path path, bool alertable) {
++  if (path == Path::kCount) {
++    path = took > kBlockedAbove ? Path::kHostLong : Path::kHostQuick;
++  }
++  t_last_path = path;
++  if (t_suppress) {
++    return;
++  }
++  ThreadCounters& mine = Mine();
++  const auto k = static_cast<size_t>(kind);
++  Bump(mine.waits[k][static_cast<size_t>(path)], 1);
++  Bump(mine.wait_ns[k], static_cast<u64>(std::max<i64>(took.count(), 0)));
++  if (alertable) {
++    Bump(mine.alertable, 1);
++  }
++  MaybeReport();
++}
++
++void RecordSignal(Signal signal) {
++  if (t_suppress) {
++    return;
++  }
++  Bump(Mine().signals[static_cast<size_t>(signal)], 1);
++  MaybeReport();
++}
++
++Timer::Timer(Kind kind, bool alertable) : kind_(kind), alertable_(alertable), on_(Enabled()) {
++  if (on_) {
++    start_ = std::chrono::steady_clock::now();
++  }
++}
++
++Timer::~Timer() {
++  if (on_) {
++    RecordWait(kind_, std::chrono::steady_clock::now() - start_, path_, alertable_);
++  }
++}
++
++Suppress::Suppress() {
++  ++t_suppress;
++}
++
++Suppress::~Suppress() {
++  --t_suppress;
++}
++
++bool Suppress::Active() {
++  return t_suppress != 0;
++}
++
++}  // namespace rex::kernel::wait_stats
+diff --git a/src/kernel/wait_stats.h b/src/kernel/wait_stats.h
+new file mode 100644
+index 00000000..685434ad
+--- /dev/null
++++ b/src/kernel/wait_stats.h
+@@ -0,0 +1,107 @@
++/**
++ * @file        kernel/wait_stats.h
++ * @brief       Counts of guest waits per kind and per thread, logged every few seconds
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#pragma once
++
++#include <chrono>
++
++#include <rex/types.h>
++
++namespace rex::kernel::wait_stats {
++
++/** What a guest thread waited on. */
++enum class Kind : u8 {
++  kCriticalSection, /**< RtlEnterCriticalSection that found the section owned. */
++  kEvent,
++  kSemaphore,
++  kMutant,
++  kTimer,
++  kThread,
++  kOther,      /**< Any other single object. */
++  kMultiAny,   /**< A wait on any of several events and semaphores. */
++  kMultiOther, /**< A wait on all of several objects, or on any with another type among them. */
++  kSignalWait, /**< NtSignalAndWaitForSingleObjectEx. */
++  kDelay,      /**< KeDelayExecutionThread with a nonzero interval. */
++  kYield,      /**< KeDelayExecutionThread with a zero interval, and NtYieldExecution. */
++  kCount,
++};
++
++/** What a guest thread signaled. */
++enum class Signal : u8 {
++  kEvent,           /**< Set or pulse of an event. */
++  kSemaphore,       /**< Release of a semaphore. */
++  kCriticalSection, /**< RtlLeaveCriticalSection that handed the section to a waiter. */
++  kCount,
++};
++
++/** How a wait ended. */
++enum class Path : u8 {
++  kImmediate, /**< Satisfied by the first check, in user space. */
++  kSpun,      /**< Satisfied while the host spun. */
++  kSlept,     /**< Satisfied after a sleep on the thread's park word. */
++  kHostQuick, /**< A wait on a host primitive that took 5 us or less. */
++  kHostLong,  /**< A wait on a host primitive that took longer: it slept. */
++  kCount,
++};
++
++/** True when runtime.wait_stats is on. */
++bool Enabled();
++
++/**
++ * Records one wait of the calling thread.
++ *
++ * @param took The time the wait took.
++ * @param path How it ended, kBlocked when the caller cannot tell.
++ */
++void RecordWait(Kind kind, std::chrono::nanoseconds took, Path path, bool alertable);
++
++/** Notes how the calling thread's latest wait ended, for an outer wait that records it. */
++void NotePath(Path path);
++
++/** Returns how the calling thread's latest wait ended, then forgets it. kCount for none. */
++Path TakePath();
++
++/** Records one signal of the calling thread. */
++void RecordSignal(Signal signal);
++
++/** Times a wait from its construction to its destruction, when the counts are on. */
++class Timer {
++ public:
++  explicit Timer(Kind kind, bool alertable = false);
++  ~Timer();
++
++  Timer(const Timer&) = delete;
++  Timer& operator=(const Timer&) = delete;
++
++  /** Sets how the wait ended. Without a call it counts as a host wait, quick or long by its time.
++   */
++  void SetPath(Path path) { path_ = path; }
++  void SetKind(Kind kind) { kind_ = kind; }
++
++ private:
++  std::chrono::steady_clock::time_point start_;
++  Kind kind_;
++  Path path_ = Path::kCount;
++  bool alertable_;
++  bool on_;
++};
++
++/** While alive, waits of the calling thread are not recorded: an outer wait records them. */
++class Suppress {
++ public:
++  Suppress();
++  ~Suppress();
++
++  Suppress(const Suppress&) = delete;
++  Suppress& operator=(const Suppress&) = delete;
++
++  /** True while a Suppress of the calling thread is alive. */
++  static bool Active();
++};
++
++}  // namespace rex::kernel::wait_stats
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp b/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
+index fb6d408f..3128614b 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
+@@ -17,6 +17,8 @@
+ #include <rex/chrono.h>
+ #include <rex/kernel/xboxkrnl.h>
+ #include <rex/logging/log_category.h>
++#include "kernel/object/fast_sync.h"
++#include "kernel/wait_stats.h"
+ #include "kernel/categories.h"
+ #include <rex/ppc/hook.h>
+ #include <rex/memory/mapped_ptr.h>
+@@ -445,16 +447,50 @@ void RtlEnterCriticalSection_entry(GuestPtrT<X_RTL_CRITICAL_SECTION> cs) {
+     return;
+   }
+ 
+-  while (spin_count--) {
+-    if (TryAcquireLockCount(*cs)) {
+-      cs->owning_thread = cur_thread;
+-      cs->recursion_count = 1;
+-      return;
++  const bool fast_waits = fast::Enabled();
++  if (fast_waits && TryAcquireLockCount(*cs)) {
++    cs->owning_thread = cur_thread;
++    cs->recursion_count = 1;
++    return;
++  }
++
++  wait_stats::Timer stats(wait_stats::Kind::kCriticalSection);
++  if (fast_waits) {
++    // A few microseconds by the clock, whatever the title's spin count: the owner usually leaves
++    // within them, and a sleep costs a system call and a wake-up on each side. The pause lets the
++    // owner run on a sibling hardware thread.
++    if (const u64 spin = fast::SpinTicks()) {
++      const u64 end = fast::Ticks() + spin;
++      do {
++        for (int i = 0; i < 4; ++i) {
++          fast::Pause();
++        }
++        if (LockCount(*cs).load(std::memory_order_relaxed) == -1 && TryAcquireLockCount(*cs)) {
++          cs->owning_thread = cur_thread;
++          cs->recursion_count = 1;
++          stats.SetPath(wait_stats::Path::kSpun);
++          return;
++        }
++      } while (fast::Ticks() < end);
++    }
++  } else {
++    while (spin_count--) {
++      if (TryAcquireLockCount(*cs)) {
++        cs->owning_thread = cur_thread;
++        cs->recursion_count = 1;
++        stats.SetPath(wait_stats::Path::kSpun);
++        return;
++      }
+     }
+   }
+ 
+   if (++LockCount(*cs) != 0) {
++    // The section's event records how the wait ended.
++    wait_stats::Suppress inner;
+     KeWaitForSingleObject(cs.GetGuestAddress(), 8, 0, 0, nullptr);
++    stats.SetPath(wait_stats::TakePath());
++  } else {
++    stats.SetPath(wait_stats::Path::kSpun);
+   }
+ 
+   REX_ASSERT(cs->owning_thread == 0);
+@@ -491,6 +527,10 @@ void RtlLeaveCriticalSection_entry(GuestPtrT<X_RTL_CRITICAL_SECTION> cs) {
+ 
+   cs->owning_thread = 0;
+   if (--LockCount(*cs) != -1) {
++    if (wait_stats::Enabled()) {
++      wait_stats::RecordSignal(wait_stats::Signal::kCriticalSection);
++    }
++    wait_stats::Suppress inner;
+     KeSetEvent(cs.GetGuestAddress(), 1, 0);
+   }
+ }
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index f131dd6c..fed15ae1 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -45,6 +45,7 @@
+ #include "kernel/object_lookup.h"
+ #include "kernel/title_state.h"
+ #include "kernel/kernel.h"
++#include "kernel/wait_stats.h"
+ 
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::kernel;
+@@ -349,7 +350,10 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, MappedU64 in
+     return X_STATUS_USER_APC;
+   }
+ 
+-  X_STATUS result = thread->Delay(processor_mode, alertable, *interval_ptr);
++  const u64 interval = *interval_ptr;
++  wait_stats::Timer stats(interval ? wait_stats::Kind::kDelay : wait_stats::Kind::kYield,
++                          alertable != 0);
++  X_STATUS result = thread->Delay(processor_mode, alertable, interval);
+ 
+   if (alertable && result == X_STATUS_USER_APC) {
+     thread->DeliverAPCs();
+@@ -361,6 +365,7 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, MappedU64 in
+ u32 NtYieldExecution_entry() {
+   KernelThread::CheckStop();
+   KernelThread::WriteKernelTime();
++  wait_stats::Timer stats(wait_stats::Kind::kYield);
+   rex::platform::MaybeYield();
+   return X_STATUS_SUCCESS;
+ }
+@@ -1260,6 +1265,7 @@ void NtQueueApcThread_entry(u32 thread_handle, MappedVoid apc_routine,
+   }
+   // The callback is a wakeup hint and alertable wait handling delivers the APCs.
+   thread->GetThread()->QueueUserCallback([]() {});
++  thread->InterruptFastWait();
+ }
+ 
+ void KeInitializeApc_entry(GuestPtrT<XAPC> apc, MappedVoid thread_ptr, MappedVoid kernel_routine,
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index aa495918..e50d3b08 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -57,6 +57,7 @@ add_executable(
+   kernel/lock_order_test.cpp
+   kernel/pinned_wait_test.cpp
+   kernel/sync_test.cpp
++  kernel/fast_wait_test.cpp
+   kernel/enumerate_test.cpp
+   kernel/handles_test.cpp
+   kernel/format_test.cpp
+diff --git a/tests/unit/kernel/fast_wait_test.cpp b/tests/unit/kernel/fast_wait_test.cpp
+new file mode 100644
+index 00000000..2528a1db
+--- /dev/null
++++ b/tests/unit/kernel/fast_wait_test.cpp
+@@ -0,0 +1,312 @@
++/**
++ * @file        tests/unit/kernel/fast_wait_test.cpp
++ * @brief       Events, semaphores and critical sections kept in user space (runtime.fast_waits)
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include "rex_test.h"
++
++#include <atomic>
++#include <chrono>
++#include <memory>
++#include <thread>
++#include <vector>
++
++#include <rex/kernel/object/kernel_thread.h>
++#include <rex/kernel/title_runtime.h>
++#include <rex/kernel/thread_registry.h>
++#include <rex/kernel/types/status.h>
++
++#include "kernel/kernel_fixture.h"
++
++using rex::test::Caller;
++using rex::test::Join;
++using rex::test::KernelFixture;
++
++namespace {
++
++constexpr u32 kTimeout = rex::kernel::X_STATUS_TIMEOUT;
++constexpr i64 kForever = 0;
++constexpr auto kSettle = std::chrono::milliseconds(100);
++
++u32 Create(Caller& c, const char* name, u64 first, u64 second) {
++  const u32 handle_ptr = c.Alloc(4);
++  CHECKED_ELSE(c.Kernel(name, {handle_ptr, 0, first, second}) == 0) {
++    FAIL_CHECK("the check above failed");
++    return 0;
++  }
++  return c.Load32(handle_ptr);
++}
++
++u32 Wait(Caller& c, u32 handle, i64 timeout) {
++  return c.Kernel("NtWaitForSingleObjectEx", {handle, 1, 0, timeout ? c.AllocQuad(timeout) : 0});
++}
++
++/** Starts threads that each wait once on the handle and count their return. */
++std::vector<u32> Waiters(Caller& c, u32 handle, int count,
++                         std::shared_ptr<std::atomic<int>> woken) {
++  std::vector<u32> threads;
++  for (int i = 0; i < count; ++i) {
++    threads.push_back(c.Spawn([handle, woken](Caller& t) {
++      if (Wait(t, handle, kForever) == 0) {
++        woken->fetch_add(1);
++      }
++    }));
++  }
++  std::this_thread::sleep_for(kSettle);
++  return threads;
++}
++
++}  // namespace
++
++REX_TEST_CASE("fast waits: a release hands its counts to the queued threads before a new wait",
++              "[kernel][semaphores][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 sem = Create(c, "NtCreateSemaphore", 0, 10);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, sem, 3, woken);
++    const u32 previous = c.Alloc(4);
++    CHECK(c.Kernel("NtReleaseSemaphore", {sem, 2, previous}) == 0);
++    CHECK(c.Load32(previous) == 0);
++    // Both counts went to queued threads: none is left for a wait that starts now.
++    CHECK(Wait(c, sem, -1) == kTimeout);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 2);
++    CHECK(c.Kernel("NtReleaseSemaphore", {sem, 1, previous}) == 0);
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(woken->load() == 3);
++    CHECK(Wait(c, sem, -1) == kTimeout);
++    c.Kernel("NtClose", {sem});
++  });
++}
++
++REX_TEST_CASE("fast waits: a manual reset event set then cleared releases every queued thread",
++              "[kernel][events][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 event = Create(c, "NtCreateEvent", 0, 0);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, event, 3, woken);
++    CHECK(c.Kernel("NtSetEvent", {event, 0}) == 0);
++    CHECK(c.Kernel("NtClearEvent", {event}) == 0);
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(woken->load() == 3);
++    CHECK(Wait(c, event, -1) == kTimeout);
++    c.Kernel("NtClose", {event});
++  });
++}
++
++REX_TEST_CASE("fast waits: an auto reset event set then cleared releases one queued thread",
++              "[kernel][events][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 event = Create(c, "NtCreateEvent", 1, 0);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, event, 2, woken);
++    CHECK(c.Kernel("NtSetEvent", {event, 0}) == 0);
++    CHECK(c.Kernel("NtClearEvent", {event}) == 0);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 1);
++    CHECK(c.Kernel("NtSetEvent", {event, 0}) == 0);
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(woken->load() == 2);
++    CHECK(Wait(c, event, -1) == kTimeout);
++    c.Kernel("NtClose", {event});
++  });
++}
++
++REX_TEST_CASE("fast waits: a pulse releases the queued threads and leaves the event clear",
++              "[kernel][events][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 event = Create(c, "NtCreateEvent", 0, 0);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, event, 2, woken);
++    CHECK(c.Kernel("NtPulseEvent", {event, 0}) == 0);
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(woken->load() == 2);
++    CHECK(Wait(c, event, -1) == kTimeout);
++    c.Kernel("NtClose", {event});
++  });
++}
++
++REX_TEST_CASE("fast waits: a wait on several objects takes over an event a thread is queued on",
++              "[kernel][events][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 event = Create(c, "NtCreateEvent", 1, 0);
++    const u32 other = Create(c, "NtCreateEvent", 1, 0);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto single = Waiters(c, event, 1, woken);
++    const u32 handles = c.Alloc(8);
++    c.Store32(handles, event);
++    c.Store32(handles + 4, other);
++    const u32 multiple = c.Spawn([handles, woken](Caller& t) {
++      if (t.Kernel("NtWaitForMultipleObjectsEx", {2, handles, 1, 1, 0, 0}) == 0) {
++        woken->fetch_add(1);
++      }
++    });
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 0);
++    // An auto reset event: each set releases one of the two threads.
++    CHECK(c.Kernel("NtSetEvent", {event, 0}) == 0);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 1);
++    CHECK(c.Kernel("NtSetEvent", {event, 0}) == 0);
++    Join(c, single[0]);
++    Join(c, multiple);
++    CHECK(woken->load() == 2);
++    CHECK(Wait(c, event, -1) == kTimeout);
++    c.Kernel("NtClose", {event});
++    c.Kernel("NtClose", {other});
++  });
++}
++
++REX_TEST_CASE("fast waits: a suspended thread leaves its wait and takes no count until resumed",
++              "[kernel][semaphores][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 sem = Create(c, "NtCreateSemaphore", 0, 10);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, sem, 1, woken);
++    CHECK(c.Kernel("NtSuspendThread", {threads[0], 0}) == 0);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(c.Kernel("NtReleaseSemaphore", {sem, 1, 0}) == 0);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 0);
++    // The suspended thread is not waiting: the count is there for this thread.
++    CHECK(Wait(c, sem, -1) == 0);
++    CHECK(c.Kernel("NtResumeThread", {threads[0], 0}) == 0);
++    std::this_thread::sleep_for(kSettle);
++    CHECK(woken->load() == 0);
++    CHECK(c.Kernel("NtReleaseSemaphore", {sem, 1, 0}) == 0);
++    Join(c, threads[0]);
++    CHECK(woken->load() == 1);
++    c.Kernel("NtClose", {sem});
++  });
++}
++
++REX_TEST_CASE("fast waits: a stop request ends a wait that has no timeout",
++              "[kernel][semaphores][fast][shutdown]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 sem = Create(c, "NtCreateSemaphore", 0, 10);
++    auto woken = std::make_shared<std::atomic<int>>(0);
++    const auto threads = Waiters(c, sem, 1, woken);
++    auto pin = c.GetRuntime().GetThreadRegistry().FindByHandle(threads[0]);
++    REQUIRE(pin);
++    pin->RequestStop();
++    Join(c, threads[0]);
++    CHECK(woken->load() == 0);
++    c.Kernel("NtClose", {sem});
++  });
++}
++
++REX_TEST_CASE("fast waits: a timeout ends a wait on an object that stays unsignaled",
++              "[kernel][semaphores][fast]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    const u32 sem = Create(c, "NtCreateSemaphore", 0, 10);
++    const auto start = std::chrono::steady_clock::now();
++    CHECK(Wait(c, sem, -200000) == kTimeout);
++    CHECK(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(15));
++    c.Kernel("NtClose", {sem});
++  });
++}
++
++REX_TEST_CASE("fast waits: every count of a busy semaphore reaches one consumer",
++              "[kernel][semaphores][fast][stress]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    constexpr int kConsumers = 3;
++    constexpr int kEach = 20000;
++    const u32 sem = Create(c, "NtCreateSemaphore", 0, 0x7FFFFFFF);
++    std::vector<u32> threads;
++    for (int i = 0; i < kConsumers; ++i) {
++      threads.push_back(c.Spawn([sem](Caller& t) {
++        for (int n = 0; n < kEach; ++n) {
++          REQUIRE(Wait(t, sem, kForever) == 0);
++        }
++      }));
++    }
++    for (int n = 0; n < kConsumers * kEach; ++n) {
++      CHECK(c.Kernel("NtReleaseSemaphore", {sem, 1, 0}) == 0);
++      if (n % 7 == 0) {
++        std::this_thread::yield();
++      }
++    }
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(Wait(c, sem, -1) == kTimeout);
++    c.Kernel("NtClose", {sem});
++  });
++}
++
++REX_TEST_CASE("fast waits: two threads hand a turn back and forth through two events",
++              "[kernel][events][fast][stress]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    constexpr int kTurns = 20000;
++    const u32 ping = Create(c, "NtCreateEvent", 1, 0);
++    const u32 pong = Create(c, "NtCreateEvent", 1, 0);
++    const u32 thread = c.Spawn([ping, pong](Caller& t) {
++      for (int n = 0; n < kTurns; ++n) {
++        REQUIRE(Wait(t, ping, kForever) == 0);
++        t.Kernel("NtSetEvent", {pong, 0});
++      }
++    });
++    for (int n = 0; n < kTurns; ++n) {
++      c.Kernel("NtSetEvent", {ping, 0});
++      REQUIRE(Wait(c, pong, -50000000) == 0);
++    }
++    Join(c, thread);
++    c.Kernel("NtClose", {ping});
++    c.Kernel("NtClose", {pong});
++  });
++}
++
++REX_TEST_CASE("fast waits: a contended critical section keeps every increment",
++              "[kernel][interlocked][fast][stress]") {
++  KernelFixture fixture;
++  fixture.RunOnGuestThread([](Caller& c) {
++    constexpr int kThreads = 4;
++    constexpr int kEach = 20000;
++    const u32 section = c.Alloc(28);
++    const u32 counter = c.Alloc(4);
++    c.Store32(counter, 0);
++    c.Kernel("RtlInitializeCriticalSection", {section});
++    std::vector<u32> threads;
++    for (int i = 0; i < kThreads; ++i) {
++      threads.push_back(c.Spawn([section, counter](Caller& t) {
++        for (int n = 0; n < kEach; ++n) {
++          t.Kernel("RtlEnterCriticalSection", {section});
++          t.Store32(counter, t.Load32(counter) + 1);
++          if (n % 64 == 0) {
++            // Held for 50 us now and then, longer than a spin, so the others queue and sleep too.
++            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(50);
++            while (std::chrono::steady_clock::now() < until) {}
++          }
++          t.Kernel("RtlLeaveCriticalSection", {section});
++        }
++      }));
++    }
++    for (u32 thread : threads) {
++      Join(c, thread);
++    }
++    CHECK(c.Load32(counter) == static_cast<u32>(kThreads * kEach));
++    CHECK(c.Kernel("RtlTryEnterCriticalSection", {section}) == 1);
++    c.Kernel("RtlLeaveCriticalSection", {section});
++  });
++}
+-- 
+2.55.0.windows.5
+
