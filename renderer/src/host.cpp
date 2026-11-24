@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -11,8 +12,10 @@
 #include <rex/app/app.h>
 #include <rex/apu/audio_system.h>
 #include <rex/cvar.h>
+#include <rex/filesystem/file_system.h>
 #include <rex/kernel/heap.h>
 #include <rex/kernel/thread_state.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/logging.h>
 #include <rex/logging/log_category.h>
 #include <rex/platform/native_window.h>
@@ -32,6 +35,9 @@ REXCVAR_DEFINE_STRING(bind_renderer_switch, "F9", "ReXNative",
 REXCVAR_DEFINE_STRING(bind_upscaler, "F7", "ReXNative", "Key that turns the upscaler on and off");
 REXCVAR_DEFINE_STRING(bind_upscaler_debug, "F8", "ReXNative",
                       "Key that shows the upscaler's inputs");
+REXCVAR_DEFINE_BOOL(rexnative_cache_drive, true, "ReXNative",
+                    "Give the title a cache: drive, the console's cache partition, in a folder "
+                    "<cache_root>\\cache-drive (false: no cache: drive, as ReXGlue has none)");
 REXCVAR_DECLARE(bool, rexnative);
 
 namespace rexnative::host {
@@ -158,6 +164,43 @@ void Attach(rex::app::App& app) {
   }
   if (ui->IsHeadless()) return;
   s.listening = ui->AddEventListener(s);
+}
+
+// The console's hard disk has a cache partition that titles mount as cache: (XMountUtilityDrive)
+// and keep streamed data in; Xenia gives every title one in a host folder. ReXGlue's
+// \Device\Harddisk0 only answers the utility drive's probes, so no cache: link was ever made
+// and each open there failed: Forza Horizon then read a null pointer after its replay_stream
+// failed to open (Steam Deck, after a race's ghost_stream_N files had failed too).
+void TitleLaunch(rex::kernel::TitleRuntime& title) {
+  if (!REXCVAR_GET(rexnative_cache_drive)) return;
+  rex::filesystem::IFileSystem& fs = title.GetFileSystem();
+  if (fs.FindLink("cache:")) return;
+  std::filesystem::path dir = settings::Path("app.cache_root");
+  if (dir.empty()) {
+    dir = settings::Path("app.user_root");
+    if (dir.empty()) return;
+    dir /= "cache";
+  }
+  dir /= "cache-drive";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (ec) {
+    REXLOG_WARN("ReXNative: no cache: drive, {} could not be made ({})", dir.string(),
+                ec.message());
+    return;
+  }
+  constexpr std::string_view kDevice = "\\Device\\RexNativeCache";
+  if (auto mounted = fs.Mount({std::string(kDevice), rex::filesystem::ProviderType::kHostDirectory,
+                               dir, rex::filesystem::MountFlags::kWritable, {}});
+      !mounted) {
+    REXLOG_WARN("ReXNative: no cache: drive, {}", mounted.error().message);
+    return;
+  }
+  if (auto linked = fs.Link("cache:", kDevice); !linked) {
+    REXLOG_WARN("ReXNative: no cache: drive, {}", linked.error().message);
+    return;
+  }
+  REXLOG_INFO("ReXNative: cache: drive in {} (rexnative.cache_drive)", dir.string());
 }
 
 void Detach() {

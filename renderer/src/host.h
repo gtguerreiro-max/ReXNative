@@ -3,7 +3,8 @@
 // and mouse input, guest memory, the XAM dialogs).
 //
 // The game's app (rexnative project writes it) calls Configure from OnConfigure, before the
-// command line applies, and Attach from OnInit, once the window and the modules are up.
+// command line applies, Attach from OnInit, once the window and the modules are up, and
+// TitleLaunch from OnTitleLaunch.
 #pragma once
 
 #include <cstdint>
@@ -17,6 +18,7 @@ class App;
 }
 namespace rex::kernel {
 class GuestAddressSpace;
+class TitleRuntime;
 }
 namespace rex::ui {
 class IUISystem;
@@ -32,6 +34,9 @@ void Configure();
 void Attach(rex::app::App& app);
 // OnShutdown.
 void Detach();
+// OnTitleLaunch, after the SDK's standard mounts and before any guest code: the title's cache:
+// drive (rexnative.cache_drive).
+void TitleLaunch(rex::kernel::TitleRuntime& title);
 
 rex::ui::IUISystem* UI();
 // The game window's HWND, null before it exists.

@@ -223,6 +223,7 @@ rex::Result<void> {cls}::OnTitleLaunch(rex::kernel::TitleRuntime& title) {{
     }};
 {module_dumps}    dump(uint32_t(REX_IMAGE_BASE), uint32_t(REX_IMAGE_SIZE), path);
   }}
+  rexnative::host::TitleLaunch(title);
   return TitleApp::OnTitleLaunch(title);
 }}
 
