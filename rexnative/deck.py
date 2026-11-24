@@ -174,14 +174,16 @@ class Deck:
         """(what the Deck has, [(local, relative, size)] to send): those the Deck has (same size
         and time) are left out, and what an older install left there that would be taken for the
         game's goes (another executable, which play.sh could start, or its deck settings; an
-        older title update's files, mounted as update:)."""
+        older title update's files, mounted as update:; a patch file FPS Boost no longer
+        wants, which the game would apply over code built without it)."""
         have = self.files(dest)
         wanted = {rel for _, rel in items}
         from .project import COMMON_DLLS
         stale = sorted(rel for rel in have if rel not in wanted and (
             ('/' not in rel and (rel.lower().endswith(('.exe', '-deck.toml')) or
                                  rel.lower() in COMMON_DLLS)) or
-            rel.startswith('title-update/')))
+            rel.startswith('title-update/') or
+            (rel.startswith('game/') and rel.lower().endswith('.patch.toml'))))
         if stale:
             log('  %d files of an older install removed' % len(stale))
             for i in range(0, len(stale), 200):

@@ -835,13 +835,21 @@ def _made_by(done, rexglue):
 
 
 def codegen(work, name, rexglue, max_rounds, log):
+    from . import fps_boost
     gen = os.path.join(work, 'generated', 'default')
     done = os.path.join(work, 'codegen.ok')
+    # FPS Boost (fps_boost.py): the patch file beside the executable as the game's choice says,
+    # before codegen loads the executable with it.
+    try:
+        patches = fps_boost.sync(work, log)
+    except Exception as e:  # never a reason for a build to fail
+        log('  FPS Boost: %s' % e)
+        patches = fps_boost.fingerprint(work)
     # Reused only when made under this name (prepare's older runs used names with '_'), by this
-    # codegen tool.
+    # codegen tool, over the same patch file.
     if (os.path.exists(done) and os.path.isdir(gen) and _made_by(done, rexglue) and
             os.path.exists(os.path.join(gen, '%s_init.h' % name)) and
-            not _options_differ(work, gen)):
+            not _options_differ(work, gen) and fps_boost.built_with(work) == patches):
         again = (options(work)['non_volatile_as_local'] and not _shares_scanned(work, gen) and
                  _add_shares(work, _scan_shares(work, gen), log, 0))
         if not again:
@@ -924,7 +932,8 @@ def codegen(work, name, rexglue, max_rounds, log):
                 continue
             drop_outside_functions(work, text, log)
             _shares_scanned(work, gen, True)
-            open(done, 'w').write('round %d\nrexglue %s\n' % (rnd, _tool_id(rexglue)))
+            open(done, 'w').write('round %d\nrexglue %s\npatches %s\n' % (
+                rnd, _tool_id(rexglue), patches))
             log('  codegen: done (round %d, %.0f s)' % (rnd, time.time() - t0))
             return {'rounds': rnd + 1, 'hints': len(hints)}
         pairs = [(int(t, 16), int(s, 16)) for t, s in re.findall(

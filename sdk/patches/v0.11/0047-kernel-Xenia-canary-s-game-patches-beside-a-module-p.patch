@@ -1,0 +1,451 @@
+From 5388ab67724394ffb2db4a269a1c4e96d5d22102 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 09:30:11 +0000
+Subject: [PATCH] kernel: Xenia canary's game patches beside a module
+ (<path>.patch.toml)
+
+Once a XEX module is loaded (its title update applied), a patch file beside it in Xenia canary's
+format (its game-patches repository) is applied to the module's memory: the patches whose
+is_enabled is true, when the file's title id is the module's and one of its hashes is the module
+hash as Xenia canary computes it (UserModule::CalculateHash: XXH3-64 over the code pages, the
+import thunks rewritten `sc 2; blr; nop; nop`). Codegen and the title load the module the same
+way, so a code patch is in the recompiled code and a data patch in the title's memory.
+
+Every module load logs its title and module hash. Write types and values as Xenia canary's
+PatchDB reads them: be8, be16, be32, be64, f32, f64, string, u16string and array.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/kernel/CMakeLists.txt   |   1 +
+ src/kernel/game_patches.cpp | 337 ++++++++++++++++++++++++++++++++++++
+ src/kernel/game_patches.h   |  34 ++++
+ src/kernel/user_module.cpp  |   9 +-
+ 4 files changed, 380 insertions(+), 1 deletion(-)
+ create mode 100644 src/kernel/game_patches.cpp
+ create mode 100644 src/kernel/game_patches.h
+
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 4388fd48..2af78a5a 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -107,6 +107,7 @@ set(REXKERNEL_SOURCES
+     module_registry.cpp
+     kernel_module.cpp
+     user_module.cpp
++    game_patches.cpp
+     memory.cpp
+     guest_memory.cpp
+     best_fit_range_allocator.cpp
+diff --git a/src/kernel/game_patches.cpp b/src/kernel/game_patches.cpp
+new file mode 100644
+index 00000000..c7223b71
+--- /dev/null
++++ b/src/kernel/game_patches.cpp
+@@ -0,0 +1,337 @@
++/**
++ * @file        kernel/game_patches.cpp
++ * @brief       Xenia canary's game patches for a loaded XEX module (see game_patches.h).
++ *
++ * The module hash follows Xenia canary's UserModule::CalculateHash, the file format and the
++ * values its PatchDB and Patcher (src/xenia/patcher), so its game-patches repository's files
++ * apply here as they do there.
++ */
++
++#include "kernel/game_patches.h"
++
++#include <algorithm>
++#include <charconv>
++#include <cstring>
++#include <format>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include <toml++/toml.hpp>
++#include <xxhash.h>
++
++#include <rex/filesystem/file_open.h>
++#include <rex/filesystem/xex.h>
++#include <rex/kernel/heap.h>
++#include <rex/kernel/module.h>
++#include <rex/kernel/object/module_object.h>
++#include <rex/kernel/title_runtime.h>
++#include <rex/kernel/types/xex.h>
++#include <rex/logging/log_category.h>
++#include <rex/string/text.h>
++#include "kernel/title_state.h"
++
++namespace rex::kernel {
++
++namespace {
++
++void StoreBE32(u8* p, u32 value) {
++  p[0] = static_cast<u8>(value >> 24);
++  p[1] = static_cast<u8>(value >> 16);
++  p[2] = static_cast<u8>(value >> 8);
++  p[3] = static_cast<u8>(value);
++}
++
++template <typename T>
++std::vector<u8> BigEndianBytes(T value) {
++  std::vector<u8> bytes(sizeof(T));
++  std::memcpy(bytes.data(), &value, sizeof(T));
++  std::reverse(bytes.begin(), bytes.end());  // host little endian -> guest big endian
++  return bytes;
++}
++
++std::optional<u64> ParseHex(std::string_view text) {
++  if (text.starts_with("0x") || text.starts_with("0X")) {
++    text.remove_prefix(2);
++  }
++  if (text.empty() || text.size() > 16) {
++    return std::nullopt;
++  }
++  u64 value = 0;
++  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, 16);
++  if (error != std::errc() || end != text.data() + text.size()) {
++    return std::nullopt;
++  }
++  return value;
++}
++
++// Xenia canary's string_util::hex_string_to_array: two digits a byte from the left, a last lone
++// digit a byte of its own.
++bool HexBytes(std::string_view text, std::vector<u8>& out) {
++  if (text.starts_with("0x")) {
++    text.remove_prefix(2);
++  }
++  out.clear();
++  while (!text.empty()) {
++    const size_t n = text.size() > 1 ? 2 : 1;
++    u8 byte = 0;
++    const auto [end, error] = std::from_chars(text.data(), text.data() + n, byte, 16);
++    if (error != std::errc() || end != text.data() + n) {
++      out.clear();
++      return false;
++    }
++    out.push_back(byte);
++    text.remove_prefix(n);
++  }
++  return true;
++}
++
++struct PatchWrite {
++  u32 address = 0;
++  std::vector<u8> bytes;
++};
++
++// One [[patch]] table's writes, as Xenia canary's PatchDB::ReadPatchData reads them. False (and
++// the reason) when an entry is malformed: the patch is then left out whole.
++bool ReadWrites(const toml::table& patch, std::vector<PatchWrite>& out, std::string& reason) {
++  static constexpr std::string_view kTypes[] = {"be8", "be16",      "be32",  "be64", "f32",
++                                                "f64", "string", "u16string", "array"};
++  for (const std::string_view type : kTypes) {
++    const auto* entries = patch.get_as<toml::array>(type);
++    if (!entries) {
++      continue;
++    }
++    for (const auto& node : *entries) {
++      const auto* entry = node.as_table();
++      if (!entry) {
++        continue;
++      }
++      const auto address = entry->get_as<int64_t>("address");
++      const toml::node* value = entry->get("value");
++      if (!address || !value) {
++        reason = std::format("a {} entry without an integer address or a value", type);
++        return false;
++      }
++      PatchWrite write{static_cast<u32>(address->get()), {}};
++      const auto integer = value->value_exact<int64_t>();
++      const auto text = value->value_exact<std::string>();
++      double real = 0.0;
++      if (value->is_floating_point()) {
++        real = value->as_floating_point()->get();
++      } else if (value->is_integer()) {
++        real = static_cast<double>(value->as_integer()->get());
++      }
++      if (type == "be8" || type == "be16" || type == "be32" || type == "be64") {
++        if (!integer) {
++          reason = std::format("the {} value at {:08X} is not an integer", type, write.address);
++          return false;
++        }
++        const u64 v = static_cast<u64>(*integer);
++        if (type == "be8") {
++          write.bytes = {static_cast<u8>(v)};
++        } else if (type == "be16") {
++          write.bytes = BigEndianBytes(static_cast<u16>(v));
++        } else if (type == "be32") {
++          write.bytes = BigEndianBytes(static_cast<u32>(v));
++        } else {
++          write.bytes = BigEndianBytes(v);
++        }
++      } else if (type == "f32") {
++        write.bytes = BigEndianBytes(static_cast<float>(real));
++      } else if (type == "f64") {
++        write.bytes = BigEndianBytes(real);
++      } else {
++        if (!text) {
++          reason = std::format("the {} value at {:08X} is not a string", type, write.address);
++          return false;
++        }
++        if (type == "string") {
++          write.bytes.assign(text->begin(), text->end());
++        } else if (type == "u16string") {
++          // As Xenia canary copies it: the UTF-16 units in host (little endian) order.
++          const std::u16string units = rex::string::ToUTF16(*text);
++          write.bytes.resize(units.size() * 2);
++          std::memcpy(write.bytes.data(), units.data(), write.bytes.size());
++        } else if (!HexBytes(*text, write.bytes)) {
++          reason = std::format("the array value at {:08X} is not hexadecimal", write.address);
++          return false;
++        }
++      }
++      if (!write.bytes.empty()) {
++        out.push_back(std::move(write));
++      }
++    }
++  }
++  return true;
++}
++
++std::optional<std::string> ReadText(TitleRuntime& runtime, const std::string& path) {
++  auto* fs = StateOf(runtime).GetFileSystem();
++  auto stat = fs->Stat(path);
++  if (!stat) {
++    return std::nullopt;
++  }
++  filesystem::OpenOptions options;
++  options.access = filesystem::Access::kReadAccess;
++  auto opened = fs->Open(stat->absolute_path, options);
++  if (!opened) {
++    REXSYS_ERROR("Game patches: cannot open {}", path);
++    return std::nullopt;
++  }
++  std::vector<u8> buffer(stat->size);
++  auto read = opened->file->Read(buffer, 0);
++  if (!read) {
++    REXSYS_ERROR("Game patches: cannot read {}", path);
++    return std::nullopt;
++  }
++  return std::string(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(*read));
++}
++
++}  // namespace
++
++std::optional<u64> GameModuleHash(TitleRuntime& runtime, ModuleObject& module) {
++  const XEXModule* xex = module.GetXEX();
++  if (!xex || !xex->IsLoaded() || xex->GetImage().IsPatch() || !xex->GetBaseAddress()) {
++    return std::nullopt;
++  }
++  auto* memory = StateOf(runtime).GetAddressSpace();
++  const u32 base = xex->GetBaseAddress();
++  const BaseHeap* heap = memory->LookupHeap(base);
++  if (!heap) {
++    return std::nullopt;
++  }
++  // Xenia canary's range: from the first code descriptor's index to the last's, in pages of the
++  // module's heap (each descriptor is one page in the images it was written for).
++  const auto& pages = xex->GetImage().GetSecurity().pages;
++  std::optional<u32> first;
++  u32 last = 0;
++  for (u32 i = 0; i < pages.size(); ++i) {
++    if (pages[i].type == kXEXSectionCode) {
++      if (!first) {
++        first = i;
++      }
++      last = i;
++    }
++  }
++  if (!first) {
++    return std::nullopt;
++  }
++  const u32 page_size = heap->GetPageSize();
++  const u32 start = base + *first * page_size;
++  const u32 end = base + (last + 1) * page_size;
++  std::vector<u8> code(end - start);
++  std::memcpy(code.data(), memory->TranslateVirtual<const u8*>(start), code.size());
++  // Xenia canary rewrites each import thunk (an import record of type 1) before it hashes:
++  //   sc 2; blr; nop; nop
++  // ReXGlue leaves the thunks as they were loaded (recompiled code calls the imports by address).
++  for (const auto& library : xex->GetImage().GetImports()) {
++    for (const u32 record : library.records) {
++      if (record < start || record > end - 16) {
++        continue;
++      }
++      const u32 value = *memory->TranslateVirtual<const be_u32*>(record);
++      if ((value >> 24) != 1) {
++        continue;
++      }
++      u8* thunk = code.data() + (record - start);
++      StoreBE32(thunk + 0x0, 0x44000042);
++      StoreBE32(thunk + 0x4, 0x4E800020);
++      StoreBE32(thunk + 0x8, 0x60000000);
++      StoreBE32(thunk + 0xC, 0x60000000);
++    }
++  }
++  return XXH3_64bits(code.data(), code.size());
++}
++
++void ApplyGamePatches(TitleRuntime& runtime, ModuleObject& module) {
++  const auto hash = GameModuleHash(runtime, module);
++  if (!hash) {
++    return;
++  }
++  const u32 title_id = module.GetTitleID();
++  REXSYS_INFO("Module {}: title {:08X}, module hash {:016X} (Xenia canary's)", module.name,
++              title_id, *hash);
++
++  const std::string path = module.path + ".patch.toml";
++  const auto text = ReadText(runtime, path);
++  if (!text) {
++    return;
++  }
++  toml::table root;
++  try {
++    root = toml::parse(*text, path);
++  } catch (const toml::parse_error& error) {
++    REXSYS_ERROR("Game patches: {} is not valid TOML: {}", path, error.description());
++    return;
++  }
++
++  const auto file_title = root["title_id"].value<std::string>();
++  const auto file_title_id = file_title ? ParseHex(*file_title) : std::nullopt;
++  if (!file_title_id || *file_title_id != title_id) {
++    REXSYS_WARN("Game patches: {} is for title {}, not {:08X}: none applied", path,
++                file_title.value_or("(none)"), title_id);
++    return;
++  }
++  std::vector<u64> hashes;
++  if (const toml::node* node = root.get("hash")) {
++    if (const auto one = node->value<std::string>()) {
++      if (const auto h = ParseHex(*one)) {
++        hashes.push_back(*h);
++      }
++    } else if (const auto* list = node->as_array()) {
++      for (const auto& item : *list) {
++        if (const auto text_hash = item.value<std::string>()) {
++          if (const auto h = ParseHex(*text_hash)) {
++            hashes.push_back(*h);
++          }
++        }
++      }
++    }
++  }
++  if (std::find(hashes.begin(), hashes.end(), *hash) == hashes.end()) {
++    REXSYS_WARN(
++        "Game patches: {} is for another version of the module (module hash {:016X}): none "
++        "applied",
++        path, *hash);
++    return;
++  }
++
++  auto* memory = StateOf(runtime).GetAddressSpace();
++  const auto* patches = root.get_as<toml::array>("patch");
++  if (!patches) {
++    return;
++  }
++  for (const auto& node : *patches) {
++    const auto* patch = node.as_table();
++    if (!patch || !patch->get_as<bool>("is_enabled") ||
++        !patch->get_as<bool>("is_enabled")->get()) {
++      continue;
++    }
++    const std::string name = (*patch)["name"].value_or(std::string("(unnamed)"));
++    std::vector<PatchWrite> writes;
++    std::string reason;
++    if (!ReadWrites(*patch, writes, reason)) {
++      REXSYS_WARN("Game patch '{}' left out: {}", name, reason);
++      continue;
++    }
++    size_t applied = 0;
++    for (const auto& write : writes) {
++      BaseHeap* heap = memory->LookupHeap(write.address);
++      if (!heap) {
++        REXSYS_WARN("Game patch '{}': {:08X} is in no heap, left out", name, write.address);
++        continue;
++      }
++      const u32 size = static_cast<u32>(write.bytes.size());
++      u32 old_protect = 0;
++      heap->QueryProtect(write.address, &old_protect);
++      heap->Protect(write.address, size, kMemoryProtectRead | kMemoryProtectWrite);
++      std::memcpy(memory->TranslateVirtual<u8*>(write.address), write.bytes.data(), size);
++      heap->Protect(write.address, size, old_protect);
++      ++applied;
++    }
++    REXSYS_INFO("Game patch '{}' applied to {}: {} of {} writes", name, module.name, applied,
++                writes.size());
++  }
++}
++
++}  // namespace rex::kernel
+diff --git a/src/kernel/game_patches.h b/src/kernel/game_patches.h
+new file mode 100644
+index 00000000..5d5537f6
+--- /dev/null
++++ b/src/kernel/game_patches.h
+@@ -0,0 +1,34 @@
++/**
++ * @file        kernel/game_patches.h
++ * @brief       Xenia canary's game patches for a loaded XEX module.
++ *
++ * A patch file beside a module (`game:\default.xex.patch.toml` for `game:\default.xex`) in Xenia
++ * canary's format (its game-patches repository: title_id, hash, [[patch]] tables with be8, be16,
++ * be32, be64, f32, f64, string, u16string and array writes) is applied to the module's memory once
++ * it is loaded, before codegen reads it or the title runs: the patches whose `is_enabled` is true,
++ * and only when the file's title id is the module's and one of its hashes is the module hash as
++ * Xenia canary computes it (UserModule::CalculateHash). Codegen and the title load the module the
++ * same way, so a code patch is in the recompiled code and a data patch in the title's memory.
++ */
++#pragma once
++
++#include <optional>
++
++#include <rex/types.h>
++
++namespace rex::kernel {
++
++struct ModuleObject;
++class TitleRuntime;
++
++/**
++ * The module hash Xenia canary gives a loaded XEX module: XXH3-64 over its code pages, the import
++ * thunks as Xenia canary rewrites them (`sc 2; blr; nop; nop`). Nothing for a patch module or a
++ * module that is not loaded.
++ */
++std::optional<u64> GameModuleHash(TitleRuntime& runtime, ModuleObject& module);
++
++/** Applies `<module path>.patch.toml`, when there is one, to a module LoadFromFile loaded. */
++void ApplyGamePatches(TitleRuntime& runtime, ModuleObject& module);
++
++}  // namespace rex::kernel
+diff --git a/src/kernel/user_module.cpp b/src/kernel/user_module.cpp
+index 8f6a37df..7d33336f 100644
+--- a/src/kernel/user_module.cpp
++++ b/src/kernel/user_module.cpp
+@@ -24,6 +24,7 @@
+ #include <rex/kernel/object/module_object.h>
+ #include <rex/kernel/object/file_object.h>
+ #include <rex/filesystem/file_system_factory.h>
++#include "kernel/game_patches.h"
+ #include "kernel/rexkernel_module.h"
+ #include "kernel/title_state.h"
+ 
+@@ -160,7 +161,13 @@ X_STATUS ModuleObject::LoadFromFile(TitleRuntime& owning_runtime, std::string_vi
+     }
+   }
+ 
+-  return LoadXEXContinue(owning_runtime, *this);
++  result = LoadXEXContinue(owning_runtime, *this);
++  if (result == X_STATUS_SUCCESS) {
++    // Xenia canary's game patches beside the module (<path>.patch.toml), once it is loaded:
++    // codegen reads the patched code, the title runs on the patched data.
++    ApplyGamePatches(owning_runtime, *this);
++  }
++  return result;
+ }
+ 
+ X_STATUS ModuleObject::LoadFromMemory(TitleRuntime& owning_runtime, const void* addr,
+-- 
+2.55.0.windows.5
+

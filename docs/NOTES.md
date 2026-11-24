@@ -229,6 +229,38 @@ id, the SHA-1 of its header, and every block of its hash tree). Its XEX patches 
 is recompiled from the patched image), the rest of it is mounted as `update:`
 (`run/title-update`), and what came from the old image is made again.
 
+## FPS Boost
+
+Xenia canary's community keeps patches for many games ([game-patches](https://github.com/xenia-canary/game-patches):
+`patches/<title id> - <name>.patch.toml`), among them "60 FPS" and "Unlock FPS" ones that change
+how a game paces itself, as FPS Boost does on the newer Xboxes. Each file is for one executable,
+named by Xenia canary's module hash: XXH3-64 over the module's code pages, its import thunks
+rewritten `sc 2; blr; nop; nop` as Xenia canary loads them (`UserModule::CalculateHash`; the
+first and last code page descriptors, in the module heap's 64 KB pages).
+
+ReXGlue applies such a file beside a module (`game-data/default.xex.patch.toml`, SDK patch
+0047) once the module is loaded, before codegen reads it and before the game runs, when its
+title id and one of its hashes are the module's: a code patch is in the recompiled code, a data
+patch in the game's memory. Every load logs `Module default: title 58410A95, module hash
+CF37AF559A37B77C` and each patch it applies.
+
+`rexnative fps-boost <work>/<game> [on|off]` (`rexnative/fps_boost.py`) finds the game's file
+for its executable's hash (the repository's file list is kept a day, each file by its blob hash,
+in the user's cache folder) and the best frame rate patch in it: 60 FPS first (the Deck's screen
+and the frame limit), then an unlocked rate, then another rate above 30; not one that shows,
+locks or lowers it. The hash comes from ReXGlue's log, or before a build with patch 0047 from
+`run/image.bin` (dumped with no patch file applied): `xxh3_64` there is the hash's long-input
+path in Python. The choice (`fps-boost.json`) is applied by the next build: before codegen the
+file is written with that patch alone, enabled (or removed), and codegen runs again when it
+changed (`codegen.ok` records the file's hash), so a game never runs patched data over code
+recompiled without the patch. `deck` removes a patch file the game no longer has from the Deck.
+
+Of the games tried (2026-11-24): Iron Brigade (TU 6), Fable II (GOTY, TU 1), Midnight Club: Los
+Angeles Complete Edition and Blur (TU 2) have a "60 FPS" patch for the version ReXNative
+installs; Asura's Wrath (TU 1), The Bureau (TU 1) and Brothers an "Unlock FPS" one. SSX's is
+for its first release (ReXNative installs TU 3); Crazy Taxi, Peggle 2, Forza Horizon, Minecraft
+and Perfect Dark have patches, none for the frame rate.
+
 ## Downloadable content
 
 `prepare --dlc` and `rexnative dlc <work>` fetch a game's DLC from the Internet Archive's Xbox

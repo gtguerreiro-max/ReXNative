@@ -10,6 +10,7 @@ ReXGlue-recompiled Xbox 360 games.
   python -m rexnative prepare SOURCE... --work DIR        a game as it comes -> codegen, layer
   python -m rexnative project WORK/GAME [--build]         a prepared game -> a project that runs
   python -m rexnative title-update WORK...                the title updates XboxUnity lists
+  python -m rexnative fps-boost WORK/GAME [on|off]       Xenia canary's frame rate patch
   python -m rexnative dlc WORK/GAME SOURCE...             install downloadable content
   python -m rexnative dlc WORK... [--list]                its DLC from archive.org's collection
   python -m rexnative deck WORK/GAME... [--steam] [--try S]  copy built games to the Steam Deck
@@ -326,6 +327,13 @@ def cmd_title_update(a):
             ', '.join('TU %d (%d KB)' % (u['version'], u['size']) for u in ups[:6]) or 'none'))
 
 
+def cmd_fps_boost(a):
+    from . import fps_boost
+    argv = [a.work] + ([a.state] if a.state else []) + (['--refresh'] if a.refresh else []) + (
+        ['--json'] if a.json else [])
+    fps_boost.main(argv)
+
+
 def cmd_dlc(a):
     from . import dlc, title_update as tu
     if a.sources:
@@ -445,6 +453,15 @@ def main(argv=None):
                             'and the one installed (nothing is downloaded)')
     s.add_argument('work', nargs='+', help="a game's folder, or prepare's --work")
     s.set_defaults(fn=cmd_title_update)
+    s = sub.add_parser('fps-boost', parents=[lang_opt],
+                       help="FPS Boost: Xenia canary's patch that raises the game's frame rate "
+                            "(github.com/xenia-canary/game-patches), for the game's executable "
+                            'and version; on/off is applied by its next build')
+    s.add_argument('work', help="the game's folder in prepare's --work")
+    s.add_argument('state', nargs='?', choices=('on', 'off'))
+    s.add_argument('--refresh', action='store_true', help='fetch the patch list again')
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_fps_boost)
     s = sub.add_parser('dlc', parents=[lang_opt],
                        help="install a game's downloadable content (STFS packages, or folders "
                             'and archives holding them) where the game finds it; without them, '

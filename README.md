@@ -46,6 +46,9 @@ comes (an archive, a disc image, an Xbox Live package) and leave a built executa
 - **Games as they come:** archives, disc images and Xbox Live packages; the newest title update
   and the game's DLC (`prepare --title-update --dlc`); a game's XEX DLL modules recompiled with
   it; a D3D older than every reference drawn from its push buffer alone.
+- **FPS Boost:** Xenia canary's community patch that raises a game's frame rate ("60 FPS",
+  "Unlock FPS"), for the exact version of its executable, put into the recompiled code when
+  the game asks for it (`rexnative fps-boost <work> on`, then a build).
 - **Windows and Steam Deck** (under Proton, through vkd3d-proton).
 
 ## Games
