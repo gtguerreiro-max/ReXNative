@@ -823,6 +823,8 @@ void NativeRenderer::BeginFrameModules() {
     const uint32_t presents = frame_generation_on_ ? 2 : device_->present_interval();
     if (u->BeginFrame(frame_index_, device_->gpu_busy_ns(), uint64_t(1e9 * presents / hz)))
       rt_->SetSceneScale(u->scale());
+    // FSR 4 gave way to FSR 3.1 (--rexnative_fsr_auto): the upscaler made again at the next frame.
+    if (u->TakeFsrDowngrade()) antialiasing_requested_.store(true, std::memory_order_relaxed);
   }
   frame_begun_ = true;
 }

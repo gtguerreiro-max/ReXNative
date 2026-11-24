@@ -150,6 +150,15 @@ configuration file (`run/<game>.toml`) or on the command line.
   later, instead of stuttering. 1 holds every such frame (before 2026-11-24);
   `rexnative.pipeline_wait = false` holds none. Pipelines compiled ahead from earlier runs (the
   prewarm) run below normal priority, so the game's own threads keep the CPU.
+- `rexnative.fsr_auto` (default true) with `rexnative.fsr_version = "auto"` (the HUD's Newest):
+  FSR 4 costs about the same time a frame whatever the render size, 5.1 ms on the Steam Deck in
+  Diablo III's town at 1120x584 (FSR 3.1 3.1 ms; the scene's own draws 4.1 ms), a third of a
+  60 fps frame. Where the GPU is busy for at least `rexnative.fsr_auto_share` (0.9) of each
+  frame's paced time for two windows of 120 frames in a row, after the first 600, FSR 4 gives way
+  to FSR 3.1 for the rest of the run ("FSR 4 leaves the GPU no room ... FSR 3.1 for the rest of
+  this run" in the log; the HUD's upscaler line shows what runs). Nothing is saved: the next run
+  starts at FSR 4 again. A game held by its CPU (the GPU's time waiting for it is not counted)
+  keeps FSR 4, which 3.1 would not make faster; an explicit `fsr_version` 4 or 3 is kept.
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 

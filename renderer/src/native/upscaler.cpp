@@ -44,6 +44,13 @@ REXCVAR_DEFINE_STRING(rexnative_fsr_version, "auto", "ReXNative",
                       "AMD's GPUs with its driver library, the Steam Deck's under GE-Proton's "
                       "PROTON_FSR4_UPGRADE among them, FSR 3.1 elsewhere), 4 or 3 (the newest "
                       "FSR 4.x or 3.x the FidelityFX loader lists for this GPU)");
+REXCVAR_DEFINE_BOOL(rexnative_fsr_auto, true, "ReXNative",
+                    "With --rexnative_fsr_version=auto: FSR 4 gives way to FSR 3.1 for the rest "
+                    "of the run when the GPU has no room for it (busy for most of each frame's "
+                    "time); an explicit 4 or 3 is kept");
+REXCVAR_DEFINE_DOUBLE(rexnative_fsr_auto_share, 0.9, "ReXNative",
+                      "--rexnative_fsr_auto: the share of each frame's time the GPU is busy for "
+                      "that makes FSR 4 give way (two windows of 120 frames in a row)");
 REXCVAR_DEFINE_STRING(rexnative_upscaler_mode, "", "ReXNative",
                       "native (anti-aliasing at the game's resolution: DLAA, FSR Native AA), "
                       "quality, balanced, performance or ultra (from a smaller render size); "
@@ -198,8 +205,15 @@ std::string Upscaler::Status() {
 
 void Upscaler::NoteOn(bool on) { g_status_on.store(on, std::memory_order_relaxed); }
 
+// FSR 3.1 for the rest of the run in place of the newest (--rexnative_fsr_auto): set when FSR 4
+// left the GPU no room, read by every context made after (the upscaler is made again).
+std::atomic<bool> g_fsr3_this_run{false};
+
 uint64_t Upscaler::FsrVersionId() const {
-  const std::string want = REXCVAR_GET(rexnative_fsr_version);
+  const std::string want = g_fsr3_this_run.load(std::memory_order_relaxed) &&
+                                   REXCVAR_GET(rexnative_fsr_version) == "auto"
+                               ? std::string("3")
+                               : REXCVAR_GET(rexnative_fsr_version);
   if (want != "3" && want != "4") return 0;
   ffxQueryDescGetVersions q = {};
   q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
@@ -489,6 +503,7 @@ bool Upscaler::CreateContext(bool debug) {
                              provider.versionName
                          ? provider.versionName
                          : "FSR";
+  fsr4_ = name[0] == '4';
   REXLOG_INFO("ReXNative upscaler: {} {} from {}x{} to {}x{} ({}{})", name, FsrModeName(mode_),
               max_width_, max_height_, OutputWidth(), OutputHeight(),
               kind_.hdr ? "HDR" : "8-bit", kind_.depth_inverted ? ", reversed depth" : "");
@@ -632,11 +647,42 @@ bool Upscaler::BeginFrame(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_n
           "rate or frame generation gives each frame more",
           dynamic_->run_ns() * 1e-6, render_height_, double(paced_ns) * 1e-6);
   }
+  WatchFsrCost(frame, gpu_busy_ns, paced_ns);
   const uint64_t now = NowNs();
   frame_ms_ = last_ns_ ? float(double(now - last_ns_) * 1e-6) : 0.0f;
   last_ns_ = now;
   DlssJitter(frame, double(render_width_) / double(OutputWidth()), jitter_[0], jitter_[1]);
   return resized;
+}
+
+// FSR 4 costs a fixed time a frame whatever the render size (5.1 ms at 1120x584 on the Steam
+// Deck, Diablo III's town, against FSR 3.1's 3.1 ms and the scene's own 4.1: about a third of a
+// 60 fps frame). Where the GPU is busy for most of each frame's time, the newest (auto) gives way
+// to FSR 3.1 for the rest of the run: kFsrWindows windows of kFsrWindowFrames frames in a row
+// with the GPU busy for at least --rexnative_fsr_auto_share (0.9) of the paced frame time, after the first
+// kFsrSettleFrames (loading, the first pipelines). Never back: the next run starts at FSR 4 again,
+// and a game the GPU has room for never leaves it. A game held by its CPU (the GPU waiting for
+// it, which gpu_busy_ns leaves out) keeps FSR 4: 3.1 would not make it faster.
+void Upscaler::WatchFsrCost(uint64_t frame, uint64_t gpu_busy_ns, uint64_t paced_ns) {
+  if (backend_ != Backend::kFsr || !fsr4_ || fsr_downgrade_ || !REXCVAR_GET(rexnative_fsr_auto) ||
+      REXCVAR_GET(rexnative_fsr_version) != "auto" || !gpu_busy_ns || !paced_ns ||
+      frame < kFsrSettleFrames)
+    return;
+  busy_sum_ns_ += gpu_busy_ns;
+  paced_sum_ns_ += paced_ns;
+  if (++busy_frames_ < kFsrWindowFrames) return;
+  const double share = double(busy_sum_ns_) / double(paced_sum_ns_);
+  const double busy_ms = double(busy_sum_ns_) * 1e-6 / busy_frames_;
+  const double paced_ms = double(paced_sum_ns_) * 1e-6 / busy_frames_;
+  busy_sum_ns_ = paced_sum_ns_ = 0;
+  busy_frames_ = 0;
+  busy_windows_ = share >= REXCVAR_GET(rexnative_fsr_auto_share) ? busy_windows_ + 1 : 0;
+  if (busy_windows_ < kFsrWindows) return;
+  fsr_downgrade_ = fsr_downgrade_due_ = true;
+  g_fsr3_this_run.store(true, std::memory_order_relaxed);
+  REXLOG_INFO("ReXNative upscaler: FSR 4 leaves the GPU no room (busy {:.1f} ms of each {:.1f} ms "
+              "frame): FSR 3.1 for the rest of this run (--rexnative_fsr_auto)",
+              busy_ms, paced_ms);
 }
 
 void Upscaler::NoteSceneResolve(const ResolveParams& p) {
