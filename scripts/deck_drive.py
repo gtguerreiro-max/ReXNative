@@ -85,9 +85,14 @@ def main():
                 d.run('printf "%%s\\n" %s > %s/draw-debug.txt' % (q(key[3:]), q(cap)), check=False)
                 print('%5.1f s draw-debug %s' % (time.time() - t0, key[3:]), flush=True)
             else:
-                out = d.run(env + 'w=$(xdotool search --name %s | head -1); [ -n "$w" ] && '
-                            'xdotool windowactivate --sync $w 2>/dev/null; xdotool keydown %s; sleep 0.15; '
-                            'xdotool keyup %s; echo "$w"' % (q(g['name']), q(key), q(key)), check=False)
+                # On the game's own X display: gamescope gives a game one beside Steam's (:1, the
+                # game's DISPLAY), and keys sent to :0 reached Steam's Big Picture window under the
+                # game, not the game (2026-11-24). No game window found: no key sent at all.
+                out = d.run(env + 'p=$(pgrep -f %s | head -1); [ -n "$p" ] && export DISPLAY=$(tr "\\0" "\\n" '
+                            '< /proc/$p/environ | sed -n "s/^DISPLAY=//p"); w=$(xdotool search --name %s | head -1); '
+                            'if [ -n "$w" ]; then xdotool windowactivate --sync $w 2>/dev/null; '
+                            'xdotool keydown --window $w %s; sleep 0.15; xdotool keyup --window $w %s; fi; '
+                            'echo "$DISPLAY $w"' % (q(exe_re), q(g['name']), q(key), q(key)), check=False)
                 print('%5.1f s %s -> window %s' % (time.time() - t0, key, out.strip() or '(none)'), flush=True)
         while time.time() - t0 < end:
             time.sleep(0.5)
