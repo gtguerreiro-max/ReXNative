@@ -1,0 +1,68 @@
+From d87d01fe43bd7f8c6627f57365574cc403969719 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 12:27:49 +0000
+Subject: [PATCH] xam: XamGetLanguage returns the console's language, as
+ XGetLanguage does
+
+The stub returned 0, so a title that asks XAM directly (Diablo III, Geometry
+Wars 3) never saw kernel.user_language and stayed in English.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/kernel/xam/xam_forwards.cpp | 1 +
+ src/kernel/xam/xam_stub.cpp     | 1 -
+ src/xam/xam_info.cpp            | 7 +++++++
+ 3 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/kernel/xam/xam_forwards.cpp b/src/kernel/xam/xam_forwards.cpp
+index d355e7fa..9c431c57 100644
+--- a/src/kernel/xam/xam_forwards.cpp
++++ b/src/kernel/xam/xam_forwards.cpp
+@@ -137,6 +137,7 @@ REX_XAM_FORWARD(__imp__XamGetCountryFromOnlineCountry)
+ REX_XAM_FORWARD(__imp__XamGetCountryString)
+ REX_XAM_FORWARD(__imp__XamGetCurrentTitleId)
+ REX_XAM_FORWARD(__imp__XamGetExecutionId)
++REX_XAM_FORWARD(__imp__XamGetLanguage)
+ REX_XAM_FORWARD(__imp__XamGetLanguageFromOnlineLanguage)
+ REX_XAM_FORWARD(__imp__XamGetLanguageLocaleString)
+ REX_XAM_FORWARD(__imp__XamGetLanguageString)
+diff --git a/src/kernel/xam/xam_stub.cpp b/src/kernel/xam/xam_stub.cpp
+index 3779451c..8f18cfc9 100644
+--- a/src/kernel/xam/xam_stub.cpp
++++ b/src/kernel/xam/xam_stub.cpp
+@@ -1120,7 +1120,6 @@ REX_EXPORT_STUB(__imp__XamFormatMessage);
+ REX_EXPORT_STUB(__imp__XamFormatSystemDateString);
+ REX_EXPORT_STUB(__imp__XamGetCountry);
+ REX_EXPORT_STUB(__imp__XamGetCurrencyFormat);
+-REX_EXPORT_STUB(__imp__XamGetLanguage);
+ REX_EXPORT_STUB(__imp__XamGetLanguageLocaleFallbackString);
+ REX_EXPORT_STUB(__imp__XamGetLanguageTypeface);
+ REX_EXPORT_STUB(__imp__XamGetLanguageTypefacePatch);
+diff --git a/src/xam/xam_info.cpp b/src/xam/xam_info.cpp
+index 616eecd8..79c8c894 100644
+--- a/src/xam/xam_info.cpp
++++ b/src/xam/xam_info.cpp
+@@ -207,6 +207,12 @@ u32 XGetLanguage_entry() {
+   return static_cast<u32>(CurrentXAM().GetUserLanguage());
+ }
+ 
++// The console's language as XAM keeps it (kernel.user_language), the one XGetLanguage returns:
++// Diablo III and Geometry Wars 3 ask XAM directly, and a stub's 0 left them in English.
++u32 XamGetLanguage_entry() {
++  return static_cast<u32>(CurrentXAM().GetUserLanguage());
++}
++
+ u32 XamGetCurrentTitleId_entry() {
+   auto module = CurrentTitle().objects.Get<kernel::ILoadedModule>(
+       CurrentTitle().modules.GetExecutable().value_or(0));
+@@ -461,6 +467,7 @@ REX_XAM_BODY(__imp__XCustomRegisterDynamicActions, rex::xam::XCustomRegisterDyna
+ REX_XAM_BODY(__imp__XGetAVPack, rex::xam::XGetAVPack_entry)
+ REX_XAM_BODY(__imp__XGetGameRegion, rex::xam::XGetGameRegion_entry)
+ REX_XAM_BODY(__imp__XGetLanguage, rex::xam::XGetLanguage_entry)
++REX_XAM_BODY(__imp__XamGetLanguage, rex::xam::XamGetLanguage_entry)
+ REX_XAM_BODY(__imp__XamGetCurrentTitleId, rex::xam::XamGetCurrentTitleId_entry)
+ REX_XAM_BODY(__imp__XamGetExecutionId, rex::xam::XamGetExecutionId_entry)
+ REX_XAM_BODY(__imp__XamLoaderSetLaunchData, rex::xam::XamLoaderSetLaunchData_entry)
+-- 
+2.55.0.windows.5
+

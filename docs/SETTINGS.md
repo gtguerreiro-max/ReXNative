@@ -143,11 +143,19 @@ configuration file (`run/<game>.toml`) or on the command line.
 - The older names (`--rexnative_upscaler`, PGR4Native's `pgr4_native_*` and `pgr4_d3d_*`) still
   work as aliases.
 
-Two of ReXGlue's own settings (SDK patches 0040 and 0041), in the same file:
+Three of ReXGlue's own settings (SDK patches 0040, 0041 and 0048), in the same file:
 
 - `[kernel] user_name = "..."`: the profile's gamertag, up to 15 characters (default "User"):
   the name a game shows for the player, as Diablo III under P1. A hero's or a save's name is the
   game's own, typed in its keyboard prompt.
+- `[kernel] user_language = N`: the console's language, what `XGetLanguage`, `XamGetLanguage`
+  (SDK patch 0048) and the user language of `ExGetXConfigSetting` tell the game: 1 English (the
+  default), 2 Japanese, 3 German, 4 French, 5 Spanish, 6 Italian, 7 Korean, 8 traditional
+  Chinese, 9 Portuguese, 11 Polish, 12 Russian, 13 Swedish, 14 Turkish, 15 Norwegian, 16 Dutch,
+  17 simplified Chinese; 0 takes the host's. A game made in that language plays in it (Limbo's
+  menus in Portuguese at 9); one that is not stays in English. The languages a game is made in
+  are those of its SPA's string tables (its achievements' texts), which the ReXNative Manager
+  offers as the game's Language.
 - `[ui] dialog_scale`: the size of the system dialogs (the keyboard prompt, message boxes); 0,
   the default, makes them twice as large on a 720p or 800p screen, three times at 1080p.
   They answer to the pad (D-pad or left stick, A, B for the last button) and the keyboard
