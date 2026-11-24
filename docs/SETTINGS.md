@@ -133,16 +133,13 @@ configuration file (`run/<game>.toml`) or on the command line.
 - `rexnative.scene_late_draws`: scene detection takes an 8-bit surface without MSAA as the scene
   when 3D draws went into it before any of its full-size resolves, not only its first (Iron
   Brigade resolves it once after its depth prepass, before the scene's draws).
-- `rexnative.texel_unorm8` (default true): point-sampled 8-bit unsigned texels read as on Xenos,
-  `(x + (x >> 7)) / 256` (0x80 is 0.50390625), not the PC's `x / 255`, in a shader whose
-  textures all have 8 bits per component (sdk patch 0046); filtered fetches stay `x / 255`.
-  Forza Horizon's motion blur tells them apart (docs/NOTES.md, "A car's contact shadow in the
-  motion blur"); false for the PC's reading.
 - `rexnative.pixel_constant_override`: a picture tweak, not the console's emulation: pixel shader
   float constants replaced, as `<ucode hash>:c<register>.<x|y|z|w>=<value>`, several joined by
   `;`, for testing. `rexnative project` writes none now (rexnative/tweaks.py): it takes out Forza
-  Horizon's `E68FE55ECD482EC5:c253.w=0.5`, which it wrote before `texel_unorm8` made that look
-  the emulation's own, where the file still has that value.
+  Horizon's `E68FE55ECD482EC5:c253.w=0.5`, which it wrote before the texel values (SDK patch
+  0049) made that look the emulation's own, where the file still has that value.
+- `rexnative.texel_unorm8` is gone (2026-11-24): texture fetches return what Xenos returns for
+  every format, filtered ones too, with no setting (SDK patch 0049, docs/NOTES.md).
 - `rexnative.pipeline_hold_min` (default 8): a pipeline the game never created before compiles
   on worker threads (50 to 170 ms on the Steam Deck). A frame that waits for at least this many
   of them, a scene's first, is held back while they compile (the previous one stays on screen);

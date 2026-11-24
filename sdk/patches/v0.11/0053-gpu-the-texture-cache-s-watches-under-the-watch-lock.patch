@@ -1,0 +1,164 @@
+From 44dec0cedd69ccd723743bcd007910f1f34cc7c0 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 17:10:38 +0000
+Subject: [PATCH] gpu: the texture cache's watches under the watch lock, and
+ stale loads left outdated
+
+- A texture's destructor reads its watch handles under the watch lock: a watch a guest thread
+  fires unlinks its range and clears the handle under that lock, so a handle read outside it
+  could be unlinked twice, corrupting the watch free lists (Xenia Edge aa94c6a2, a crash in Need
+  for Speed: Most Wanted). SharedMemory::UnwatchMemoryRange takes the held lock too.
+- A texture whose guest range the CPU invalidated while it loaded stays outdated instead of being
+  marked up to date over stale data (SharedMemory::IsRangeValid; Xenia canary 9781a75).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/pipeline/texture/cache.cpp | 34 +++++++++++++++++++-----
+ src/gpu/xenos/pipeline/texture/cache.h   |  3 ++-
+ src/gpu/xenos/shared_memory.cpp          | 30 +++++++++++++++++++++
+ src/gpu/xenos/shared_memory.h            |  7 +++++
+ 4 files changed, 66 insertions(+), 8 deletions(-)
+
+diff --git a/src/gpu/xenos/pipeline/texture/cache.cpp b/src/gpu/xenos/pipeline/texture/cache.cpp
+index 1afb4bc7..4ee04ed3 100644
+--- a/src/gpu/xenos/pipeline/texture/cache.cpp
++++ b/src/gpu/xenos/pipeline/texture/cache.cpp
+@@ -252,7 +252,9 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
+   }
+ 
+   // Scaled resolves are watched too, to detect CPU reuse of the memory.
+-  texture.UpdateAndWatch(GetSharedMemory().AcquireLock());
++  if (!texture.UpdateAndWatch(GetSharedMemory().AcquireLock())) {
++    return true;  // Left outdated: loaded again at its next use.
++  }
+   texture.LogAction("Loaded");
+ 
+   return true;
+@@ -451,11 +453,18 @@ TextureCache::Texture::Texture(TextureCache& texture_cache, const TextureKey& ke
+ }
+ 
+ TextureCache::Texture::~Texture() {
+-  if (mips_watch_handle_) {
+-    GetTextureCache().GetSharedMemory().UnwatchMemoryRange(mips_watch_handle_);
+-  }
+-  if (base_watch_handle_) {
+-    GetTextureCache().GetSharedMemory().UnwatchMemoryRange(base_watch_handle_);
++  {
++    // A watch a guest thread fires unlinks its range and clears the handle under the watch lock,
++    // so the handles are read under it too: read outside, a range unlinked in between was
++    // unlinked again, corrupting the watch free lists (Xenia Edge aa94c6a2).
++    SharedMemory& shared_memory = GetTextureCache().GetSharedMemory();
++    auto lock = shared_memory.AcquireLock();
++    if (mips_watch_handle_) {
++      shared_memory.UnwatchMemoryRange(lock, mips_watch_handle_);
++    }
++    if (base_watch_handle_) {
++      shared_memory.UnwatchMemoryRange(lock, base_watch_handle_);
++    }
+   }
+ 
+   if (in_usage_list_) {
+@@ -474,8 +483,18 @@ TextureCache::Texture::~Texture() {
+   texture_cache_.UpdateTexturesTotalHostMemoryUsage(0, host_memory_usage_);
+ }
+ 
+-void TextureCache::Texture::UpdateAndWatch(const ScopeGuard& watch_lock) {
++bool TextureCache::Texture::UpdateAndWatch(const ScopeGuard& watch_lock) {
+   SharedMemory& shared_memory = GetTextureCache().GetSharedMemory();
++  // A range the CPU invalidated while the data was loading stays outdated, to load again (Xenia
++  // canary 9781a75).
++  if (base_outdated_ && !shared_memory.IsRangeValid(GetKey().base_page << 12,
++                                                    rex::RoundUpPow2(GetGuestBaseSize(), 16u))) {
++    return false;
++  }
++  if (mips_outdated_ && !shared_memory.IsRangeValid(GetKey().mip_page << 12,
++                                                    rex::RoundUpPow2(GetGuestMipsSize(), 16u))) {
++    return false;
++  }
+   if (base_outdated_) {
+     REX_ASSERT(GetGuestBaseSize() != 0);
+     base_outdated_ = false;
+@@ -492,6 +511,7 @@ void TextureCache::Texture::UpdateAndWatch(const ScopeGuard& watch_lock) {
+                                        TextureCache::WatchCallback, this, nullptr, 1);
+     outdated_mask_.fetch_and(~kOutdatedBitMips, std::memory_order_release);
+   }
++  return true;
+ }
+ 
+ void TextureCache::Texture::MarkAsUsed() {
+diff --git a/src/gpu/xenos/pipeline/texture/cache.h b/src/gpu/xenos/pipeline/texture/cache.h
+index c1bd5bae..d12e8d41 100644
+--- a/src/gpu/xenos/pipeline/texture/cache.h
++++ b/src/gpu/xenos/pipeline/texture/cache.h
+@@ -205,7 +205,8 @@ class REX_GPU_XENOS_API TextureCache : public rex::NonCopyable {
+     bool IsMipsOutdated([[maybe_unused]] const ScopeGuard& watch_lock) const {
+       return mips_outdated_;
+     }
+-    void UpdateAndWatch(const ScopeGuard& watch_lock);
++    /** False when the CPU invalidated the data meanwhile: the texture stays outdated. */
++    bool UpdateAndWatch(const ScopeGuard& watch_lock);
+ 
+     void WatchCallback(bool is_mip);
+ 
+diff --git a/src/gpu/xenos/shared_memory.cpp b/src/gpu/xenos/shared_memory.cpp
+index 39045397..5d60471d 100644
+--- a/src/gpu/xenos/shared_memory.cpp
++++ b/src/gpu/xenos/shared_memory.cpp
+@@ -212,6 +212,36 @@ void SharedMemory::UnwatchMemoryRange(WatchHandle handle) {
+   UnlinkWatchRange(reinterpret_cast<WatchRange*>(handle));
+ }
+ 
++void SharedMemory::UnwatchMemoryRange(const ScopeGuard&, WatchHandle handle) {
++  UnlinkWatchRange(reinterpret_cast<WatchRange*>(handle));
++}
++
++bool SharedMemory::IsRangeValid(u32 start, u32 length) const {
++  if (!length) {
++    return true;
++  }
++  if (start > kBufferSize || (kBufferSize - start) < length) {
++    return false;
++  }
++  const u32 page_first = start >> page_size_log2_;
++  const u32 page_last = (start + length - 1) >> page_size_log2_;
++  const u32 block_first = page_first >> 6;
++  const u32 block_last = page_last >> 6;
++  for (u32 i = block_first; i <= block_last; ++i) {
++    u64 valid_mask = UINT64_MAX;
++    if (i == block_first) {
++      valid_mask &= ~((u64(1) << (page_first & 63)) - 1);
++    }
++    if (i == block_last && (page_last & 63) != 63) {
++      valid_mask &= (u64(1) << ((page_last & 63) + 1)) - 1;
++    }
++    if ((system_page_flags_valid_[i] & valid_mask) != valid_mask) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ void SharedMemory::FireWatches(u32 page_first, u32 page_last, bool invalidated_by_gpu) {
+   auto lock = AcquireLock();
+   FireWatchesLocked(page_first, page_last, invalidated_by_gpu);
+diff --git a/src/gpu/xenos/shared_memory.h b/src/gpu/xenos/shared_memory.h
+index 7ff20e23..8f4d9199 100644
+--- a/src/gpu/xenos/shared_memory.h
++++ b/src/gpu/xenos/shared_memory.h
+@@ -78,6 +78,13 @@ class REX_GPU_XENOS_API SharedMemory : public rex::NonCopyable, public IPhysical
+    */
+   ScopeGuard AcquireLock() const { return write_watch_.LockWriteWatches(); }
+   void UnwatchMemoryRange(WatchHandle handle);
++  /** UnwatchMemoryRange with the lock from AcquireLock already held. */
++  void UnwatchMemoryRange(const ScopeGuard& lock, WatchHandle handle);
++  /**
++   * Whether every page of the range is up to date in the GPU copy (Xenia canary 9781a75). Requires
++   * the lock from AcquireLock.
++   */
++  bool IsRangeValid(u32 start, u32 length) const;
+ 
+   /**
+    * Uploads new data for ranges that changed and makes the host GPU memory backing them resident.
+-- 
+2.55.0.windows.5
+

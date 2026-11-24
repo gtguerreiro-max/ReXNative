@@ -14,9 +14,9 @@ KNOWN = {}
 
 RETIRED = {
     # Forza Horizon's motion blur threshold, set below its stencil 0x80 so the ground in a car's
-    # contact shadow blurs as on the console. Point-sampled 8-bit texels now read as Xenos reads
-    # them, (x + (x >> 7)) / 256, and 0x80 is above the game's own threshold
-    # (--rexnative_texel_unorm8, docs/NOTES.md "A car's contact shadow in the motion blur").
+    # contact shadow blurs as on the console. Texels now read as Xenos returns them, rounded to 16
+    # fractional bits, and 0x80 is the game's own threshold (SDK patch 0049, Xenia canary's
+    # model; docs/NOTES.md "A car's contact shadow in the motion blur").
     '4D5309C9': [('pixel_constant_override', '"E68FE55ECD482EC5:c253.w=0.5"')],
 }
 

@@ -34,9 +34,12 @@
 //     texture over them and at the Swap (a submission and a wait for the GPU; Xenia Canary's
 //     snapshot and diff, batched).
 //
-// Not handled (counted in Stats::unsupported and dropped): tessellation, line loops and other
+// Not handled (counted in Stats::unsupported and dropped): tessellated triangle strips and fans
+// (tessellated lists and patches are drawn), line loops, quad strips, polygons and the other
 // primitive types needing converted indices, and primitive reset with a 16-bit index other than
-// 0xFFFF; memexport draws with --rexnative_memexport=false.
+// 0xFFFF; memexport draws with --rexnative_memexport=false. Draws whose pipeline is still being
+// compiled wait for it where their result is not drawn again (memexport, occlusion queries,
+// surfaces at most 160 pixels wide), and are skipped for that frame otherwise.
 //
 // Threading: the renderer's On* calls only (one guest thread). With the render thread
 // (renderer.h, --rexnative_render_thread) the work is split: Prepare and EndFramePrepare run

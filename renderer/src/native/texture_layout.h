@@ -68,6 +68,11 @@ enum class TextureConversion : uint8_t {
   // k_DXT3A: each 8-byte 4x4 block of 4-bit alphas (BC2's alpha half) into 16 R8 texels,
   // a * 17 (ReXGlue's texture_load_dxt3a); UntileTexture decodes it a row of blocks at a time.
   kDXT3AToR8,
+  // k_10_11_11 (R 11 bits, G 11, B 10) and k_11_11_10 (R 10, G 11, B 11): each 32-bit texel into
+  // R16G16B16A16_UNORM with its bits replicated (Xenia's texture_load_r11g11b10_rgba16 and
+  // r10g11b11_rgba16), A 1; the row grows to 8 bytes a texel.
+  kR11G11B10ToRGBA16,
+  kR10G11B11ToRGBA16,
 };
 
 struct HostFormat {
@@ -82,7 +87,15 @@ struct HostFormat {
 // Bytes per host block (a texel unless block_compressed): the guest block's, except for a
 // decompressing conversion (DXT3A -> R8: a byte per texel).
 inline uint32_t HostBytesPerBlock(const HostFormat& host, uint32_t guest_bytes_per_block) {
-  return host.conversion == TextureConversion::kDXT3AToR8 ? 1 : guest_bytes_per_block;
+  switch (host.conversion) {
+    case TextureConversion::kDXT3AToR8:
+      return 1;
+    case TextureConversion::kR11G11B10ToRGBA16:
+    case TextureConversion::kR10G11B11ToRGBA16:
+      return 8;
+    default:
+      return guest_bytes_per_block;
+  }
 }
 
 // A 3D texture's depth slices interleave in its tiled memory, so a resolve into slice z and the

@@ -1,0 +1,47 @@
+From fc05741c35b3bdf6129e33cc939e60efa7ac7487 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 17:02:56 +0000
+Subject: [PATCH 50/51] gpu: PM4_WAIT_IB_PFD_COMPLETE and PM4_EVENT_WRITE_CFL
+
+Both fell into the default case, which dropped the rest of the buffer with its fence writes:
+WAIT_IB_PFD_COMPLETE waits for earlier INDIRECT_BUFFER_PFD writes (indirect buffers run in order
+here), and EVENT_WRITE_CFL has EVENT_WRITE_SHD's layout and can carry a fence (Xenia canary
+3e9d62f, 28c265e: a title hung on the lost fence).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/command_processor.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/gpu/xenos/command_processor.cpp b/src/gpu/xenos/command_processor.cpp
+index 69b3e93a..1fef5b98 100644
+--- a/src/gpu/xenos/command_processor.cpp
++++ b/src/gpu/xenos/command_processor.cpp
+@@ -777,6 +777,10 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, u32 packet
+       result = ExecutePacketType3_EVENT_WRITE(reader, packet, count);
+       break;
+     case PM4_EVENT_WRITE_SHD:
++    // Cache flush done: the same initiator, address and value layout as EVENT_WRITE_SHD, and it
++    // can carry a fence write (Xenia Canary 28c265e: unhandled, the rest of the indirect buffer
++    // was dropped with the fence, hanging the title).
++    case PM4_EVENT_WRITE_CFL:
+       result = ExecutePacketType3_EVENT_WRITE_SHD(reader, packet, count);
+       break;
+     case PM4_EVENT_WRITE_EXT:
+@@ -858,6 +862,13 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, u32 packet
+       result = true;
+       break;
+     }
++    case PM4_WAIT_IB_PFD_COMPLETE: {
++      // Waits for earlier INDIRECT_BUFFER_PFD base and size writes; indirect buffers run in
++      // order here (Xenia Canary 3e9d62f).
++      reader->AdvanceRead(count * sizeof(u32));
++      result = true;
++      break;
++    }
+     case PM4_WAIT_FOR_IDLE: {
+       REX_ASSERT(count == 1);
+       u32 value = reader->ReadAndSwap<u32>();
+-- 
+2.55.0.windows.5
+

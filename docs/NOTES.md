@@ -1067,7 +1067,8 @@ Vertex data, constants and texture uploads go through pools of 16 MB UPLOAD-heap
 with 4 (12 for constants) and grew during play: a block takes 2 to 16 ms to create on the PC,
 more on the Steam Deck, and the games' logs showed it at every session (Sega Rally Revo about 12
 blocks in its first 600 frames, Burnout CRASH! 5 in a tenth of a second, Darwinia up to 24). Each
-pool now remembers the blocks this game needed at its peak in `<cache root>exnativeupload_blocks.txt` (`textures`, `vertices`, `constants`; written as soon as it grows, at most 32
+pool now remembers the blocks this game needed at its peak in `<cache root>
+exnativeupload_blocks.txt` (`textures`, `vertices`, `constants`; written as soon as it grows, at most 32
 blocks reserved), and the next run creates them at start-up, during its loading. A request larger
 than a block got a block of its own, released after its frame and made again the next time (Limbo
 and The Bureau upload 41 MB at once): the largest such block, up to 128 MB, is now kept for the
@@ -1217,15 +1218,21 @@ the ground), and footage of the Xbox 360 (the intro drive, the Viper from the fr
 shadow, so the console marks it too: yet that ground is blurred there, sharp in ReXNative's and
 Xenia's emulation (the same frame in oracle mode: 44.8 dB under the bumper), as gravel around the
 car with a straight edge. So on the console a point-sampled texel 0x80 reads at or above 0.501968,
-above 128/255. ReXNative reads point-sampled 8-bit unsigned texels as `(x + (x >> 7)) / 256`, the
-top bit added below the 8 (0x7F 0.49609375, 0x80 0.50390625, 0xFF 1.0; sdk patch 0046's
-`Modification::pixel.textures_unorm8`, set where every texture a pixel shader reads has 8 bits per
-component and none is signed; `--rexnative_texel_unorm8`): the trace of the intro drive then has
-the ground around and under the car blurred with the shadow soft, as the footage, and the frame
-otherwise within 1-5 levels (the blur's velocity, which the game encodes around 127). The exact
-formula below 0x80 is not known (no Xenos documentation of its texel conversion; the depth decode
-above works with it either way, the exponent's floor and the mantissa's fraction compensating),
-so filtered fetches (colours, normals) keep `x / 255`: there no threshold sees the half level.
+above 128/255. Xenia canary had found the same (Forza Horizon and Forza Horizon 2's "sharp
+rectangle around each car", its PR #1158 then #1177, 0c843ef, August 2026): the threshold is
+32897 / 65536 exactly, the value of 128/255 rounded to 16 fractional bits, so Xenos returns
+fixed-point texels in Q16 and the host's float 128/255 falls just short of it. ReXNative first
+read point-sampled 8-bit texels as `(x + (x >> 7)) / 256` (sdk patch 0046, `--rexnative_texel_unorm8`),
+which passes the threshold too but moves every texel by up to half a level (0x7F read 0.49609, so
+`floor(v * 255)` gave 126). Since 2026-11-24 (sdk patch 0049) the translator does what canary does
+for every fetch of a fixed-point format, filtered ones included: unsigned components rounded to
+16 fractional bits (0x80 is 0.5019684), integer fetches scaled by each component's width,
+unsigned-biased ones read as signed offset binary (128 is 0). The two traces of the intro drive,
+stock, replayed: within 59-61 dB of 0046's pictures, the contact shadow the same (0.4-0.6 levels
+apart there, 12-17 from `x / 255`), the rest moved only along the blur's edges, where Q16 sits
+nearer the exact value. "Sharp in Xenia too" above was ReXGlue's own copy of Xenia (January 2026,
+the oracle), not canary, whose reference build (`scripts/xenia.ps1`, 4 November) has the
+rounding but was never run on Forza: compare a look with canary itself, not only the oracle.
 Ruled out on the way (2026-11-23):
 - hierarchical stencil, as far as `RB_HIZCONTROL`'s undocumented bits can be read from the
   values (the draw log's `hz=`): 0x13 for the whole main pass, these draws included (read as
@@ -1269,3 +1276,30 @@ its presses; on Windows, a script appending 1500 commands as fast as it could lo
 Against the old reader, emulated, the new writers lost none of 1500; against the new reader, the
 old appends lost none of 3000 (the 62 that failed, failed in the writer, as errors). In Forza
 Horizon, 80 `keys` presses 50 ms apart and 300 `Add-Content` lines in a row all arrived, in order.
+
+## What Xenia canary and Edge had (2026-11-24)
+
+A comparison with Xenia canary (canary_experimental 2da2519) and its fork Xenia Edge (c47487a9),
+area by area (textures, render targets, shader arithmetic, primitives, the rest), brought over
+what both renderers lacked and canary had tested:
+- SDK patches 0049-0055: texel values as Xenos returns them (above), canary's shader fixes (the
+  scalar operand beside a three-source vector op, signed memexport's rounding bias, vertex words
+  past the buffer read 0, stacked layers clamped, a locked mip's unnormalized grid), PM4 0x5D and
+  0x59 (their fences were dropped with the rest of the buffer), the texture layout fixes (packed
+  level-0 tails, 2D array and volume mips, exact tiled 3D bounds, a base page beside a separate
+  mip page, `force_bc_w_to_max`), MIN and MAX blending's source factor, the classic texture
+  cache's watch races, transcendental results rounded to 21 mantissa bits, and 64bpp clear values
+  in the order D3D writes them.
+- ReXNative: a draw whose result is not drawn again waits for its pipeline instead of being
+  skipped (memexport, a draw an occlusion query counts, a surface at most 160 pixels wide: an eye
+  adaptation history, a lookup table); a vertex fetch constant of a texture's type is read as one;
+  CONSTANT_ALPHA blend factors; an A8 resolve takes the source's alpha; rectangle lists clamp
+  their depth instead of clipping; triangle fans restart after a primitive reset index;
+  k_10_11_11 and k_11_11_10 textures (Spelunky's 384x384) and the 8-bit format aliases.
+The two Forza Horizon traces, stock, stayed within 87-90 dB of the build before the last of these
+and kept the contact shadow. Edge no longer has a DXBC translator (its shaders go SPIR-V to DXIL
+since July 2026), so its "results as the Xenos gives" work (exact RCP/RSQ, vertex math rounded
+toward zero, centroid interpolation) would have to be written for DXBC anew. Left for later, most
+useful first: resolves the CPU reads (Minecraft's save thumbnails), occlusion queries that wait
+for a result the game blocks on (Perfect Dark's lens flares, Halo's intro), tessellated strips
+and fans, 3D textures fetched as 2D, the remaining texture formats (CTX1, YUV, DXT3A_AS_1_1_1_1).

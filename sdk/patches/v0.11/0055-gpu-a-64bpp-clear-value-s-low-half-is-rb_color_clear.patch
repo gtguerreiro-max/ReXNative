@@ -1,0 +1,61 @@
+From 3d2c67e74ecb4e3c8dab2a610b8d8d3c5a8d701f Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 17:12:26 +0000
+Subject: [PATCH 55/55] gpu: a 64bpp clear value's low half is
+ RB_COLOR_CLEAR_LO
+
+For 16_16_16_16(_FLOAT) and 32_32_FLOAT, D3D writes the packed clear value's low 32 bits (R | G << 16,
+or R) to RB_COLOR_CLEAR_LO and its high 32 (B | A << 16, or G) to RB_COLOR_CLEAR; the resolve
+clear took them the other way round, so (0, 0, 0, 1) came out as (0, 1, 0, 0). A 32bpp clear is
+RB_COLOR_CLEAR alone (Xenia canary 16e1eb8).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/d3d12/render_target_cache.cpp |  7 +++++--
+ src/gpu/xenos/draw_state.h                  | 12 ++++++++++--
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/src/gpu/xenos/d3d12/render_target_cache.cpp b/src/gpu/xenos/d3d12/render_target_cache.cpp
+index 7f114ade..fdb79a9a 100644
+--- a/src/gpu/xenos/d3d12/render_target_cache.cpp
++++ b/src/gpu/xenos/d3d12/render_target_cache.cpp
+@@ -1234,8 +1234,11 @@ bool D3D12RenderTargetCache::Resolve(IPhysicalMemory& memory, D3D12SharedMemory&
+                                                  clear_render_targets[1], clear_transfers_[1])) {
+           u64 clear_values[2];
+           clear_values[0] = resolve_info.rb_depth_clear;
+-          clear_values[1] = resolve_info.rb_color_clear |
+-                            (static_cast<u64>(resolve_info.rb_color_clear_lo) << 32);
++          // 64bpp: RB_COLOR_CLEAR_LO the low 32 bits, RB_COLOR_CLEAR the high (canary 16e1eb8).
++          clear_values[1] = resolve_info.color_edram_info.format_is_64bpp
++                                ? resolve_info.rb_color_clear_lo |
++                                      (static_cast<u64>(resolve_info.rb_color_clear) << 32)
++                                : resolve_info.rb_color_clear;
+           PerformTransfersAndResolveClears(2, clear_render_targets, clear_transfers_, clear_values,
+                                            &clear_rectangle);
+         }
+diff --git a/src/gpu/xenos/draw_state.h b/src/gpu/xenos/draw_state.h
+index 04b1c37f..5fa1de21 100644
+--- a/src/gpu/xenos/draw_state.h
++++ b/src/gpu/xenos/draw_state.h
+@@ -513,8 +513,16 @@ struct REX_GPU_XENOS_API ResolveRequest {
+    */
+   void GetColorClearShaderConstants(ResolveClearShaderConstants& constants_out) const {
+     REX_ASSERT(IsClearingColor());
+-    constants_out.rt_specific.clear_value[0] = rb_color_clear;
+-    constants_out.rt_specific.clear_value[1] = rb_color_clear_lo;
++    if (color_edram_info.format_is_64bpp) {
++      // RB_COLOR_CLEAR_LO holds the low 32 bits (R | G << 16 for 16_16_16_16, R for 32_32_FLOAT),
++      // RB_COLOR_CLEAR the high 32: D3D builds them so (Xenia canary 16e1eb8).
++      constants_out.rt_specific.clear_value[0] = rb_color_clear_lo;
++      constants_out.rt_specific.clear_value[1] = rb_color_clear;
++    } else {
++      // A 32bpp clear value is RB_COLOR_CLEAR alone.
++      constants_out.rt_specific.clear_value[0] = rb_color_clear;
++      constants_out.rt_specific.clear_value[1] = rb_color_clear;
++    }
+     constants_out.rt_specific.edram_info = color_edram_info;
+     constants_out.coordinate_info = coordinate_info;
+   }
+-- 
+2.55.0.windows.5
+

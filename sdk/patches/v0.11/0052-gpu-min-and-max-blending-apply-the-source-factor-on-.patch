@@ -1,0 +1,89 @@
+From bd2901430928f97f871c71fa8836f37c2e690011 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 17:06:28 +0000
+Subject: [PATCH] gpu: MIN and MAX blending apply the source factor on host
+ render targets
+
+D3D12's blender ignores the factors of MIN and MAX; Xenos applies them. Where RT0 blends with MIN
+or MAX, SRC_ALPHA as the source factor and ONE as the destination's, the pixel shader multiplies
+the colour (Modification::pixel.rt0_premult_rgb_src_alpha) or the alpha
+(rt0_premult_a_src_alpha) by the alpha before the blender takes it (Xenia canary 0676416, its
+host render target path). The D3D12 pipeline cache sets the bits; a host renderer sets them from
+RB_BLENDCONTROL0 itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gpu/xenos/d3d12/pipeline_cache.cpp          | 17 +++++++++++++++++
+ src/gpu/xenos/pipeline/shader/dxbc_translator.h |  5 +++++
+ .../pipeline/shader/dxbc_translator_om.cpp      | 11 +++++++++++
+ 3 files changed, 33 insertions(+)
+
+diff --git a/src/gpu/xenos/d3d12/pipeline_cache.cpp b/src/gpu/xenos/d3d12/pipeline_cache.cpp
+index c65641d9..30c2bbe3 100644
+--- a/src/gpu/xenos/d3d12/pipeline_cache.cpp
++++ b/src/gpu/xenos/d3d12/pipeline_cache.cpp
+@@ -816,6 +816,23 @@ DXBCShaderTranslator::Modification PipelineCache::GetCurrentPixelShaderModificat
+     }
+   }
+ 
++  // RT0 blended with MIN or MAX, SRC_ALPHA and ONE: the shader applies the source factor D3D12
++  // ignores (Xenia canary 0676416).
++  if (shader.GetWritesColorTargets() & 1) {
++    auto blend_control = regs.Get<xenos::reg::RB_BLENDCONTROL>(
++        xenos::reg::RB_BLENDCONTROL::kRTRegisterIndices[0]);
++    auto min_max = [](xenos::BlendOp op) {
++      return op == xenos::BlendOp::kMin || op == xenos::BlendOp::kMax;
++    };
++    modification.pixel.rt0_premult_rgb_src_alpha =
++        min_max(blend_control.color_comb_fcn) &&
++        blend_control.color_srcblend == xenos::BlendFactor::kSrcAlpha &&
++        blend_control.color_destblend == xenos::BlendFactor::kOne;
++    modification.pixel.rt0_premult_a_src_alpha =
++        min_max(blend_control.alpha_comb_fcn) &&
++        blend_control.alpha_srcblend == xenos::BlendFactor::kSrcAlpha &&
++        blend_control.alpha_destblend == xenos::BlendFactor::kOne;
++  }
+   return modification;
+ }
+ 
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator.h b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+index 56aa5a2a..97f63481 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator.h
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+@@ -135,6 +135,11 @@ class DXBCShaderTranslator : public ShaderTranslator {
+       // conversions. Set by a host renderer that knows the fetch constants when it creates the
+       // pipeline; nothing in the SDK sets it.
+       u32 textures_unsigned : 1;
++      // Host render targets: RT0's blend is MIN or MAX with SRC_ALPHA and ONE, whose source factor
++      // D3D12 ignores and Xenos applies, so the shader premultiplies the colour (RGB) and the
++      // alpha (A) by the alpha (Xenia canary 0676416).
++      u32 rt0_premult_rgb_src_alpha : 1;
++      u32 rt0_premult_a_src_alpha : 1;
+     } pixel;
+ 
+     explicit Modification(u64 modification_value = 0) : value(modification_value) {
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+index 1fdf1d79..d86891d4 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_om.cpp
+@@ -928,6 +928,17 @@ void DXBCShaderTranslator::CompletePixelShaderWriteToRTVs() {
+       a_.OpEndIf();
+       a_.OpEndIf();
+     }
++    if (i == 0) {
++      // MIN and MAX with SRC_ALPHA as the source factor and ONE as the destination's: D3D12's
++      // blender ignores the factors of MIN and MAX, Xenos applies them (Xenia canary 0676416).
++      const auto& pixel_modification = GetDXBCShaderModification().pixel;
++      u32 premult_mask = (pixel_modification.rt0_premult_rgb_src_alpha ? 0b0111u : 0u) |
++                         (pixel_modification.rt0_premult_a_src_alpha ? 0b1000u : 0u);
++      if (premult_mask) {
++        a_.OpMul(dxbc::Dest::R(system_temp_color, premult_mask), dxbc::Src::R(system_temp_color),
++                 dxbc::Src::R(system_temp_color, dxbc::Src::kWWWW));
++      }
++    }
+     a_.OpMov(dxbc::Dest::O(i), dxbc::Src::R(system_temp_color));
+   }
+   PopSystemTemp(2);
+-- 
+2.55.0.windows.5
+

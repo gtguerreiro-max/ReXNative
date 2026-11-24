@@ -154,6 +154,23 @@ constexpr FormatEntry kFormats[] = {
     {TextureFormat::k_DXT3A,
      {DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_UNKNOWN, C::kDXT3AToR8, false,
       kRRRR}},
+    // Three-component packed formats as Xenia's host_formats_ take them: R16G16B16A16 with the
+    // bits replicated on load (unsigned only here). Spelunky has a 384x384 k_10_11_11.
+    {TextureFormat::k_10_11_11,
+     {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR11G11B10ToRGBA16, false, kRGBB}},
+    {TextureFormat::k_11_11_10,
+     {DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_UNKNOWN,
+      C::kR10G11B11ToRGBA16, false, kRGBB}},
+    // The 8-bit aliases: fetches, resolves and memexport on hardware are exact copies of k_8 and
+    // k_8_8_8_8 (Xenia canary 8322658).
+    {TextureFormat::k_8_A,
+     {DXGI_FORMAT_R8_TYPELESS, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_SNORM, C::kCopy, false, kRRRR}},
+    {TextureFormat::k_8_B,
+     {DXGI_FORMAT_R8_TYPELESS, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_SNORM, C::kCopy, false, kRRRR}},
+    {TextureFormat::k_8_8_8_8_A,
+     {DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_SNORM,
+      C::kCopy, false, kRGBA}},
 };
 
 // Fetch constant formats are 6 bits.
@@ -237,6 +254,31 @@ void Convert(TextureConversion conversion, uint8_t* row, uint32_t bytes) {
       return;
     case C::kDXT3AToR8:  // not a row conversion: UntileTexture decodes the blocks
       return;
+    case C::kR11G11B10ToRGBA16:
+    case C::kR10G11B11ToRGBA16: {
+      // The row holds 4-byte guest texels in its first half: expanded from the end, so no texel
+      // is overwritten before it is read.
+      const bool r11 = conversion == C::kR11G11B10ToRGBA16;
+      for (uint32_t n = bytes / 8; n-- > 0;) {
+        uint32_t v;
+        std::memcpy(&v, row + size_t(n) * 4, 4);
+        uint16_t c[4];
+        if (r11) {
+          const uint32_t r = v & 2047, g = (v >> 11) & 2047, b = v >> 22;
+          c[0] = uint16_t((r << 5) | (r >> 6));
+          c[1] = uint16_t((g << 5) | (g >> 6));
+          c[2] = uint16_t((b << 6) | (b >> 4));
+        } else {
+          const uint32_t r = v & 1023, g = (v >> 10) & 2047, b = v >> 21;
+          c[0] = uint16_t((r << 6) | (r >> 4));
+          c[1] = uint16_t((g << 5) | (g >> 6));
+          c[2] = uint16_t((b << 5) | (b >> 6));
+        }
+        c[3] = 0xFFFF;
+        std::memcpy(row + size_t(n) * 8, c, 8);
+      }
+      return;
+    }
   }
 }
 
@@ -326,7 +368,7 @@ uint64_t GetHostFootprints(const TextureKey& key, bool d3d12_placement,
   uint32_t bw = host->block_compressed ? info->block_width : 1;
   uint32_t bh = host->block_compressed ? info->block_height : 1;
   // Host bytes per block equal the guest ones (the conversions keep the size), except DXT3A's
-  // decompression into R8.
+  // decompression into R8 and the three-component packed formats' expansion to RGBA16.
   uint32_t bpb = HostBytesPerBlock(*host, info->GetBytesPerBlock());
   uint64_t offset = 0;
   for (uint32_t slice = 0; slice < key.array_size(); ++slice) {

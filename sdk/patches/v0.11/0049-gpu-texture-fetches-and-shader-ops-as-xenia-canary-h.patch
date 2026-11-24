@@ -1,0 +1,711 @@
+From 349045ec8b713e9d935d836e74610f84b09f0c91 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 17:02:56 +0000
+Subject: [PATCH 49/51] gpu: texture fetches and shader ops as Xenia canary has
+ them
+
+Ported from Xenia canary's DXBC translator (BSD), for both the Xenos plugin and a host renderer
+that uses the translator:
+
+- Texture fetches return what Xenos returns, from a per fetch constant
+  SystemConstants::texture_integer_scale_bits (rex/xenos/texture_integer_scale.h, canary's
+  GetIntegerScaleBits; d119505, 0c843ef, c3cd861, e6cd2e4): fraction fetches round unsigned
+  components to 16 fractional bits (Forza Horizon's motion blur compares a point-sampled 0x80
+  with 32897 / 65536, its Q16 value; the host's 128 / 255 is just below it), integer fetches
+  scale each component by its own width through the swizzle and round point-sampled ones,
+  unsigned-biased components decode as signed offset binary (an 8-bit 128 reads 0), and
+  point-sampled 4 to 6 bit unsigned components read as n * (2^w + 1) / 2^(2w). The D3D12
+  backend fills the constant and no longer folds integer scales into exp_adjust
+  (integer_fetch.h stays for Vulkan). Replaces 0046's (x + (x >> 7)) / 256 and its
+  Modification::pixel.textures_unorm8.
+- A two-component scalar op's second operand is Z when the paired vector op uses source 3
+  (92ada8e), in the translator and the interpreter.
+- Signed memexport: the copysign rounding bias goes into its temp, not over the value (da47dfa).
+- Vertex words at or past the fetch constant's size read 0 (9e9d3cd).
+- A stacked texture's layer is clamped to its layers' centres (04085ef: 584107FB's backdrop).
+- An unnormalized 2D fetch locked to one mip divides by that mip's size (8486e97).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/xenos/texture_integer_scale.h     | 103 +++++++
+ src/gpu/xenos/d3d12/command_processor.cpp     |  12 +-
+ .../xenos/pipeline/shader/dxbc_translator.cpp |   2 +
+ .../xenos/pipeline/shader/dxbc_translator.h   |  21 +-
+ .../pipeline/shader/dxbc_translator_fetch.cpp | 274 +++++++++++++++---
+ .../shader/dxbc_translator_memexport.cpp      |  10 +-
+ src/gpu/xenos/pipeline/shader/interpreter.cpp |   4 +-
+ src/gpu/xenos/pipeline/shader/translator.cpp  |  13 +-
+ 8 files changed, 382 insertions(+), 57 deletions(-)
+ create mode 100644 include/rex/xenos/texture_integer_scale.h
+
+diff --git a/include/rex/xenos/texture_integer_scale.h b/include/rex/xenos/texture_integer_scale.h
+new file mode 100644
+index 00000000..fe710ee8
+--- /dev/null
++++ b/include/rex/xenos/texture_integer_scale.h
+@@ -0,0 +1,103 @@
++#pragma once
++// How a texture fetch turns the host's normalized sample back into what Xenos returns: Xenia
++// Canary's TextureCache::GetIntegerScaleBits (d119505, 0c843ef, c3cd861, e6cd2e4, BSD), packed
++// per fetch constant into SystemConstants::texture_integer_scale_bits for the DXBC translator.
++//
++// - Fraction (normalized) fetches of fixed-point formats: bit 24. Unsigned components are rounded
++//   to 16 fractional bits, as Xenos returns them (Forza Horizon and Forza Horizon 2 compare a
++//   point-sampled 0x80 with 32897 / 65536, its Q16 value: the host's 128 / 255 is just below it).
++//   Point-sampled 4 to 6 bit unsigned components carry their width and read as
++//   n * (2^w + 1) / 2^(2w) (the conversion in Rage's virtual texture page tables).
++// - Integer fetches: each component's width, so the shader multiplies by 2^w - 1 (unsigned) or
++//   2^(w - 1) - 1 (signed, unsigned-biased) and, point-sampled, rounds to the stored integer.
++// - Unsigned-biased components always carry their width: (n - 2^(w - 1)) / (2^(w - 1) - 1), so
++//   an 8-bit 128 reads 0, not 2 * 128 / 255 - 1.
++// - Bit 26: the fetch constant is point-sampled (point mag, min and mip or base map, no
++//   anisotropy).
++// Per component i (after the guest swizzle), 6 bits at i * 6: bits 0:3 width - 1, bits 4:5 the
++// TextureSign. Zero for a format that is not fixed-point (floats, DXT, depth, YUV...).
++#include <rex/xenos/fetch.h>
++
++#include <algorithm>
++#include <cstdint>
++
++namespace rex::xenos {
++
++// Component widths of the fixed-point formats, by TextureFormat (Xenia Canary's FormatInfo
++// component_bits for the formats it marks fixed); zero widths for the others.
++inline constexpr uint8_t kTextureFixedComponentBits[64][4] = {
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {8, 0, 0, 0},     {5, 5, 5, 1},     // 0-3
++    {5, 6, 5, 0},     {5, 5, 6, 0},     {8, 8, 8, 8},     {10, 10, 10, 2},  // 4-7
++    {8, 0, 0, 0},     {8, 0, 0, 0},     {8, 8, 0, 0},     {0, 0, 0, 0},     // 8-11
++    {0, 0, 0, 0},     {16, 16, 0, 0},   {8, 8, 8, 8},     {4, 4, 4, 4},     // 12-15
++    {11, 11, 10, 0},  {10, 11, 11, 0},  {0, 0, 0, 0},     {0, 0, 0, 0},     // 16-19
++    {0, 0, 0, 0},     {16, 16, 16, 16}, {0, 0, 0, 0},     {0, 0, 0, 0},     // 20-23
++    {16, 0, 0, 0},    {16, 16, 0, 0},   {16, 16, 16, 16}, {0, 0, 0, 0},     // 24-27
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     // 28-31
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     // 32-35
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     // 36-39
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     // 40-43
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     {0, 0, 0, 0},     // 44-47
++    {0, 0, 0, 0},     {8, 8, 0, 0},     {8, 8, 8, 8},     {0, 0, 0, 0},     // 48-51
++    {0, 0, 0, 0},     {0, 0, 0, 0},     {10, 10, 10, 2},  {11, 11, 10, 0},  // 52-55
++    {10, 11, 11, 0},  {0, 0, 0, 0},     {8, 0, 0, 0},     {8, 0, 0, 0},     // 56-59
++    {8, 8, 0, 0},     {0, 0, 0, 0},     {8, 8, 8, 8},     {0, 0, 0, 0},     // 60-63
++};
++
++inline bool IsTextureFormatFixed(uint32_t format) {
++  return kTextureFixedComponentBits[format & 63][0] != 0;
++}
++
++// `swizzled_signs`: the fetch constant's signs after its swizzle, 2 bits per component
++// (SwizzleSigns, the value the translator's texture_swizzled_signs carries).
++inline uint32_t TextureIntegerScaleBits(const TextureFetch& fetch, uint8_t swizzled_signs) {
++  const uint32_t format = uint32_t(fetch.format) & 63;
++  const bool point_sampled = fetch.mag_filter == TextureFilter::kPoint &&
++                             fetch.min_filter == TextureFilter::kPoint &&
++                             (fetch.mip_filter == TextureFilter::kPoint ||
++                              fetch.mip_filter == TextureFilter::kBaseMap) &&
++                             fetch.aniso_filter == AnisoFilter::kDisabled;
++  uint32_t scale_bits = point_sampled ? UINT32_C(1) << 26 : 0;
++  if (!IsTextureFormatFixed(format)) {
++    return scale_bits;
++  }
++  if (!fetch.num_format) {
++    scale_bits |= UINT32_C(1) << 24;
++  }
++  const uint8_t* bits = kTextureFixedComponentBits[format];
++  uint32_t last_stored_component = 0;
++  for (uint32_t i = 1; i < 4; ++i) {
++    if (bits[i]) {
++      last_stored_component = i;
++    }
++  }
++  for (uint32_t i = 0; i < 4; ++i) {
++    uint32_t source_component = (fetch.swizzle >> (i * 3)) & 0b111;
++    if (source_component >= 4) {  // TextureSwizzle k0 or k1.
++      continue;
++    }
++    source_component = std::min(source_component, last_stored_component);
++    const TextureSign sign = TextureSign((swizzled_signs >> (i * 2)) & 0b11);
++    const uint32_t width = bits[source_component];
++    if (!width || width > 16) {
++      continue;
++    }
++    bool carries_width = true;
++    if (sign == TextureSign::kGamma) {
++      if (fetch.num_format) {
++        continue;
++      }
++      carries_width = false;
++    } else if (!fetch.num_format && sign == TextureSign::kUnsigned) {
++      carries_width = point_sampled && width >= 4 && width <= 6;
++    }
++    uint32_t component_scale = uint32_t(sign) << 4;
++    if (carries_width) {
++      component_scale |= width - 1;
++    }
++    scale_bits |= component_scale << (i * 6);
++  }
++  return scale_bits;
++}
++
++}  // namespace rex::xenos
+diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
+index e4fbc92e..e2dbc2f7 100644
+--- a/src/gpu/xenos/d3d12/command_processor.cpp
++++ b/src/gpu/xenos/d3d12/command_processor.cpp
+@@ -26,7 +26,7 @@
+ #include "gpu/xenos/d3d12/shader.h"
+ #include <rex/title.h>
+ #include <rex/xenos/draw_hook.h>
+-#include <rex/xenos/integer_fetch.h>
++#include <rex/xenos/texture_integer_scale.h>
+ #include <rex/xenos/register.h>
+ #include "gpu/xenos/draw_state.h"
+ #include <rex/xenos/fetch.h>
+@@ -3699,6 +3699,11 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+     u32 texture_signs_mask = static_cast<u32>(0b11111111) << texture_signs_shift;
+     dirty |= (texture_signs_uint & texture_signs_mask) != texture_signs_shifted;
+     texture_signs_uint = (texture_signs_uint & ~texture_signs_mask) | texture_signs_shifted;
++    u32 texture_integer_scale_bits =
++        rex::xenos::TextureIntegerScaleBits(regs.GetTextureFetch(texture_index), texture_signs);
++    dirty |= system_constants_.texture_integer_scale_bits[texture_index] !=
++             texture_integer_scale_bits;
++    system_constants_.texture_integer_scale_bits[texture_index] = texture_integer_scale_bits;
+     textures_resolution_scaled |=
+         static_cast<u32>(texture_cache_->IsActiveTextureResolutionScaled(texture_index))
+         << texture_index;
+@@ -4026,9 +4031,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+     std::memcpy(fetch_constants,
+                 &regs[std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0)],
+                 kFetchConstantsSize);
+-    rex::xenos::AdjustIntegerTextureFetchConstants(
+-        reinterpret_cast<u32*>(fetch_constants),
+-        &regs[std::to_underlying(xenos::Register::SHADER_CONSTANT_FETCH_00_0)]);
++    // Integer fetches are scaled in the shaders (texture_integer_scale_bits): the fetch
++    // constants go as the guest wrote them.
+     cbuffer_binding_fetch_.up_to_date = true;
+     current_graphics_root_up_to_date_ &= ~(1u << root_parameter_fetch_constants);
+   }
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator.cpp
+index 7a1aa537..74176580 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator.cpp
+@@ -1699,6 +1699,8 @@ const DXBCShaderTranslator::SystemConstantRDEF
+         {"xe_edram_rt_blend_factors_ops", ShaderRDEFTypeIndex::kUint4, sizeof(u32) * 4},
+ 
+         {"xe_edram_blend_constant", ShaderRDEFTypeIndex::kFloat4, sizeof(f32) * 4},
++
++        {"xe_texture_integer_scale_bits", ShaderRDEFTypeIndex::kUint4Array8, sizeof(u32) * 32},
+ };
+ 
+ void DXBCShaderTranslator::WriteResourceDefinition() {
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator.h b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+index 1c8b15aa..56aa5a2a 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator.h
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator.h
+@@ -69,7 +69,7 @@ class DXBCShaderTranslator : public ShaderTranslator {
+      * Layout version in 0xYYYYMMDD form, increased on incompatible changes to invalidate pipeline
+      * storage.
+      */
+-    static constexpr u32 kVersion = 0x20260226;
++    static constexpr u32 kVersion = 0x20261124;
+ 
+     // NOLINTNEXTLINE(performance-enum-size): packed key bit field, MSVC packs per type
+     enum class DepthStencilMode : u32 {
+@@ -135,11 +135,6 @@ class DXBCShaderTranslator : public ShaderTranslator {
+       // conversions. Set by a host renderer that knows the fetch constants when it creates the
+       // pipeline; nothing in the SDK sets it.
+       u32 textures_unsigned : 1;
+-      // With textures_unsigned: every texture the shader reads also has 8 bits per component,
+-      // so its point-sampled fetches read texels as (x + (x >> 7)) / 256 (0x80 is 0.50390625),
+-      // not as the host's x / 255 (see the end of ProcessTextureFetchInstruction). Set by a host
+-      // renderer that knows the fetch constants; nothing in the SDK sets it.
+-      u32 textures_unorm8 : 1;
+     } pixel;
+ 
+     explicit Modification(u64 modification_value = 0) : value(modification_value) {
+@@ -378,6 +373,14 @@ class DXBCShaderTranslator : public ShaderTranslator {
+ 
+     f32 edram_blend_constant[4];
+ 
++    /**
++     * Per texture fetch constant, how the host's normalized sample becomes what Xenos returns
++     * (Xenia Canary's texture_integer_scale_bits, rex/xenos/texture_integer_scale.h): Q16
++     * rounding of fraction fetches, integer fetch scales, unsigned-biased widths, point
++     * sampling (bit 26). Zero leaves the sample alone.
++     */
++    u32 texture_integer_scale_bits[32];
++
+    private:
+     friend class DXBCShaderTranslator;
+ 
+@@ -430,6 +433,8 @@ class DXBCShaderTranslator : public ShaderTranslator {
+ 
+       kEDRAMBlendConstant,
+ 
++      kTextureIntegerScaleBits,
++
+       kCount,
+     };
+     static_assert(std::to_underlying(Index::kCount) <= 64,
+@@ -624,6 +629,10 @@ class DXBCShaderTranslator : public ShaderTranslator {
+ 
+   void ProcessVertexFetchInstruction(const ParsedVertexFetchInstruction& instr) override;
+   void ProcessTextureFetchInstruction(const ParsedTextureFetchInstruction& instr) override;
++  // The fetch constant's num_format conversion, after signs and gamma (dxbc_translator_fetch.cpp).
++  void EmitTextureNumFormat(const ParsedTextureFetchInstruction& instr, bool use_computed_lod,
++                            const dxbc::Src& integer_scale_bits_packed,
++                            u32 used_result_nonzero_components);
+   void ProcessALUInstruction(const ParsedALUInstruction& instr,
+                              u8 memexport_em_potentially_written_before) override;
+ 
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+index 1ad130e2..d34fcdda 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -113,7 +113,28 @@ void DXBCShaderTranslator::ProcessVertexFetchInstruction(
+     address_src = address_temp_src;
+   }
+ 
+-  // Bounds are not checked, and Adreno 200 returns 0 for words out of bounds.
++  // Words at or past the end of the fetch buffer read 0, as on Xenos (Xenia Canary 9e9d3cd): the
++  // shared memory binding covers all of physical memory, and an over-allocated draw expects the
++  // vertices it never wrote to collapse into degenerate primitives, not to read other data.
++  u32 bounds_temp = PushSystemTemp(0, 2);
++  u32 word_mask_temp = bounds_temp + 1;
++  // bounds_temp.x = the buffer's size in words (bits 2:25 of the second fetch constant word).
++  a_.OpUBFE(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(2),
++            fetch_constant_src.SelectFromSwizzled(1));
++  // bounds_temp.y = the buffer's base address in bytes.
++  a_.OpAnd(dxbc::Dest::R(bounds_temp, 0b0010), fetch_constant_src.SelectFromSwizzled(0),
++           dxbc::Src::LU(~static_cast<u32>(3)));
++  // bounds_temp.x = the buffer's exclusive end in bytes.
++  a_.OpUMAd(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX),
++            dxbc::Src::LU(4), dxbc::Src::R(bounds_temp, dxbc::Src::kYYYY));
++  // word_mask_temp = the byte addresses of the element's words, then whether each is inside.
++  a_.OpIAdd(dxbc::Dest::R(word_mask_temp), address_src,
++            dxbc::Src::LI((0 - static_cast<i32>(first_word_index)) * 4,
++                          (1 - static_cast<i32>(first_word_index)) * 4,
++                          (2 - static_cast<i32>(first_word_index)) * 4,
++                          (3 - static_cast<i32>(first_word_index)) * 4));
++  a_.OpULT(dxbc::Dest::R(word_mask_temp, needed_words), dxbc::Src::R(word_mask_temp),
++           dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX));
+ 
+   // Load like FXC, as Load2 plus Load for xyw, which suits both AMD and Nvidia buffers.
+ 
+@@ -167,6 +188,10 @@ void DXBCShaderTranslator::ProcessVertexFetchInstruction(
+   }
+   a_.OpEndIf();
+ 
++  a_.OpAnd(dxbc::Dest::R(system_temp_result_, needed_words), dxbc::Src::R(system_temp_result_),
++           dxbc::Src::R(word_mask_temp));
++  PopSystemTemp(2);
++
+   dxbc::Src result_src(dxbc::Src::R(system_temp_result_));
+ 
+   {
+@@ -750,6 +775,30 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+       // Fetch constants store the size minus 1.
+       a_.OpIAdd(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp), dxbc::Src::LU(1));
++      // Unnormalized coordinates address the texels of the mip level sampled: a 2D fetch whose
++      // constant locks one mip (MipMinLevel == MipMaxLevel) divides by that level's size, not
++      // the base's (Xenia Canary 8486e97: the HZB reductions of 555308B6 and 5553080B).
++      if (instr.opcode == FetchOpcode::kTextureFetch &&
++          instr.dimension == xenos::FetchOpDimension::k2D &&
++          instr.attributes.unnormalized_coordinates && (size_needed_components & 0b0011) == 0b0011) {
++        u32 selected_mip_temp = PushSystemTemp();
++        // Word 4: MipMinLevel in bits 2:5, MipMaxLevel in bits 6:9.
++        a_.OpUBFE(dxbc::Dest::R(selected_mip_temp, 0b0011), dxbc::Src::LU(4, 4, 0, 0),
++                  dxbc::Src::LU(2, 6, 0, 0), RequestTextureFetchConstantWord(tfetch_index, 4));
++        a_.OpIEq(dxbc::Dest::R(selected_mip_temp, 0b0100),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kYYYY));
++        // max(size >> mip, 1) in Y and W.
++        a_.OpUShR(dxbc::Dest::R(selected_mip_temp, 0b1010),
++                  dxbc::Src::R(size_and_is_3d_temp, 0b01000000),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX));
++        a_.OpUMax(dxbc::Dest::R(selected_mip_temp, 0b1010), dxbc::Src::R(selected_mip_temp),
++                  dxbc::Src::LU(1));
++        a_.OpMovC(dxbc::Dest::R(size_and_is_3d_temp, 0b0011),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kZZZZ),
++                  dxbc::Src::R(selected_mip_temp, 0b00001101), dxbc::Src::R(size_and_is_3d_temp));
++        PopSystemTemp();
++      }
+       a_.OpUToF(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp));
+     }
+@@ -825,6 +874,15 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+         offsetof(SystemConstants, texture_swizzled_signs) + sizeof(u32) * (tfetch_index >> 2),
+         dxbc::Src::kXXXX));
+     u32 signs_shift = (tfetch_index & 3) * 8;
++    // How the host's normalized sample becomes what Xenos returns, per fetch constant (Xenia
++    // Canary's texture_integer_scale_bits, rex/xenos/texture_integer_scale.h).
++    dxbc::Src integer_scale_bits_packed(dxbc::Src::LU(0));
++    if (instr.opcode == FetchOpcode::kTextureFetch) {
++      integer_scale_bits_packed = LoadSystemConstant(
++          SystemConstants::Index::kTextureIntegerScaleBits,
++          offsetof(SystemConstants, texture_integer_scale_bits) + sizeof(u32) * tfetch_index,
++          dxbc::Src::kXXXX);
++    }
+     u32 signs_temp = UINT32_MAX;
+     if (instr.opcode == FetchOpcode::kTextureFetch && !textures_unsigned) {
+       signs_temp = PushSystemTemp();
+@@ -861,6 +919,18 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+         normalized_components_with_offsets & ~normalized_components_with_scaled_offsets;
+     u32 normalized_components_without_offsets =
+         normalized_components & ~normalized_components_with_offsets;
++    // Z of a stacked fetch to [0.5, layers - 0.5] (max first: max(NaN, 0.5) is 0.5).
++    auto clamp_stacked_layer = [&]() {
++      u32 layer_clamp_temp = PushSystemTemp();
++      a_.OpMax(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++               dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ), dxbc::Src::LF(0.5f));
++      a_.OpAdd(dxbc::Dest::R(layer_clamp_temp, 0b0001),
++               dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kZZZZ), dxbc::Src::LF(-0.5f));
++      a_.OpMin(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++               dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++               dxbc::Src::R(layer_clamp_temp, dxbc::Src::kXXXX));
++      PopSystemTemp();
++    };
+     if (instr.attributes.unnormalized_coordinates) {
+       REX_ASSERT(normalized_components != 0);
+       REX_ASSERT((size_needed_components & normalized_components) == normalized_components);
+@@ -900,17 +970,24 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+           a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
+                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kZZZZ));
++          a_.OpElse();
++          // A stacked texture's layer clamped to the layers' centres: a non-finite coordinate
++          // (584107FB's backdrop) would otherwise sample nothing (Xenia Canary 04085ef).
++          clamp_stacked_layer();
+           a_.OpEndIf();
+         }
+       } else {
+         a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, normalized_components), coord_operand,
+                  dxbc::Src::R(size_and_is_3d_temp));
+         if (instr.dimension == xenos::FetchOpDimension::k3DOrStacked) {
+-          REX_ASSERT((size_needed_components & 0b1000) == 0b1000);
+-          a_.OpMovC(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+-                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
+-                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
+-                    coord_operand.SelectFromSwizzled(2));
++          REX_ASSERT((size_needed_components & 0b1100) == 0b1100);
++          a_.OpIf(false, dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW));
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   coord_operand.SelectFromSwizzled(2));
++          // A stacked texture's layer clamped to the layers' centres: a non-finite coordinate
++          // (584107FB's backdrop) would otherwise sample nothing (Xenia Canary 04085ef).
++          clamp_stacked_layer();
++          a_.OpEndIf();
+         }
+       }
+     } else {
+@@ -954,15 +1031,22 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+           a_.OpMAd(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+                    coord_operand.SelectFromSwizzled(2),
+                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kZZZZ), dxbc::Src::LF(offsets[2]));
++          // A stacked texture's layer clamped to the layers' centres: a non-finite coordinate
++          // (584107FB's backdrop) would otherwise sample nothing (Xenia Canary 04085ef).
++          clamp_stacked_layer();
+           a_.OpEndIf();
+         } else {
+           a_.OpMul(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+                    coord_operand.SelectFromSwizzled(2),
+                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kZZZZ));
+-          a_.OpMovC(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+-                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
+-                    coord_operand.SelectFromSwizzled(2),
+-                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpIf(true, dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW));
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   coord_operand.SelectFromSwizzled(2));
++          a_.OpElse();
++          // A stacked texture's layer clamped to the layers' centres: a non-finite coordinate
++          // (584107FB's backdrop) would otherwise sample nothing (Xenia Canary 04085ef).
++          clamp_stacked_layer();
++          a_.OpEndIf();
+         }
+       }
+     }
+@@ -1590,7 +1674,40 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+         dxbc::Src component_src(dxbc::Src::R(system_temp_result_).Select(i));
+         a_.OpSwitch(dxbc::Src::R(signs_temp).Select(i));
+         a_.OpCase(dxbc::Src::LU(std::to_underlying(xenos::TextureSign::kUnsignedBiased)));
+-        a_.OpMAd(component_dest, component_src, dxbc::Src::LF(2.0f), dxbc::Src::LF(-1.0f));
++        {
++          // Signed offset binary (Xenia Canary c3cd861): (n - 2^(w - 1)) / (2^(w - 1) - 1), so
++          // an 8-bit 128 reads 0, not the 1/255 of 2 * u - 1. Unclamped until num_format is
++          // applied; 2 * u - 1 where the width is unknown or 1 bit.
++          u32 biased_temp = PushSystemTemp();
++          a_.OpUBFE(dxbc::Dest::R(biased_temp, 0b0001), dxbc::Src::LU(4), dxbc::Src::LU(i * 6),
++                    integer_scale_bits_packed);
++          // Y = 2^(w - 1).
++          a_.OpIShL(dxbc::Dest::R(biased_temp, 0b0010), dxbc::Src::LU(1),
++                    dxbc::Src::R(biased_temp, dxbc::Src::kXXXX));
++          a_.OpUToF(dxbc::Dest::R(biased_temp, 0b0010),
++                    dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
++          // Z = u * (2^w - 1) - 2^(w - 1).
++          a_.OpMAd(dxbc::Dest::R(biased_temp, 0b0100),
++                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY), dxbc::Src::LF(2.0f),
++                   dxbc::Src::LF(-1.0f));
++          a_.OpMul(dxbc::Dest::R(biased_temp, 0b0100), component_src,
++                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ));
++          a_.OpAdd(dxbc::Dest::R(biased_temp, 0b0100),
++                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
++                   -dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
++          // Y = 2^(w - 1) - 1, Z = Z / Y.
++          a_.OpAdd(dxbc::Dest::R(biased_temp, 0b0010),
++                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY), dxbc::Src::LF(-1.0f));
++          a_.OpDiv(dxbc::Dest::R(biased_temp, 0b0100),
++                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
++          a_.OpMAd(dxbc::Dest::R(biased_temp, 0b0010), component_src, dxbc::Src::LF(2.0f),
++                   dxbc::Src::LF(-1.0f));
++          a_.OpMovC(component_dest, dxbc::Src::R(biased_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
++                    dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
++          PopSystemTemp();
++        }
+         a_.OpBreak();
+         a_.OpCase(dxbc::Src::LU(std::to_underlying(xenos::TextureSign::kGamma)));
+         u32 gamma_temp = PushSystemTemp();
+@@ -1601,6 +1718,10 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+         a_.OpEndSwitch();
+       }
+     }
++    if (instr.opcode == FetchOpcode::kTextureFetch && used_result_nonzero_components) {
++      EmitTextureNumFormat(instr, use_computed_lod, integer_scale_bits_packed,
++                           used_result_nonzero_components);
++    }
+     if (signs_temp != UINT32_MAX) {
+       PopSystemTemp();
+     }
+@@ -1622,33 +1743,6 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+     PopSystemTemp();
+   }
+ 
+-  // An 8-bit unsigned normalized texel fetched point-sampled reads above x / 255 on Xenos where a
+-  // game can tell: Forza Horizon's motion blur keeps its stencil 0x80 sharp below 0.501968 (just
+-  // above 128 / 255) and the console blurs it, which x / 255 did not. Read as (x + (x >> 7)) /
+-  // 256 here, the top bit added below the 8 (0x7F 0.49609375, 0x80 0.50390625, 0xFF 1.0), from
+-  // the host's x / 255: x * 255 / 256 + [x >= 128] / 256, the step as saturate(v * 255 - 127).
+-  // Only for fetches the instruction itself makes point-sampled (no filter from the fetch
+-  // constant, no anisotropy): there a texel's exact value is what the shader works with (a mask,
+-  // an ID, a stencil copy); a filtered fetch (colours, normals) stays x / 255.
+-  if (instr.opcode == FetchOpcode::kTextureFetch && textures_unsigned &&
+-      GetDXBCShaderModification().pixel.textures_unorm8 && used_result_nonzero_components &&
+-      instr.attributes.mag_filter == xenos::TextureFilter::kPoint &&
+-      instr.attributes.min_filter == xenos::TextureFilter::kPoint &&
+-      (instr.attributes.mip_filter == xenos::TextureFilter::kPoint ||
+-       instr.attributes.mip_filter == xenos::TextureFilter::kBaseMap) &&
+-      instr.attributes.aniso_filter == xenos::AnisoFilter::kDisabled) {
+-    u32 high_temp = PushSystemTemp();
+-    a_.OpMAd(dxbc::Dest::R(high_temp, used_result_nonzero_components),
+-             dxbc::Src::R(system_temp_result_), dxbc::Src::LF(255.0f), dxbc::Src::LF(-127.0f),
+-             true);
+-    a_.OpMul(dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+-             dxbc::Src::R(system_temp_result_), dxbc::Src::LF(255.0f / 256.0f));
+-    a_.OpMAd(dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+-             dxbc::Src::R(high_temp), dxbc::Src::LF(1.0f / 256.0f),
+-             dxbc::Src::R(system_temp_result_));
+-    PopSystemTemp();
+-  }
+-
+   u32 used_result_zero_components = used_result_components & ~used_result_nonzero_components;
+   if (used_result_zero_components) {
+     a_.OpMov(dxbc::Dest::R(system_temp_result_, used_result_zero_components), dxbc::Src::LF(0.0f));
+@@ -1656,4 +1750,108 @@ void DXBCShaderTranslator::ProcessTextureFetchInstruction(
+   StoreResult(instr.result, dxbc::Src::R(system_temp_result_));
+ }
+ 
++// Xenia Canary's num_format conversion (d119505, 0c843ef, c3cd861, BSD), after signs and gamma,
++// before the exponent adjustment, driven by the fetch constant's texture_integer_scale_bits:
++// - fraction fetches round unsigned components to 16 fractional bits, as Xenos returns them
++//   (Forza Horizon's motion blur compares a point-sampled 0x80 with 32897 / 65536), clamp
++//   unsigned-biased ones to -1, and, point-sampled, read 4 to 6 bit unsigned components as
++//   n * (2^w + 1) / 2^(2w);
++// - integer fetches scale to 2^w - 1 (unsigned) or 2^(w - 1) - 1 (signed, biased) and,
++//   point-sampled, round to the stored integer.
++void DXBCShaderTranslator::EmitTextureNumFormat(const ParsedTextureFetchInstruction& instr,
++                                                bool use_computed_lod,
++                                                const dxbc::Src& integer_scale_bits_packed,
++                                                u32 used_result_nonzero_components) {
++  const bool allows_point_sampling =
++      instr.attributes.mag_filter != xenos::TextureFilter::kLinear &&
++      instr.attributes.min_filter != xenos::TextureFilter::kLinear &&
++      instr.attributes.mip_filter != xenos::TextureFilter::kLinear &&
++      (!use_computed_lod || instr.attributes.aniso_filter == xenos::AnisoFilter::kDisabled ||
++       instr.attributes.aniso_filter == xenos::AnisoFilter::kUseFetchConst);
++  u32 integer_scale_temp = PushSystemTemp();
++  u32 flags_temp = PushSystemTemp();
++  dxbc::Dest integer_scale_dest(dxbc::Dest::R(integer_scale_temp, used_result_nonzero_components));
++  dxbc::Src integer_scale_src(dxbc::Src::R(integer_scale_temp));
++  dxbc::Dest flags_dest(dxbc::Dest::R(flags_temp, used_result_nonzero_components));
++  dxbc::Src flags_src(dxbc::Src::R(flags_temp));
++  dxbc::Dest result_dest(dxbc::Dest::R(system_temp_result_, used_result_nonzero_components));
++  dxbc::Src result_src(dxbc::Src::R(system_temp_result_));
++  // Uniform early out: zero leaves the sample alone; bit 26 is the point sampling, not a scale.
++  a_.OpAnd(dxbc::Dest::R(flags_temp, 0b0001), integer_scale_bits_packed,
++           dxbc::Src::LU((UINT32_C(1) << 26) - 1));
++  a_.OpIf(true, dxbc::Src::R(flags_temp, dxbc::Src::kXXXX));
++  a_.OpAnd(dxbc::Dest::R(flags_temp, 0b0001), integer_scale_bits_packed,
++           dxbc::Src::LU(UINT32_C(1) << 24));
++  a_.OpIf(true, dxbc::Src::R(flags_temp, dxbc::Src::kXXXX));
++  if (allows_point_sampling) {
++    // Point-sampled 4 to 6 bit unsigned components, as the guest converts them.
++    a_.OpAnd(dxbc::Dest::R(flags_temp, 0b0001), integer_scale_bits_packed,
++             dxbc::Src::LU((UINT32_C(1) << 24) - 1));
++    a_.OpIf(true, dxbc::Src::R(flags_temp, dxbc::Src::kXXXX));
++    // 2^w per component.
++    a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(4), dxbc::Src::LU(0, 6, 12, 18),
++              integer_scale_bits_packed);
++    a_.OpIShL(integer_scale_dest, dxbc::Src::LU(2), integer_scale_src);
++    a_.OpUToF(integer_scale_dest, integer_scale_src);
++    // The texel n from the host's n / (2^w - 1).
++    a_.OpAdd(flags_dest, integer_scale_src, dxbc::Src::LF(-1.0f));
++    a_.OpMul(flags_dest, result_src, flags_src);
++    a_.OpRoundNE(flags_dest, flags_src);
++    // n * (2^w + 1) / 2^(2w).
++    a_.OpMAd(flags_dest, flags_src, integer_scale_src, flags_src);
++    a_.OpMul(integer_scale_dest, integer_scale_src, integer_scale_src);
++    a_.OpDiv(flags_dest, flags_src, integer_scale_src);
++    // Only where the packed component field is 1 to 15 (unsigned with a width).
++    a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(6), dxbc::Src::LU(0, 6, 12, 18),
++              integer_scale_bits_packed);
++    a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LI(-1));
++    a_.OpULT(integer_scale_dest, integer_scale_src, dxbc::Src::LU(15));
++    a_.OpMovC(result_dest, integer_scale_src, flags_src, result_src);
++    a_.OpEndIf();
++  }
++  // Unsigned normalized components to 16 fractional bits.
++  a_.OpMul(integer_scale_dest, result_src, dxbc::Src::LF(65536.0f));
++  a_.OpRoundNE(integer_scale_dest, integer_scale_src);
++  a_.OpMul(integer_scale_dest, integer_scale_src, dxbc::Src::LF(1.0f / 65536.0f));
++  a_.OpUBFE(flags_dest, dxbc::Src::LU(2), dxbc::Src::LU(4, 10, 16, 22),
++            integer_scale_bits_packed);
++  a_.OpMovC(result_dest, flags_src, result_src, integer_scale_src);
++  // Normalized unsigned-biased components clamped to -1 (filtering after the conversion can mix
++  // a stored 0 to a little below it).
++  a_.OpIEq(flags_dest, flags_src,
++           dxbc::Src::LU(std::to_underlying(xenos::TextureSign::kUnsignedBiased)));
++  a_.OpMax(integer_scale_dest, result_src, dxbc::Src::LF(-1.0f));
++  a_.OpMovC(result_dest, flags_src, integer_scale_src, result_src);
++  a_.OpElse();
++  // Integer values: 2^w - 1 for unsigned components, 2^(w - 1) - 1 for signed and biased.
++  a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(4), dxbc::Src::LU(0, 6, 12, 18),
++            integer_scale_bits_packed);
++  a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LU(1));
++  // All ones for signed (1) and biased (2), taking one off the shift.
++  a_.OpUBFE(flags_dest, dxbc::Src::LU(2), dxbc::Src::LU(4, 10, 16, 22),
++            integer_scale_bits_packed);
++  a_.OpIAdd(flags_dest, flags_src, dxbc::Src::LI(-1));
++  a_.OpULT(flags_dest, flags_src, dxbc::Src::LU(2));
++  a_.OpIAdd(integer_scale_dest, integer_scale_src, flags_src);
++  a_.OpIShL(integer_scale_dest, dxbc::Src::LU(1), integer_scale_src);
++  a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LI(-1));
++  a_.OpUToF(integer_scale_dest, integer_scale_src);
++  // 1-bit unsigned-biased components: a scale of 0.5 and an offset of -0.5 give -1 and 0.
++  a_.OpMin(flags_dest, integer_scale_src, dxbc::Src::LF(0.5f));
++  a_.OpAdd(flags_dest, flags_src, dxbc::Src::LF(-0.5f));
++  a_.OpMax(integer_scale_dest, integer_scale_src, dxbc::Src::LF(0.5f));
++  a_.OpMAd(result_dest, result_src, integer_scale_src, flags_src);
++  if (allows_point_sampling) {
++    // A point-sampled fetch gives the guest the stored integer; filtering keeps the fraction.
++    a_.OpAnd(dxbc::Dest::R(flags_temp, 0b0001), integer_scale_bits_packed,
++             dxbc::Src::LU(UINT32_C(1) << 26));
++    a_.OpIf(true, dxbc::Src::R(flags_temp, dxbc::Src::kXXXX));
++    a_.OpRoundNE(result_dest, result_src);
++    a_.OpEndIf();
++  }
++  a_.OpEndIf();
++  a_.OpEndIf();
++  PopSystemTemp(2);
++}
++
+ }  // namespace rex::gpu
+diff --git a/src/gpu/xenos/pipeline/shader/dxbc_translator_memexport.cpp b/src/gpu/xenos/pipeline/shader/dxbc_translator_memexport.cpp
+index c0eff721..2b6332b4 100644
+--- a/src/gpu/xenos/pipeline/shader/dxbc_translator_memexport.cpp
++++ b/src/gpu/xenos/pipeline/shader/dxbc_translator_memexport.cpp
+@@ -161,8 +161,9 @@ void DXBCShaderTranslator::ExportToMemory(u8 export_em) {
+         while (rex::bit_scan_forward(em_remaining, &em_index)) {
+           em_remaining &= ~(static_cast<u8>(1) << em_index);
+           u32 em = system_temps_memexport_data_[em_index];
+-          a_.OpBFI(dxbc::Dest::R(em, components), dxbc::Src::LU(31), dxbc::Src::LU(0),
+-                   dxbc::Src::LF(0.5f), dxbc::Src::R(em));
++          // copysign(0.5, value) into the bias (Xenia Canary da47dfa: it overwrote the value).
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp, components), dxbc::Src::LU(31),
++                   dxbc::Src::LU(0), dxbc::Src::LF(0.5f), dxbc::Src::R(em));
+           a_.OpAdd(dxbc::Dest::R(em, components), dxbc::Src::R(em), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(em, components), dxbc::Src::R(em));
+         }
+@@ -362,8 +363,9 @@ void DXBCShaderTranslator::ExportToMemory(u8 export_em) {
+         while (rex::bit_scan_forward(em_remaining, &em_index)) {
+           em_remaining &= ~(static_cast<u8>(1) << em_index);
+           u32 em = system_temps_memexport_data_[em_index];
+-          a_.OpBFI(dxbc::Dest::R(em), dxbc::Src::LU(31), dxbc::Src::LU(0), dxbc::Src::LF(0.5f),
+-                   dxbc::Src::R(em));
++          // copysign(0.5, value) into the bias (Xenia Canary da47dfa: it overwrote the value).
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp), dxbc::Src::LU(31), dxbc::Src::LU(0),
++                   dxbc::Src::LF(0.5f), dxbc::Src::R(em));
+           a_.OpAdd(dxbc::Dest::R(em), dxbc::Src::R(em), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(em), dxbc::Src::R(em));
+         }
+diff --git a/src/gpu/xenos/pipeline/shader/interpreter.cpp b/src/gpu/xenos/pipeline/shader/interpreter.cpp
+index b34d4f8f..d7445faa 100644
+--- a/src/gpu/xenos/pipeline/shader/interpreter.cpp
++++ b/src/gpu/xenos/pipeline/shader/interpreter.cpp
+@@ -590,9 +590,11 @@ void ShaderInterpreter::ExecuteALUInstruction(xenos::ucode::AluInstruction instr
+       }
+       u32 scalar_src_swizzle = instr.GetSrcSwizzle(3);
+       scalar_operand_component_count = scalar_opcode_info.single_operand_is_two_component ? 2 : 1;
++      // `b` is Z when the paired vector operation uses source 3 (Xenia Canary 92ada8e).
+       for (u32 i = 0; i < scalar_operand_component_count; ++i) {
++        u32 source_component = i == 0 ? 3 : (vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+         scalar_operands[i] = scalar_src_ptr[xenos::ucode::AluInstruction::GetSwizzledComponentIndex(
+-            scalar_src_swizzle, (3 + i) & 3)];
++            scalar_src_swizzle, source_component)];
+       }
+     } break;
+     case 2: {
+diff --git a/src/gpu/xenos/pipeline/shader/translator.cpp b/src/gpu/xenos/pipeline/shader/translator.cpp
+index 9a79bda3..fa4e245b 100644
+--- a/src/gpu/xenos/pipeline/shader/translator.cpp
++++ b/src/gpu/xenos/pipeline/shader/translator.cpp
+@@ -1076,7 +1076,8 @@ u32 ParsedTextureFetchInstruction::GetNonZeroResultComponents() const {
+ }
+ 
+ static void ParseAluInstructionOperand(const AluInstruction& op, u32 i, u32 swizzle_component_count,
+-                                       InstructionOperand& out_op) {
++                                       InstructionOperand& out_op,
++                                       u32 scalar_second_component = 0) {
+   out_op.is_negated = op.IsSrcNegated(i);
+   u32 reg = op.GetSrcReg(i);
+   if (op.IsSrcTemp(i)) {
+@@ -1106,9 +1107,10 @@ static void ParseAluInstructionOperand(const AluInstruction& op, u32 i, u32 swiz
+     // Scalar `a` (W).
+     out_op.components[0] = GetSwizzledALUSourceComponent(swizzle, 3);
+   } else if (swizzle_component_count == 2) {
+-    // Scalar left `a` (W) and right `b` (X).
++    // Scalar left `a` (W) and right `b`: X, or Z when the paired vector operation uses source 3
++    // (Xenia Canary 92ada8e).
+     out_op.components[0] = GetSwizzledALUSourceComponent(swizzle, 3);
+-    out_op.components[1] = GetSwizzledALUSourceComponent(swizzle, 0);
++    out_op.components[1] = GetSwizzledALUSourceComponent(swizzle, scalar_second_component);
+   } else if (swizzle_component_count == 3) {
+     REX_ASSERT_ALWAYS();
+   } else if (swizzle_component_count == 4) {
+@@ -1268,8 +1270,11 @@ void ParseAluInstruction(const AluInstruction& op, xenos::ShaderType shader_type
+   instr.scalar_operand_count = scalar_opcode_info.operand_count;
+   if (instr.scalar_operand_count) {
+     if (instr.scalar_operand_count == 1) {
++      // The scalar operation shares source 3 with the vector operation: if the vector operation
++      // uses source 3 too, the scalar `b` is its Z, else its X.
+       ParseAluInstructionOperand(op, 3, scalar_opcode_info.single_operand_is_two_component ? 2 : 1,
+-                                 instr.scalar_operands[0]);
++                                 instr.scalar_operands[0],
++                                 vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+     } else {
+       bool src3_negate = op.IsSrcNegated(3);
+       u32 src3_swizzle = op.GetSrcSwizzle(3);
+-- 
+2.55.0.windows.5
+

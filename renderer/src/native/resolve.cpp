@@ -389,7 +389,9 @@ float4 Convert(float4 c) {
 uint4 PackDest(float4 c) {
   uint number = (flags >> 12) & 7u;
   switch (dest_format) {
-    case 2u: return uint4(U(c.r, 255.0), 0, 0, 0);                                  // k_8
+    // k_8: an A8 destination (swapped) stores the source's alpha, an L8 its red (Xenia Canary
+    // 2b3f0cb: L8 and A8 share the format; XGCopySurface routes alpha to it for A8).
+    case 2u: return uint4(U((flags & 2u) ? c.a : c.r, 255.0), 0, 0, 0);
     case 10u: return uint4(U(c.r, 255.0) | (U(c.g, 255.0) << 8), 0, 0, 0);          // k_8_8
     // 16-bit formats in the texture cache's host layout (its load conversion applied):
     // k_5_6_5 as B5G6R5 (guest R in bits 0-4 moves to 11-15), k_6_5_5 as B5G6R5 holding
@@ -734,8 +736,8 @@ float SmallFloat(uint32_t v, uint32_t mantissa_bits, int32_t bias) {
   return exp ? std::ldexp(1.0f + m, int32_t(exp) - bias) : std::ldexp(m, 1 - bias);
 }
 
-// The clear colour the guest packed for the EDRAM (RB_COLOR_CLEAR = the low 32 bits,
-// RB_COLOR_CLEAR_LO the high 32 of a 64-bit format, as ReXGlue's resolve clear takes them) back
+// The clear colour the guest packed for the EDRAM (a 64-bit format's low 32 bits in
+// RB_COLOR_CLEAR_LO, its high 32 in RB_COLOR_CLEAR, as D3D writes them: Xenia canary 16e1eb8) back
 // to the values a D3D Clear gives (RenderTargets::Clear scales k_16_16(_16_16)'s itself).
 // `format`: xenos::ColorRenderTargetFormat.
 bool UnpackClearColor(uint32_t format, uint32_t lo, uint32_t hi, float out[4]) {
@@ -935,7 +937,10 @@ bool DecodeRegisterResolve(const uint8_t* physical, const ResolveRegisters& r,
   p.clear_flags = r.copy_control & 0x300;
   if (p.clear_flags & 0x100) {
     const uint32_t format = (p.regs.color_info[depth ? 0 : p.source] >> 16) & 0xF;
-    if (!UnpackClearColor(format, r.color_clear, r.color_clear_lo, p.clear_color)) {
+    const bool is_64bpp =
+        xenos::IsColorRenderTargetFormat64bpp(xenos::ColorRenderTargetFormat(format));
+    if (!UnpackClearColor(format, is_64bpp ? r.color_clear_lo : r.color_clear,
+                          is_64bpp ? r.color_clear : r.color_clear_lo, p.clear_color)) {
       REXNATIVE_LOG_FIRST(4, WARN, "ReXNative resolve (registers): clear colour of format {} not "
                                    "decoded (left 0)", format);
     }

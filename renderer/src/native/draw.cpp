@@ -113,11 +113,6 @@ REXCVAR_DEFINE_BOOL(rexnative_dynamic_depth_bias, true, "ReXNative",
 REXCVAR_DEFINE_STRING(rexnative_pixel_constant_override, "", "ReXNative",
                       "Testing: pixel shader float constants replaced, as <ucode hash>:c<register>"
                       ".<x|y|z|w>=<value>, several joined by ';'; not the console's emulation");
-REXCVAR_DEFINE_BOOL(rexnative_texel_unorm8, true, "ReXNative",
-                    "Point-sampled 8-bit unsigned texels read above the PC's x / 255 as on "
-                    "Xenos, (x + (x >> 7)) / 256: 0x80 is 0.50390625 (Forza Horizon's motion "
-                    "blur blurs the ground in a car's contact shadow by it); for a shader whose "
-                    "textures all have 8 bits per component (sdk patch 0046)");
 REXCVAR_DEFINE_BOOL(rexnative_independent_stencil_ref, true, "ReXNative",
                     "Give back faces their own stencil reference (RB_STENCILREFMASK_BF) where the "
                     "driver supports it (D3D12 options 14), instead of the front face's");
@@ -718,7 +713,8 @@ struct SamplerKey {
   // Negative LOD bias in quarter levels, of linearly filtered textures with mips only (the
   // upscaler's scene, Upscaler::mip_bias_quarters).
   uint32_t lod_bias : 4 = 0;
-  uint32_t reserved : 6 = 0;
+  uint32_t force_bc_w_to_max : 1 = 0;  // border alpha 1 (Xenia Canary d0dd989)
+  uint32_t reserved : 5 = 0;
   uint32_t value() const { return std::bit_cast<uint32_t>(*this); }
 };
 static_assert(sizeof(SamplerKey) == sizeof(uint32_t));
@@ -748,9 +744,12 @@ SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBind
               xenos::ClampModeUsesBorder(cz))
                  ? uint32_t(fetch.border_color)
                  : uint32_t(xenos::BorderColor::k_ABGR_Black);
-  uint32_t mip_min_level, mip_max_level;
-  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                 &mip_min_level, &mip_max_level);
+  k.force_bc_w_to_max = (xenos::ClampModeUsesBorder(cx) || xenos::ClampModeUsesBorder(cy) ||
+                         xenos::ClampModeUsesBorder(cz)) &&
+                        fetch.force_bc_w_to_max;
+  uint32_t base_page, mip_min_level, mip_max_level;
+  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, &base_page,
+                                                 nullptr, &mip_min_level, &mip_max_level);
   k.mip_min_level = mip_min_level;
   auto mag = binding.mag_filter == xenos::TextureFilter::kUseFetchConst ? fetch.mag_filter
                                                                         : binding.mag_filter;
@@ -777,6 +776,8 @@ SamplerKey GetSamplerKey(const RegisterFile& regs, const DxbcShader::SamplerBind
     k.mip_linear = mip == xenos::TextureFilter::kLinear;
   }
   k.mip_base_map = mip == xenos::TextureFilter::kBaseMap;
+  // The base map of a texture with a base page is level 0 (Xenia Canary 4a863a0).
+  if (k.mip_base_map && base_page) k.mip_min_level = 0;
   return k;
 }
 
@@ -818,6 +819,7 @@ D3D12_SAMPLER_DESC SamplerDesc(const SamplerKey& k) {
     default:
       break;
   }
+  if (k.force_bc_w_to_max) d.BorderColor[3] = 1.0f;
   d.MipLODBias = float(k.lod_bias) * -0.25f;
   d.MinLOD = float(k.mip_min_level);
   if (k.mip_base_map) {
@@ -1250,7 +1252,6 @@ struct DrawRenderer::Impl {
   // front faces, 0 for back faces, nothing culled). With one for both, the back faces wrote the
   // front's (Xenia's D3D12 backend the same). docs/NOTES.md: it does not change Forza's picture.
   bool independent_stencil_ref = false;
-  bool texel_unorm8 = true;  // --rexnative_texel_unorm8
   // --rexnative_pixel_constant_override, parsed at Initialize.
   struct PixelOverride {
     uint64_t hash;
@@ -1987,9 +1988,6 @@ bool DrawRenderer::Impl::Initialize() {
                             options14.IndependentFrontAndBackStencilRefMaskSupported;
   REXLOG_INFO("ReXNative draw: a stencil reference for each face {}",
               independent_stencil_ref ? "on" : "off");
-  texel_unorm8 = REXCVAR_GET(rexnative_texel_unorm8);
-  REXLOG_INFO("ReXNative draw: 8-bit texels read {}",
-              texel_unorm8 ? "point-sampled as (x + (x >> 7)) / 256" : "as x / 255");
   const std::string overrides = REXCVAR_GET(rexnative_pixel_constant_override);
   for (size_t at = 0; at < overrides.size();) {
     size_t end = overrides.find(';', at);
@@ -3355,21 +3353,39 @@ bool ResetCutsApart(const uint32_t* guest, uint32_t count, uint32_t reset_ge, ui
   return apart != 0;
 }
 
-// Fan vertex i is guest index i of `guest`, or i itself without one.
-template <typename T>
-void FanAsList(const uint8_t* guest, uint32_t count, T* out) {
+// Fan vertex i is guest index i of `guest`, or i itself without one. With `is_reset` (primitive
+// reset on), an index it matches ends the fan and the next index starts a new one, as Xenos and
+// the SDK's primitive processor do; the triangles a reset takes away stay as degenerate ones
+// (the list keeps its (count - 2) * 3 indices).
+template <typename T, typename IsReset>
+void FanAsList(const uint8_t* guest, uint32_t count, T* out, IsReset is_reset) {
   auto at = [guest](uint32_t i) {
     if (!guest) return T(i);
     T v;
     std::memcpy(&v, guest + size_t(i) * sizeof(T), sizeof(T));
     return v;
   };
-  const T first = at(0);
-  for (uint32_t t = 0; t + 2 < count; ++t, out += 3) {
-    out[0] = at(t + 1);
-    out[1] = at(t + 2);
+  if (count < 3) return;
+  T* const end = out + size_t(count - 2) * 3;
+  uint32_t start = 0;
+  T first = at(0);
+  if (guest && is_reset(first)) start = 1;
+  for (uint32_t p = 1; p < count; ++p) {
+    const T v = at(p);
+    if (guest && is_reset(v)) {
+      start = p + 1;
+      continue;
+    }
+    if (p == start) first = v;
+    if (p < start + 2) continue;
+    out[0] = at(p - 1);
+    out[1] = v;
     out[2] = first;
+    out += 3;
   }
+  // Degenerate triangles where resets took some away.
+  const T pad = first;
+  for (; out < end; out += 3) out[0] = out[1] = out[2] = pad;
 }
 
 }  // namespace
@@ -3377,10 +3393,22 @@ void FanAsList(const uint8_t* guest, uint32_t count, T* out) {
 void DrawRenderer::Impl::WriteFanIndices(const DrawState& s, uint32_t count, bool wide,
                                          uint8_t* out) const {
   const uint8_t* guest = s.indexed ? membase + s.index_address : nullptr;
-  if (wide)
-    FanAsList(guest, count, reinterpret_cast<uint32_t*>(out));
-  else
-    FanAsList(guest, count, reinterpret_cast<uint16_t*>(out));
+  const RegisterFile& regs = *reinterpret_cast<const RegisterFile*>(s.regs);
+  const bool reset = guest && regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena;
+  const uint32_t reset_index = regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx;
+  const auto endian = xenos::Endian(s.index_endian);
+  if (wide) {
+    // 32-bit indices: Xenos compares their low 24 bits (UploadReset32).
+    const uint32_t reset_ge = xenos::GPUSwap(reset_index & xenos::kVertexIndexMask, endian);
+    const uint32_t mask_ge = xenos::GPUSwap(xenos::kVertexIndexMask, endian);
+    FanAsList(guest, count, reinterpret_cast<uint32_t*>(out),
+              [=](uint32_t v) { return reset && (v & mask_ge) == reset_ge; });
+  } else {
+    uint16_t reset_ge = uint16_t(reset_index);
+    if (endian == xenos::Endian::k8in16) reset_ge = uint16_t((reset_ge >> 8) | (reset_ge << 8));
+    FanAsList(guest, count, reinterpret_cast<uint16_t*>(out),
+              [=](uint16_t v) { return reset && v == reset_ge; });
+  }
 }
 
 bool DrawRenderer::Impl::UploadReset32(const DrawState& s, uint64_t tag,
@@ -3504,10 +3532,11 @@ bool DrawRenderer::Impl::RequestVertices(const DrawState& s, const DxbcShader& v
       bits &= bits - 1;
       const uint32_t index = w * 32 + b;
       xenos::VertexFetch f = regs.GetVertexFetch(index);
+      // A vertex fetch constant of another type is still read as one (Xenia Canary b083312,
+      // gpu_allow_invalid_fetch_constants: missing characters in 5454086C and 425607FE).
       if (f.type != xenos::FetchConstantType::kVertex) {
         REXNATIVE_WARN_ONCE("ReXNative draw: vertex fetch {} has type {} ({:08X} {:08X})", index,
                        uint32_t(f.type), f.dword_0, f.dword_1);
-        if (f.type != xenos::FetchConstantType::kInvalidVertex) return false;
       }
       const uint32_t start = f.address << 2, size = f.size << 2;
       const bool inline_data = (s.inline_vertices && start == s.inline_vertices) ||
@@ -4249,7 +4278,10 @@ PipelineKey DrawRenderer::Impl::BuildPipelineKey(
     // larger factor (more bias rather than Z fighting).
     key.slope_scaled_depth_bias = poly_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit *
                                   std::max(targets.scale.factor(0), targets.scale.factor(1));
-    key.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
+    // Rectangle lists are not clipped at the Z planes: their depth is clamped (Xenia Edge
+    // 62a3fc71, the lighting setup draws of 494707EE and 41560881).
+    key.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable &&
+                     prim != xenos::PrimitiveType::kRectangleList;
     if (targets.depth) {
       uint8_t func = uint8_t(xenos::CompareFunction::kAlways);
       if (depth_control.z_enable) {
@@ -4855,6 +4887,11 @@ void DrawRenderer::Impl::FillSystemConstants(const DrawState& s, const RegisterF
     uint32_t i = uint32_t(std::countr_zero(remaining));
     remaining &= remaining - 1;
     sys.texture_swizzled_signs[i >> 2] |= uint32_t(signs[i]) << ((i & 3) * 8);
+    // What Xenos returns for the fetch (Q16 fractions, integer scales, biased widths: SDK patch
+    // 0049, Xenia Canary's texture_integer_scale_bits).
+    xenos::TextureFetch fetch_constant;
+    std::memcpy(&fetch_constant, s.fetch(i), sizeof(fetch_constant));
+    sys.texture_integer_scale_bits[i] = TextureIntegerScaleBits(fetch_constant, signs[i]);
     if (profile::On()) {
       const uint32_t* f = s.fetch(i);
       const uint8_t sg = signs[i];
@@ -5074,9 +5111,25 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
                        ((GetNormalizedColorMask(regs, ps->GetWritesColorTargets()) & 0xF) &&
                         !GetRtBlend(regs, 0).Blends()));
   if (motion) mods = WithMotionVectors(mods);
+  // RT0 blended with MIN or MAX, SRC_ALPHA and ONE: the shader premultiplies by alpha, the source
+  // factor D3D12's blender ignores for MIN and MAX and Xenos applies (Xenia canary 0676416).
+  if (mods.pixel_shader_used && ps && (ps->GetWritesColorTargets() & 1)) {
+    const auto bc = regs.Get<reg::RB_BLENDCONTROL>(kBlendControlRegs[0]);
+    const auto min_max = [](xenos::BlendOp op) {
+      return op == xenos::BlendOp::kMin || op == xenos::BlendOp::kMax;
+    };
+    DxbcShaderTranslator::Modification pm(mods.pixel);
+    pm.pixel.rt0_premult_rgb_src_alpha = min_max(bc.color_comb_fcn) &&
+                                         bc.color_srcblend == xenos::BlendFactor::kSrcAlpha &&
+                                         bc.color_destblend == xenos::BlendFactor::kOne;
+    pm.pixel.rt0_premult_a_src_alpha = min_max(bc.alpha_comb_fcn) &&
+                                       bc.alpha_srcblend == xenos::BlendFactor::kSrcAlpha &&
+                                       bc.alpha_destblend == xenos::BlendFactor::kOne;
+    mods.pixel = pm.value;
+  }
   const uint64_t generic_pixel_mod = mods.pixel;
   mods.pixel = SpecializePixelTextures(mods.pixel, s.fetch(0), mods_memo.ps_textures,
-                                       signed_is_unsigned_formats, texel_unorm8);
+                                       signed_is_unsigned_formats);
 
   if (!mods.draw) {
     skip("the shader modifications draw nothing");
@@ -5335,9 +5388,22 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   }
   const DxbcShader* const vs_selected = vs;
   const DxbcShader* const ps_selected = ps;
+  // Draws whose result is not drawn again next frame wait for their pipeline instead of being
+  // skipped: memexport (guest memory), a draw an occlusion query counts (a skipped draw counts no
+  // samples: a lens flare goes dark, an object is culled), and one to a surface at most two
+  // EDRAM tiles wide, 160 pixels at 1x (data kept past the frame: a 1x1 eye adaptation history,
+  // a lookup table), as Xenia Canary's IsAsyncPipelineWaitNeededForDraw (f9431eb).
+  const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  const uint32_t pitch_tiles =
+      ((uint32_t(surface_info.surface_pitch)
+        << (surface_info.msaa_samples >= xenos::MSAASamples::k4X ? 1 : 0)) +
+       xenos::kEDRAMTileWidthSamples - 1) / xenos::kEDRAMTileWidthSamples;
+  const bool must_draw = (memexport && memexport_on) ||
+                         (r.occlusion() && r.occlusion()->counting()) ||
+                         (surface_info.surface_pitch && pitch_tiles <= 2);
   ID3D12PipelineState* const pso =
       SelectPipeline(key, *vst, pst, vs, ps, vs_generic, ps_generic, mods.pixel,
-                     generic_pixel_mod, sdr, prim, memexport && memexport_on);
+                     generic_pixel_mod, sdr, prim, must_draw);
   if (draw_log)
     std::fprintf(draw_log, "  pso=%s\n",
                  !pso                ? "pending"
@@ -5506,12 +5572,10 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
     list_dirty = false;
   }
   static_assert(sizeof(sys) <= CachedCbv::kMaxSize);
-  // From Dust: integer-format texture fetches (the terrain's k_16_16 height field) with their
-  // normalization folded into the exponent adjust, as the Xenos path does (integer_fetch.h).
+  // The fetch constants as the guest wrote them: integer fetches are scaled in the shaders
+  // (SystemConstants::texture_integer_scale_bits, SDK patch 0049).
   uint32_t fetch_constants[32 * 6];
   std::memcpy(fetch_constants, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0], sizeof(fetch_constants));
-  rex::graphics::AdjustIntegerTextureFetchConstants(fetch_constants,
-                                                    &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0]);
   bool ok =
       UploadCbv(cb_system, &sys, sizeof(sys), kBindlessRoot_SystemConstants, list) &&
       CommitCbv(cb_float_vs, kBindlessRoot_FloatConstantsVertex, list) &&
@@ -5550,6 +5614,24 @@ void DrawRenderer::Impl::Draw(const DrawState& s, const DrawPrep* prep) {
   float blend[4] = {
       regs.Get<float>(XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(XE_GPU_REG_RB_BLEND_GREEN),
       regs.Get<float>(XE_GPU_REG_RB_BLEND_BLUE), regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA)};
+  {
+    // D3D12's blend factor has no separate alpha for the colour factors: CONSTANT_ALPHA and its
+    // inverse map to the four-component factor, right where the colour factors use only them,
+    // with the factor's A in its RGB (Xenia Canary 4cc584f; MIN and MAX ignore factors).
+    bool constant_color = false, constant_alpha = false;
+    const uint32_t color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (key.rtv[i] == DXGI_FORMAT_UNKNOWN || !((color_mask >> (i * 4)) & 0b0111)) continue;
+      const auto bc = regs.Get<reg::RB_BLENDCONTROL>(kBlendControlRegs[i]);
+      if (bc.color_comb_fcn == xenos::BlendOp::kMin || bc.color_comb_fcn == xenos::BlendOp::kMax)
+        continue;
+      for (const auto f : {uint32_t(bc.color_srcblend), uint32_t(bc.color_destblend)}) {
+        constant_color |= f == 12 || f == 13;
+        constant_alpha |= f == 14 || f == 15;
+      }
+    }
+    if (constant_alpha && !constant_color) blend[0] = blend[1] = blend[2] = blend[3];
+  }
   if (std::memcmp(bound_blend, blend, sizeof(blend))) {
     list->OMSetBlendFactor(blend);
     std::memcpy(bound_blend, blend, sizeof(blend));

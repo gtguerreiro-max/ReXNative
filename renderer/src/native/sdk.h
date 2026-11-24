@@ -18,7 +18,7 @@
 #include <rex/xenos/draw_hook.h>
 #include <rex/xenos/fetch.h>
 #include <rex/xenos/format.h>
-#include <rex/xenos/integer_fetch.h>
+#include <rex/xenos/texture_integer_scale.h>
 #include <rex/xenos/register.h>
 #include <rex/xenos/state.h>
 #include <rex/xenos/texture.h>
@@ -31,7 +31,7 @@ namespace xenos = ::rex::xenos;
 namespace reg = ::rex::xenos::reg;
 namespace texture_util = ::rex::xenos;
 namespace ucode = ::rex::xenos::ucode;
-using ::rex::xenos::AdjustIntegerTextureFetchConstants;
+using ::rex::xenos::TextureIntegerScaleBits;
 using ::rex::xenos::GetPixelConstantHook;
 using ::rex::xenos::PixelConstantHook;
 using ::rex::xenos::Register;
