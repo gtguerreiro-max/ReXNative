@@ -36,6 +36,7 @@ import re
 import shutil
 import struct
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -384,6 +385,15 @@ def download(entry, folder, auth, log=print):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, entry['name'])
     part = path + '.part'
+    url = DOWNLOAD_URL % (urllib.parse.quote(entry['item']), urllib.parse.quote(entry['name']))
+    size = entry['size']
+    parts = CONNECTIONS > 1 and size >= 2 * CHUNK
+    if parts and os.path.exists(part + '.json') and not os.path.exists(path):
+        # A run over several connections stopped: its part is the whole size, with holes.
+        try:
+            return _download_parts(entry, url, path, part, auth, log)
+        except _NoRanges:
+            parts = _no_parts(part, log)
     md5 = hashlib.md5()
     done = 0
     if os.path.exists(path) and not os.path.exists(part):
@@ -393,16 +403,20 @@ def download(entry, folder, auth, log=print):
             for chunk in iter(lambda: f.read(1 << 20), b''):
                 md5.update(chunk)
                 done += len(chunk)
-    size = entry['size']
     if done > size:
         os.remove(part)
         md5, done = hashlib.md5(), 0
+    if parts and done < size:
+        try:
+            return _download_parts(entry, url, path, part, auth, log)
+        except _NoRanges:
+            _no_parts(part, log)
+            md5, done = hashlib.md5(), 0
     if done < size:
         log('  downloading %s (%.1f MB%s)' % (entry['name'], size / 1e6,
                                              ', from %.1f MB' % (done / 1e6) if done else ''))
         t0, start, shown = time.time(), done, done
-        with _open(DOWNLOAD_URL % (urllib.parse.quote(entry['item']),
-                                   urllib.parse.quote(entry['name'])), auth, done) as r:
+        with _open(url, auth, done) as r:
             if done and r.status != 206:  # the server sends it whole
                 md5, done, start, shown = hashlib.md5(), 0, 0, 0
             with open(part, 'ab' if done else 'wb') as f:
@@ -423,6 +437,131 @@ def download(entry, folder, auth, log=print):
     if done != size:
         raise RuntimeError('%s: %.1f of %.1f MB came; run again to go on from there' % (
             entry['name'], done / 1e6, size / 1e6))
+    if entry['md5'] and md5.hexdigest() != entry['md5']:
+        os.remove(part)
+        raise RuntimeError('%s: MD5 %s, the item lists %s (removed)' % (
+            entry['name'], md5.hexdigest(), entry['md5']))
+    os.replace(part, path)
+    return path
+
+
+# An archive.org file comes over several connections at once, each asking for its own part (a
+# Range request): one connection gave a 2.3 GB DLC archive 0.6 MB/s. $REXNATIVE_DLC_CONNECTIONS
+# sets how many (1: one stream, as before).
+CONNECTIONS = max(1, int(os.environ.get('REXNATIVE_DLC_CONNECTIONS') or 4))
+CHUNK = 32 << 20
+
+
+class _NoRanges(Exception):
+    """The server answered a part's request with the whole file."""
+
+
+def _no_parts(part, log):
+    log('  the server sends no parts: one connection')
+    for p in (part, part + '.json'):
+        if os.path.exists(p):
+            os.remove(p)
+    return False
+
+
+def _download_parts(entry, url, path, part, auth, log):
+    """The archive in parts over CONNECTIONS connections, each part written where it goes in
+    part; the parts done are kept in part.json after each one, so a stopped run goes on with the
+    rest (a single stream's start counts as its whole parts). Checked against the item's MD5 at
+    the end, as one stream is."""
+    size = entry['size']
+    side = part + '.json'
+    n = (size + CHUNK - 1) // CHUNK
+    done = set()
+    try:
+        with open(side, encoding='utf-8') as fh:
+            s = json.load(fh)
+        if s.get('size') == size and s.get('chunk') == CHUNK and os.path.exists(part):
+            done = {int(k) for k in s.get('done') or []}
+    except (OSError, ValueError):
+        if os.path.exists(part):  # a single stream's start
+            done = set(range(min(n, os.path.getsize(part) // CHUNK)))
+    todo = [k for k in range(n) if k not in done]
+    lock = threading.Lock()
+    got = [sum(min(CHUNK, size - k * CHUNK) for k in done)]
+    first, tries, errors = got[0], {}, []
+    if todo:  # the line the Manager's progress reads, as one stream's
+        log('  downloading %s (%.1f MB)' % (entry['name'], size / 1e6))
+        log('    over %d connections%s' % (CONNECTIONS, ', from %.1f MB' % (first / 1e6) if first else ''))
+    with open(part, 'r+b' if os.path.exists(part) else 'w+b') as f:
+        if os.path.getsize(part) < size:
+            f.truncate(size)
+
+    def save():
+        tmp = side + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump({'size': size, 'chunk': CHUNK, 'done': sorted(done)}, fh)
+        os.replace(tmp, side)
+
+    def worker():
+        with open(part, 'r+b') as f:  # a handle of its own: the parts do not overlap
+            while True:
+                with lock:
+                    if errors or not todo:
+                        return
+                    k = todo.pop(0)
+                a, b = k * CHUNK, min(size, (k + 1) * CHUNK) - 1
+                pos = a
+                try:
+                    with _open(url, auth, a, b) as r:
+                        if getattr(r, 'status', 206) != 206:
+                            raise _NoRanges()
+                        f.seek(a)
+                        while pos <= b:
+                            buf = r.read(min(1 << 20, b + 1 - pos))
+                            if not buf:
+                                break
+                            f.write(buf)
+                            pos += len(buf)
+                            with lock:
+                                got[0] += len(buf)
+                    if pos <= b:
+                        raise OSError('the connection ended %d KB into the part' % ((pos - a) // 1024))
+                    f.flush()
+                    with lock:
+                        done.add(k)
+                        save()
+                except (_NoRanges, NotLoggedIn) as x:
+                    with lock:
+                        errors.append(x)
+                    return
+                except (OSError, http.client.HTTPException) as x:
+                    with lock:
+                        got[0] -= pos - a
+                        tries[k] = tries.get(k, 0) + 1
+                        if tries[k] >= 3:
+                            errors.append(RuntimeError(
+                                '%s: a part failed 3 times (%s); run again to go on from the %.1f MB '
+                                'that came' % (entry['name'], x, got[0] / 1e6)))
+                            return
+                        todo.append(k)  # asked again later
+
+    t0, shown = time.time(), first
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(CONNECTIONS, len(todo)))]
+    for t in threads:
+        t.start()
+    while any(t.is_alive() for t in threads):
+        time.sleep(1)
+        with lock:
+            now = got[0]
+        if now - shown >= max(size // 10, 50 << 20):
+            shown = now
+            log('    %d%% (%.1f MB/s)' % (now * 100 // max(size, 1),
+                                         (now - first) / 1e6 / max(time.time() - t0, 1e-3)))
+    if errors:
+        raise errors[0]
+    if len(done) != n:
+        raise RuntimeError('%s: %d of %d parts came; run again to go on' % (entry['name'], len(done), n))
+    md5 = hashlib.md5()
+    with open(part, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            md5.update(chunk)
+    os.remove(side)
     if entry['md5'] and md5.hexdigest() != entry['md5']:
         os.remove(part)
         raise RuntimeError('%s: MD5 %s, the item lists %s (removed)' % (

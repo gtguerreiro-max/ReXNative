@@ -83,7 +83,8 @@ python -m rexnative dlc D:\rexnative-work\<game> <packages, folders or archives>
 
 A game's archives are found by its title; `<work>\<game>\dlc-archives.txt` names them by hand
 (one file name a line, or `none`). A folder's archives are installed from where they are and
-left there. An Internet Archive item's are checked against its MD5, their packages for the
+left there. An Internet Archive item's come over 4 connections at once (`REXNATIVE_DLC_CONNECTIONS`;
+a stopped download goes on from the parts it has), are checked against its MD5, their packages for the
 game's title installed and the archive deleted; `<work>\<game>\dlc.json` records them, and an
 archive is fetched again only when the item's copy changes. Some items lend their files to
 logged-in archive.org accounts only; then sign in once on this PC:
