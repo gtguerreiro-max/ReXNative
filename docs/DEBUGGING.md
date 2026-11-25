@@ -264,3 +264,16 @@ settings). The ReXNative Manager sends the newest snapshots with a report from t
 installed game from Steam with extra flags and, at the given seconds, sends keys, takes the
 renderer's captures (`cap`), sets draw-debug switches (`dbg<mask>`) and reads the APU's power
 (`pwr`); the captures and the log come back to `<work>\<game>\deck`.
+
+`bash scripts/deck/measure.sh <work>/<game> <exe> "<keys>" <wait s> "label:flags"...` measures a
+game once per variant of its flags: deck_drive starts and drives it, and `<wait>` seconds in, 25 s
+of its CPU per thread, the APU's power, the GPU's busy share and clocks (`sample.py`) and every
+wineserver's CPU (`ws.sh`); then its log's frames over 50 ms, mean frame time and step gate lines
+(`summary.sh`). Two runs of each variant, interleaved, before believing a difference: a scene a few
+seconds apart moves the APU by watts. On the Deck, `states.py <exe> <s>` gives each busy thread's
+context switches a second and where it waits (thousands of voluntary switches at moderate CPU is a
+polling loop; `--runtime.wait_stats=true` then names what it waits on, and for yields where they
+come from), and `survey.py ~/Games/ReXNative` every game log's share of windows below its frame rate.
+`--clean` removes the tools from the Deck. Routes that reach gameplay (deck_drive keys go to the
+game's own display): Forza Horizon `42:Return,50:space,58:space`, Iron Brigade
+`25:Return,35:Return,45:space,55:space,65:space`, Overlord II `45:Return,60:space,70:space`.
