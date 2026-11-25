@@ -27,6 +27,14 @@ shows how the game runs now (the frames' recent mean: frames a second and ms) an
 Deck it knows it is there from Steam's `SteamDeck=1`, or the Deck's own firmware (Valve's board)
 when a game was started without it.
 
+The configuration file can change under the running game too: the ReXNative Manager's Settings
+(on the PC, or on the Steam Deck), or an editor. The game looks at the file's time about once a
+second and reads it again when it moved: each of the menu's settings it changed takes effect as
+in the menu, at once for all but Resolution and Occlusion queries (kept for the next start, marked
+*), and a key taken out of the file goes back to its default; the FPS limit (`rexnative.menu_fps`)
+too. The menu's own writes are not taken as changes. Texture filtering takes effect at once as
+well, from the next frame (it waited for a restart before).
+
 - **Display page:** the renderer, the screen, the frame rate and latency, the window, the
   **Menu size** (`rexnative.hud_scale`: Normal 100, Large 115, Larger 130 percent of its text,
   as Valve asks a Steam Deck game's text to be the player's to make larger), and the **FPS

@@ -24,6 +24,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -216,11 +217,12 @@ std::vector<Option> MakeOptions() {
                [](const std::string& v) { return Assignments{{"rexnative_fsr_sharpness", v}}; },
                nullptr, "How much FSR 1 sharpens the picture it scales up to the window (RCAS).",
                [] { return !SteamDeck() && Flag("rexnative_fsr") == "true"; }});
+  // Live: the draws take it from the next frame (DrawRenderer::EndFrame).
   o.push_back({"Picture", "anisotropy", "Texture filtering",
-               {{"Game's", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}}, true,
+               {{"Game's", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}}, false,
                [] { return Nearest(Find("anisotropy"), FlagInt("rexnative_anisotropy")); },
                [](const std::string& v) { return Assignments{{"rexnative_anisotropy", v}}; },
-               nullptr, "Anisotropic filtering: sharper ground seen at grazing angles."});
+               nullptr, "Anisotropic filtering: sharper ground seen at grazing angles. At once."});
   std::vector<Choice> frame_rates;
   for (int n = 1; n <= 2; ++n)
     frame_rates.push_back({std::to_string(RefreshRate() / n) + " fps", std::to_string(n)});
@@ -445,6 +447,7 @@ const std::vector<Option>& Options() {
 
 std::mutex g_mutex;  // the configuration file
 std::filesystem::path g_file;
+void NoteOwnWrite();  // the settings file watch (ReloadFromFile), after a write of ours
 // Start-up options chosen since the start, by id: their cvars keep the running values.
 std::map<std::string_view, std::string> g_pending;
 
@@ -647,6 +650,7 @@ bool Write(const Lines& set) {
     REXLOG_ERROR("ReXNative HUD: cannot write {}: {}", g_file.string(), ec.message());
     return false;
   }
+  NoteOwnWrite();
   return true;
 }
 
@@ -655,6 +659,164 @@ void Save(const Option& o) {
   for (const Assignment& a : o.assign(Value(o)))
     lines.emplace_back(a.cvar, a.text ? '"' + std::string(a.value) + '"' : a.value);
   Write(lines);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The settings file changed under the running game: the ReXNative Manager's Settings on the PC or
+// the Steam Deck (in place of the menu), or an editor. The overlay looks at its time about once a
+// second (OverlayFrameFor, WatchFile) and the UI thread reads it again (ReloadFromFile): each of
+// the menu's options it changed is set as the menu sets it, a live one at once (its settings and
+// its `applied`, as a step in the menu would), one taken at start-up kept for the next start
+// (marked *). A key the file no longer has goes back to its default. The menu's own writes are
+// not changes (NoteOwnWrite). Before, a setting chosen in the Manager while the game ran waited
+// for the next start, and the Manager's Deck page sent the whole file again to get it there.
+
+// Settings the menu has no row for that the Manager's Settings write and the game reads at each
+// frame (the frame rate limit: NativeRenderer::FrontEndLimit).
+constexpr std::string_view kLiveExtras[] = {"rexnative_menu_fps"};
+
+// The settings file's time when last read or written here (file_time ticks), and the keys
+// (full names) it had then (under g_mutex): a key gone since went back to its default.
+std::atomic<int64_t> g_file_time{0};
+std::set<std::string> g_file_keys;
+std::atomic<bool> g_reload_queued{false};
+
+int64_t FileTime() {
+  std::error_code ec;
+  const auto t = std::filesystem::last_write_time(g_file, ec);
+  return ec ? 0 : int64_t(t.time_since_epoch().count());
+}
+
+std::map<std::string, std::string> ReadFileValues();
+
+// After a write of ours (under g_mutex): its time is not a change, and its keys are the file's.
+void NoteOwnWrite() {
+  g_file_time.store(FileTime(), std::memory_order_relaxed);
+  g_file_keys.clear();
+  for (const auto& [name, value] : ReadFileValues()) g_file_keys.insert(name);
+}
+
+// The file's settings: {full name: value}, a string's quotes taken off. Under g_mutex.
+std::map<std::string, std::string> ReadFileValues() {
+  std::map<std::string, std::string> out;
+  std::ifstream f(g_file, std::ios::binary);
+  std::string table;
+  for (std::string line; std::getline(f, line);) {
+    if (line.ends_with('\r')) line.pop_back();
+    if (const auto t = TableOf(line)) {
+      table = *t;
+      continue;
+    }
+    const auto e = Parse(line);
+    if (!e) continue;
+    std::string value(e->value);
+    if (value.size() >= 2 && (value.front() == '"' || value.front() == '\'') &&
+        value.back() == value.front())
+      value = value.substr(1, value.size() - 2);
+    out[table.empty() ? std::string(e->name) : table + "." + std::string(e->name)] = value;
+  }
+  return out;
+}
+
+// Two settings' values as the same: as numbers (0.2 and 0.20, 1 and 1.0) or as words (True and
+// true).
+bool SameValue(std::string_view a, std::string_view b) {
+  char* end_a = nullptr;
+  char* end_b = nullptr;
+  const std::string sa(a), sb(b);
+  const double na = std::strtod(sa.c_str(), &end_a), nb = std::strtod(sb.c_str(), &end_b);
+  if (!sa.empty() && !sb.empty() && *end_a == 0 && *end_b == 0) return std::abs(na - nb) < 1e-6;
+  return sa.size() == sb.size() &&
+         std::equal(sa.begin(), sa.end(), sb.begin(), [](char x, char y) {
+           return std::tolower(uint8_t(x)) == std::tolower(uint8_t(y));
+         });
+}
+
+// What the file says for `cvar` now: its value, its default when the key went away since the last
+// read, nullopt when the file never had it (as it was at the start).
+std::optional<std::string> FileValue(const std::map<std::string, std::string>& file,
+                                     const std::set<std::string>& keys_before,
+                                     std::string_view cvar) {
+  const std::string full = rexnative::settings::FullName(cvar);
+  if (const auto it = file.find(full); it != file.end()) return it->second;
+  if (!keys_before.contains(full)) return std::nullopt;
+  const rex::cvar::FlagEntry* flag = rex::cvar::GetFlagInfo(cvar);
+  if (!flag) return std::nullopt;
+  return flag->default_value;
+}
+
+// UI thread.
+void ReloadFromFile() {
+  g_reload_queued.store(false, std::memory_order_relaxed);
+  std::map<std::string, std::string> file;
+  std::set<std::string> keys_before;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_file.empty()) return;
+    g_file_time.store(FileTime(), std::memory_order_relaxed);
+    file = ReadFileValues();
+    if (file.empty()) return;  // being written, or gone: the next look reads it again
+    keys_before = g_file_keys;
+    g_file_keys.clear();
+    for (const auto& [name, value] : file) g_file_keys.insert(name);
+  }
+  const auto FileValue = [&](std::string_view cvar) {
+    return rexnative::hud::FileValue(file, keys_before, cvar);
+  };
+  for (const Option& o : Options()) {
+    std::vector<std::string_view> cvars;
+    for (const Choice& c : o.choices)
+      for (const Assignment& a : o.assign(c.value))
+        if (std::ranges::find(cvars, a.cvar) == cvars.end()) cvars.push_back(a.cvar);
+    std::vector<std::pair<std::string_view, std::string>> changed;
+    for (const std::string_view cvar : cvars)
+      if (const auto want = FileValue(cvar); want && !SameValue(*want, Flag(cvar)))
+        changed.emplace_back(cvar, *want);
+    if (o.restart) {
+      // The choice the file makes, kept for the next start (the menu's * and its value).
+      for (const Choice& c : o.choices) {
+        bool all = true;
+        for (const Assignment& a : o.assign(c.value)) {
+          const auto have = FileValue(a.cvar);
+          if (!SameValue(have ? *have : Flag(a.cvar), a.value)) {
+            all = false;
+            break;
+          }
+        }
+        if (all) {
+          if (c.value != Value(o)) {
+            Set(o, c.value);
+            REXLOG_INFO("ReXNative: {} changed in the settings file: {} after a restart", o.label,
+                        c.label);
+          }
+          break;
+        }
+      }
+      continue;
+    }
+    if (changed.empty()) continue;
+    for (const auto& [cvar, value] : changed)
+      if (!rex::cvar::SetFlagByName(cvar, value))
+        REXLOG_WARN("ReXNative: settings file: cannot set {} to {}", cvar, value);
+    if (o.applied) o.applied();
+    REXLOG_INFO("ReXNative: {} changed in the settings file: {}, at once", o.label, o.read());
+  }
+  for (const std::string_view cvar : kLiveExtras)
+    if (const auto want = FileValue(cvar); want && !SameValue(*want, Flag(cvar))) {
+      rex::cvar::SetFlagByName(cvar, *want);
+      REXLOG_INFO("ReXNative: {} changed in the settings file: {}, at once", cvar, *want);
+    }
+}
+
+// From the overlay, at each frame presented: about once a second, whether the file's time moved
+// since it was last read or written here; if so the UI thread reads it again.
+void WatchFile() {
+  static uint32_t frames = 0;
+  if (++frames % 60 != 0 || g_file.empty()) return;
+  const int64_t t = FileTime();
+  if (!t || t == g_file_time.load(std::memory_order_relaxed)) return;
+  if (!g_reload_queued.exchange(true) && !rexnative::host::PostToUIThread(ReloadFromFile))
+    g_reload_queued.store(false);
 }
 
 
@@ -1406,6 +1568,10 @@ struct PadState {
 void SetConfigPath(const std::filesystem::path& config) {
   std::lock_guard lock(g_mutex);
   g_file = config;
+  // The file as the game started with it: the watch's starting point (WatchFile).
+  g_file_time.store(FileTime(), std::memory_order_relaxed);
+  g_file_keys.clear();
+  for (const auto& [name, value] : ReadFileValues()) g_file_keys.insert(name);
 }
 
 bool SaveSetting(const std::string& cvar, const std::string& value) {
@@ -1509,6 +1675,7 @@ namespace rexnative {
 
 bool OverlayFrameFor(uint32_t width, uint32_t height, OverlayFrame* frame) {
   using namespace rexnative::hud;
+  WatchFile();
   const auto now = std::chrono::steady_clock::now();
   if (!g_hint_end.load(std::memory_order_relaxed) && REXCVAR_GET(rexnative_hud_hint))
     g_hint_end.store((now + kHintTime).time_since_epoch().count(), std::memory_order_relaxed);

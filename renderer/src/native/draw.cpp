@@ -1131,6 +1131,7 @@ struct DrawRenderer::Impl {
   std::unique_ptr<SamplerMemo[]> sampler_memo =
       std::make_unique<SamplerMemo[]>(size_t(1) << kSamplerMemoBits);
   xenos::AnisoFilter min_aniso = xenos::AnisoFilter::kDisabled;  // --rexnative_anisotropy
+  int32_t aniso_samples = 0;  // the value min_aniso was made from (EndFrame follows a change)
   // Fetch constants a shader reads (texture and sampler bindings), its descriptor table size and
   // its last BindMemo entry (checked before hashing), direct-mapped by shader.
   struct BindMemo;
@@ -1863,8 +1864,8 @@ bool DrawRenderer::Impl::Initialize() {
   vertex_upload.SetDevice(device);
   threaded = REXCVAR_GET(rexnative_render_thread);
   // kMax_N_1 is log2(N) + 1.
-  if (const int32_t samples = std::clamp(REXCVAR_GET(rexnative_anisotropy), 1, 16); samples > 1)
-    min_aniso = xenos::AnisoFilter(std::bit_width(uint32_t(samples)));
+  aniso_samples = std::clamp(REXCVAR_GET(rexnative_anisotropy), 1, 16);
+  if (aniso_samples > 1) min_aniso = xenos::AnisoFilter(std::bit_width(uint32_t(aniso_samples)));
   if (const std::string dir = REXCVAR_GET(rexnative_capture_dir); !dir.empty())
     debug_path = (std::filesystem::path(dir) / "draw-debug.txt").string();
   constant_upload.SetDevice(device);
@@ -6071,6 +6072,15 @@ bool DrawRenderer::FrameIncomplete() const {
 
 void DrawRenderer::EndFrame(uint64_t completed_fence) {
   impl_->WaitForPipelines();  // after the frame's submission: the GPU runs it meanwhile
+  // Texture filtering as it is now (the settings menu's, or the game's settings file changed
+  // while it runs): the next frame's draws take it. Their samplers are kept by key, the new
+  // ones made as draws need them (2048 in the heap; a game uses a few hundred at most).
+  if (const int32_t samples = std::clamp(REXCVAR_GET(rexnative_anisotropy), 1, 16);
+      samples != impl_->aniso_samples) {
+    impl_->aniso_samples = samples;
+    impl_->min_aniso = samples > 1 ? xenos::AnisoFilter(std::bit_width(uint32_t(samples)))
+                                   : xenos::AnisoFilter::kDisabled;
+  }
   {
     const ShaderCacheStats& ss = impl_->shaders.stats();
     stats_.translations = ss.translations - impl_->translations_seen;
