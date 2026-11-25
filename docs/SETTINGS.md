@@ -20,9 +20,15 @@ F1 (or Back + Start on a pad) opens a settings HUD over the running game; what i
 saved into the game's configuration file. Its settings are on pages, a tab each: Display,
 Picture, Upscaler, DLSS 5 (NVIDIA GPUs) and Developer. LB and RB (Page Up and Page Down, or Q and
 E; or a click on a tab) turn the page, up and down pick a setting, left and right (or A) change
-it. A value marked * takes effect at the next start.
+it. A value marked * takes effect at the next start. Its title bar shows how the game runs now
+(the frames' recent mean: frames a second and ms) and the battery, its footer the pad's buttons
+(L1 and R1 on the Steam Deck) for what the menu does; the game is dimmed behind it. On the Steam
+Deck it knows it is there from Steam's `SteamDeck=1`, or the Deck's own firmware (Valve's board)
+when a game was started without it.
 
-- **Display page:** the renderer, the screen, the frame rate and latency, and the window.
+- **Display page:** the renderer, the screen, the frame rate and latency, the window, and the
+  **Menu size** (`rexnative.hud_scale`: Normal 100, Large 115, Larger 130 percent of its text,
+  as Valve asks a Steam Deck game's text to be the player's to make larger).
 - **Renderer**, the first setting: Native (ReXNative) or Classic (ReXGlue's Xenos GPU emulation,
   Xenia's renderer), for a game the native renderer does not draw right yet. It switches at once,
   on the Steam Deck too, and the choice is kept for the next start (`rexnative.classic`). The HUD

@@ -466,6 +466,25 @@ uint32_t FrameHeight() {
 std::string NativeRenderer::UpscalerStatus() { return Upscaler::Status(); }
 uint32_t NativeRenderer::GpuVendor() { return D3D12Device::GpuVendor(); }
 
+namespace {
+// AddToStatsLog's mean of the frames' times (ns, about the last 30), for RecentFrameMs.
+std::atomic<uint64_t> g_recent_frame_ns{0};
+}  // namespace
+
+double NativeRenderer::RecentFrameMs() {
+  return double(g_recent_frame_ns.load(std::memory_order_relaxed)) / 1e6;
+}
+
+std::string NativeRenderer::PowerStatus() {
+  SYSTEM_POWER_STATUS ps = {};
+  // 128: no battery; 255: unknown.
+  if (!GetSystemPowerStatus(&ps) || ps.BatteryFlag == 128 || ps.BatteryFlag == 255 ||
+      ps.BatteryLifePercent > 100)
+    return {};
+  return std::string(ps.ACLineStatus == 1 ? "Charging " : "Battery ") +
+         std::to_string(ps.BatteryLifePercent) + "%";
+}
+
 NativeRenderer* NativeRenderer::Get() {
   if (!(REXCVAR_GET(rexnative_beside_xenos) || REXCVAR_GET(rexnative)) || g_failed) return nullptr;
   // Never destroyed: the process exits with the game, and the guest thread may still be in a
@@ -2042,6 +2061,11 @@ void NativeRenderer::WriteCsvRow(const FrameStats& s, uint64_t frame_ns) {
 }
 
 void NativeRenderer::AddToStatsLog(const FrameStats& s, uint64_t frame_ns) {
+  {
+    const uint64_t mean = g_recent_frame_ns.load(std::memory_order_relaxed);
+    g_recent_frame_ns.store(mean ? mean - mean / 30 + frame_ns / 30 : frame_ns,
+                            std::memory_order_relaxed);
+  }
   Csv& w = *csv_;
   ++w.frames;
   w.draws += s.draws;

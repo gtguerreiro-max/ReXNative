@@ -203,6 +203,10 @@ class NativeRenderer {
   // What the upscaler runs (Upscaler::Status): "AMD FSR 4.1.2 Quality, 853x480 to 1280x720";
   // empty while it is off or unavailable.
   static std::string UpscalerStatus();
+  // The settings menu's status line: the frames' recent mean time in ms (0 before any), and the
+  // battery: "Battery 85%", "Charging 85%", empty with none (a desktop PC). Any thread.
+  static double RecentFrameMs();
+  static std::string PowerStatus();
   // The GPU's PCI vendor (D3D12Device::GpuVendor; 0 before the device exists).
   static uint32_t GpuVendor();
   // Primary mode: the native renderer (true) or the Xenos plugin draws from the next Swap on,

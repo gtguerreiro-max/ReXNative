@@ -33,6 +33,10 @@
 REXCVAR_DEFINE_BOOL(rexnative_hud_hint, true, "ReXNative",
                     "Show how to open the settings menu (Back + Start, F1; View + Menu on the "
                     "Steam Deck) for the first seconds");
+REXCVAR_DEFINE_INT32(rexnative_hud_scale, 100, "ReXNative",
+                     "The settings menu's text size, in percent of its normal size (26 px at 800 "
+                     "lines): 100, 115 or 130 (its Display page's Menu size)")
+    .range(80, 160);
 
 namespace rexnative::hud {
 namespace {
@@ -245,6 +249,13 @@ std::vector<Option> MakeOptions() {
                "Frames the game may run ahead of the screen: 1 responds soonest (the least input "
                "delay), 3 is the steadiest when the GPU is near its limit. Auto: 1, and 2 for as "
                "long as frames would miss the screen at 1. Takes effect at once."});
+  // This menu's text size (--rexnative_hud_scale; BuildFrame builds the font again), as Valve
+  // asks of a Steam Deck game's text: legible at 30 cm, and the player's to make larger.
+  o.push_back({"Display", "menu_size", "Menu size",
+               {{"Normal", "100"}, {"Large", "115"}, {"Larger", "130"}}, false,
+               [] { return Nearest(Find("menu_size"), FlagInt("rexnative_hud_scale")); },
+               [](const std::string& v) { return Assignments{{"rexnative_hud_scale", v}}; },
+               nullptr, "The size of this menu's text. At once."});
   // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
   // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
   // where gamescope shows the game on the whole screen whatever the window is.
@@ -757,9 +768,11 @@ void CreateContext() {
   style.WindowRounding = 6.0f;
   style.FrameRounding = 4.0f;
   style.WindowBorderSize = 0.0f;
-  style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
+  // The title on the left: its right side holds the status line (StatusLine).
+  style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
   ImVec4* c = style.Colors;
-  c[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.06f, 0.05f, 0.90f);
+  // Nearly opaque: over the game's bright skies the text lost its contrast at 0.90.
+  c[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.06f, 0.05f, 0.96f);
   c[ImGuiCol_TitleBgActive] = ImVec4(0.45f, 0.28f, 0.10f, 1.0f);
   c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive];
   c[ImGuiCol_Header] = ImVec4(0.55f, 0.35f, 0.12f, 0.45f);
@@ -892,6 +905,79 @@ void Row(const Option& o, const Option** focused) {
   ImGui::PopID();
 }
 
+// The most lines any shown option's help takes at `wrap` pixels (2 to 4): the help's space below
+// the rows, kept at that so the window does not change size as the focus or the page moves (the
+// Picture page's Resolution took 3 lines in a space for 2, and the window grew).
+int HelpLines(float wrap) {
+  static float cached_wrap = 0.0f, cached_font = 0.0f;
+  static int lines = 2;
+  if (wrap == cached_wrap && ImGui::GetFontSize() == cached_font) return lines;
+  cached_wrap = wrap;
+  cached_font = ImGui::GetFontSize();
+  lines = 2;
+  for (const Option& o : Options()) {
+    if (!o.help || !Shown(o)) continue;
+    const float h = ImGui::CalcTextSize(o.help, nullptr, false, wrap).y;
+    lines = std::max(lines, int(std::lround(h / ImGui::GetTextLineHeight())));
+  }
+  return std::min(lines, 4);
+}
+
+// A pad button as the Xbox pad and the Steam Deck draw it, then what it does: a coloured disc with
+// its letter (A green, B red, Y yellow) or a rounded box (the bumpers). With `click`, a click or
+// a tap on it does the same (true); else it is only shown. One item of the footer's line.
+bool Hint(const char* button, ImU32 color, bool disc, const char* action, bool click) {
+  ImDrawList* d = ImGui::GetWindowDrawList();
+  const float h = ImGui::GetFontSize();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const ImVec2 letters = ImGui::CalcTextSize(button);
+  const float box = disc ? h * 1.15f : letters.x + h * 0.6f;
+  const float gap = h * 0.35f;
+  const float action_w = action[0] ? ImGui::CalcTextSize(action).x : 0.0f;
+  const ImVec2 size(box + (action[0] ? gap + action_w : 0.0f), ImGui::GetFrameHeight());
+  ImGui::PushID(button);
+  bool clicked = false, hovered = false;
+  if (click) {
+    clicked = ImGui::InvisibleButton("##hint", size);
+    hovered = ImGui::IsItemHovered();
+  } else {
+    ImGui::Dummy(size);
+  }
+  ImGui::PopID();
+  const float cy = at.y + size.y * 0.5f;
+  if (disc)
+    d->AddCircleFilled(ImVec2(at.x + box * 0.5f, cy), box * 0.5f, color);
+  else
+    d->AddRectFilled(ImVec2(at.x, cy - h * 0.55f), ImVec2(at.x + box, cy + h * 0.55f), color,
+                     h * 0.3f);
+  d->AddText(ImVec2(at.x + (box - letters.x) * 0.5f, cy - letters.y * 0.5f),
+             IM_COL32(255, 255, 255, 255), button);
+  if (action[0])
+    d->AddText(ImVec2(at.x + box + gap, cy - letters.y * 0.5f),
+               hovered ? IM_COL32(255, 210, 120, 255) : IM_COL32(230, 220, 200, 255), action);
+  return clicked;
+}
+
+// The title bar's right side: how the game runs now (the frames' recent mean) and the battery.
+void StatusLine() {
+  std::string text;
+  if (const double ms = NativeRenderer::RecentFrameMs(); ms > 0.5)
+    text = std::to_string(int(std::lround(1000.0 / ms))) + " fps   " +
+           std::to_string(int(ms)) + "." + std::to_string(int(ms * 10.0) % 10) + " ms";
+  if (const std::string power = NativeRenderer::PowerStatus(); !power.empty())
+    text += (text.empty() ? "" : "   ·   ") + power;
+  if (text.empty()) return;
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const ImVec2 pos = ImGui::GetWindowPos();
+  const float title_h = ImGui::GetFontSize() + style.FramePadding.y * 2.0f;
+  const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+  // Left of the close button (a square of the title's height).
+  const float right = pos.x + ImGui::GetWindowWidth() - title_h - style.FramePadding.x * 2.0f;
+  ImGui::GetForegroundDrawList()->AddText(
+      ImVec2(right - size.x, pos.y + (title_h - size.y) * 0.5f), IM_COL32(245, 225, 190, 255),
+      text.c_str());
+}
+
 // The menu's window; false when it was closed.
 bool DrawMenu(ImGuiIO& io, bool appearing) {
   const float width = std::min(760.0f * g_font_size / kBaseFont, io.DisplaySize.x - 40.0f);
@@ -903,6 +989,7 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   ImGui::Begin(kTitle, &open,
                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoSavedSettings);
+  StatusLine();
   // The pages, a tab each, those with a row to show (DLSS 5 only on an NVIDIA GPU); the most rows
   // one has sizes the rows' region, so the window keeps its size from page to page.
   std::vector<std::string_view> pages;
@@ -944,10 +1031,12 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   // The rows scroll in a region that leaves the help and the footer on the screen: the Steam
   // Deck's 800 lines (720 on a TV) may hold fewer rows than a page has. Its height at most: the
   // screen less the window's title, the tabs, padding and a margin, less what follows the rows
-  // (two lines of help, the footer's button, the separators and spacing between them).
+  // (the help's lines, the footer's line, the separators and spacing between them).
   const ImGuiStyle& style = ImGui::GetStyle();
+  const int help_lines = HelpLines(ImGui::GetContentRegionAvail().x);
   const float below = style.ItemSpacing.y * 6.0f + 2.0f +
-                      ImGui::GetTextLineHeightWithSpacing() * 2.0f + ImGui::GetFrameHeight();
+                      ImGui::GetTextLineHeightWithSpacing() * float(help_lines) +
+                      ImGui::GetFrameHeight();
   const float rows_max = io.DisplaySize.y - style.WindowPadding.y * 4.0f -
                          ImGui::GetFrameHeight() * 2.0f - style.ItemSpacing.y - below;
   const float rows = std::min(float(most) * ImGui::GetFrameHeightWithSpacing(),
@@ -966,25 +1055,36 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   ImGui::EndChild();
   ImGui::Spacing();
   ImGui::Separator();
-  // The focused option's help (the pad has no hover tooltips), in a space kept for two lines so
-  // the window does not change size as the focus moves.
+  // The focused option's help (the pad has no hover tooltips), in a space kept for the longest
+  // help's lines (HelpLines) so the window does not change size as the focus moves.
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.80f, 0.70f, 1.0f));
   ImGui::PushTextWrapPos(0.0f);
   const float top = ImGui::GetCursorPosY();
   ImGui::TextUnformatted(focused && focused->help ? focused->help : "");
-  const float lines = top + ImGui::GetTextLineHeightWithSpacing() * 2.0f;
+  const float lines = top + ImGui::GetTextLineHeightWithSpacing() * float(help_lines);
   if (ImGui::GetCursorPosY() < lines) ImGui::SetCursorPosY(lines);
   ImGui::PopTextWrapPos();
   ImGui::PopStyleColor();
   ImGui::Separator();
-  ImGui::TextDisabled("%s", g_pending.empty() ? "LB/RB: page   Y: snapshot   B: close"
-                                              : "* after a restart   LB/RB: page");
-  const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
-  ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Snapshot").x -
-                  ImGui::CalcTextSize("Close").x - pad * 2.0f - ImGui::GetStyle().ItemSpacing.x);
-  bool snap = ImGui::Button("Snapshot");
-  ImGui::SameLine();
-  if (ImGui::Button("Close")) open = false;
+  // The pad's buttons for what the menu does, as the Steam Deck names its bumpers (L1, R1) or the
+  // Xbox pad does; Snapshot and Close are clicks and taps too.
+  const float space = ImGui::GetFontSize() * 0.9f;
+  const ImU32 bumper = IM_COL32(95, 90, 85, 255);
+  Hint("A", IM_COL32(80, 160, 60, 255), true, "Change", false);
+  ImGui::SameLine(0.0f, space);
+  Hint(SteamDeck() ? "L1" : "LB", bumper, false, "", false);
+  ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.2f);
+  Hint(SteamDeck() ? "R1" : "RB", bumper, false, "Page", false);
+  ImGui::SameLine(0.0f, space);
+  bool snap = Hint("Y", IM_COL32(215, 165, 25, 255), true, "Snapshot", true);
+  ImGui::SameLine(0.0f, space);
+  if (Hint("B", IM_COL32(200, 55, 45, 255), true, "Close", true)) open = false;
+  if (!g_pending.empty()) {
+    const char* note = "* after a restart";
+    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(note).x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", note);
+  }
   ImGui::End();
   // B or Escape closes (the rows open no popups for them to close first).
   if (Pressed({ImGuiKey_GamepadFaceRight, ImGuiKey_Escape})) open = false;
@@ -1010,11 +1110,16 @@ float HintAlpha(std::chrono::steady_clock::time_point now) {
 }
 
 // On the Steam Deck (Steam sets SteamDeck=1 for its games) the pad's Back and Start are View and
-// Menu and there is no F1; without the pad hook only F1 opens the menu.
+// Menu and there is no F1; without the pad hook only F1 opens the menu. A game started otherwise
+// than from Steam's Play button had no SteamDeck=1 (2026-11-25: the Deck's menu showed the PC's
+// Resolution and Window rows): under Proton the Deck's firmware says so too, Valve's board in
+// Linux's DMI through Wine's Z: drive.
 bool SteamDeck() {
   static const bool deck = [] {
-    const char* v = std::getenv("SteamDeck");
-    return v && std::strcmp(v, "1") == 0;
+    if (const char* v = std::getenv("SteamDeck"); v && std::strcmp(v, "1") == 0) return true;
+    std::ifstream vendor("Z:\\sys\\class\\dmi\\id\\board_vendor");
+    std::string name;
+    return vendor && std::getline(vendor, name) && name == "Valve";
   }();
   return deck;
 }
@@ -1070,8 +1175,11 @@ void BuildFrame() {
   static auto last = std::chrono::steady_clock::now();
   io.DisplaySize = ImVec2(float(g_display_width.load()), float(g_display_height.load()));
   if (io.DisplaySize.x <= 0 || io.DisplaySize.y <= 0) return;
-  // Text 26 px on the Deck's 1280x800, as tall for its height elsewhere (47 at 1440p).
-  const float font = std::clamp(std::round(io.DisplaySize.y * (kBaseFont / 800.0f)), 16.0f, 72.0f);
+  // Text 26 px on the Deck's 1280x800, as tall for its height elsewhere (47 at 1440p), times the
+  // player's Menu size (--rexnative_hud_scale).
+  const float scale = float(std::clamp(REXCVAR_GET(rexnative_hud_scale), 80, 160)) / 100.0f;
+  const float font =
+      std::clamp(std::round(io.DisplaySize.y * (kBaseFont / 800.0f) * scale), 16.0f, 96.0f);
   if (font != g_font_size) BuildFont(font);
   const bool appearing = menu && !was_open;
   was_open = menu;
@@ -1081,6 +1189,10 @@ void BuildFrame() {
   if (menu) FeedPad(io, appearing);
   ImGui::NewFrame();
   bool open = true;
+  // The game dimmed behind the menu, which stands out from it as a console's pause menu does.
+  if (menu)
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), io.DisplaySize,
+                                                  IM_COL32(0, 0, 0, 110));
   if (menu)
     open = DrawMenu(io, appearing);
   else
