@@ -956,6 +956,13 @@ int HelpLines(float wrap) {
 // a tap on it does the same (true); else it is only shown. One item of the footer's line.
 bool Hint(const char* button, ImU32 color, bool disc, const char* action, bool click) {
   ImDrawList* d = ImGui::GetWindowDrawList();
+  // The style's alpha on the colours too (the start-up hint fades out).
+  const float alpha = ImGui::GetStyle().Alpha;
+  const auto fade = [alpha](ImU32 c) {
+    const ImU32 a = ImU32(float((c >> IM_COL32_A_SHIFT) & 0xFF) * alpha + 0.5f);
+    return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+  };
+  color = fade(color);
   const float h = ImGui::GetFontSize();
   const ImVec2 at = ImGui::GetCursorScreenPos();
   const ImVec2 letters = ImGui::CalcTextSize(button);
@@ -979,10 +986,10 @@ bool Hint(const char* button, ImU32 color, bool disc, const char* action, bool c
     d->AddRectFilled(ImVec2(at.x, cy - h * 0.55f), ImVec2(at.x + box, cy + h * 0.55f), color,
                      h * 0.3f);
   d->AddText(ImVec2(at.x + (box - letters.x) * 0.5f, cy - letters.y * 0.5f),
-             IM_COL32(255, 255, 255, 255), button);
+             fade(IM_COL32(255, 255, 255, 255)), button);
   if (action[0])
     d->AddText(ImVec2(at.x + box + gap, cy - letters.y * 0.5f),
-               hovered ? IM_COL32(255, 210, 120, 255) : IM_COL32(230, 220, 200, 255), action);
+               fade(hovered ? IM_COL32(255, 210, 120, 255) : IM_COL32(230, 220, 200, 255)), action);
   return clicked;
 }
 
@@ -1169,14 +1176,10 @@ float ToastAlpha(std::chrono::steady_clock::time_point now, std::string* text) {
   return std::clamp(std::chrono::duration<float>(end - now).count(), 0.0f, 1.0f);
 }
 
-const char* HintText() {
-  if (!g_pad_seen.load(std::memory_order_relaxed))
-    return SteamDeck() ? "Settings: keyboard F1" : "Settings:  F1";
-  return SteamDeck() ? "Settings and snapshots:  View + Menu"
-                     : "Settings and snapshots:  Back + Start   (F1)";
-}
-
-void DrawHint(ImGuiIO& io, float alpha, const char* text) {
+// The start-up hint, or a snapshot's message (`toast`): in the bottom left corner, fading out.
+// The hint shows the keys as the menu's footer does: View + Menu on the Steam Deck, Back + Start
+// (and F1) on a pad elsewhere, F1 before the game has read a pad.
+void DrawHint(ImGuiIO& io, float alpha, const char* toast) {
   const float margin = ImGui::GetStyle().WindowPadding.x;
   ImGui::SetNextWindowPos(ImVec2(margin, io.DisplaySize.y - margin), ImGuiCond_Always,
                           ImVec2(0.0f, 1.0f));
@@ -1186,7 +1189,23 @@ void DrawHint(ImGuiIO& io, float alpha, const char* text) {
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
                    ImGuiWindowFlags_NoFocusOnAppearing);
-  ImGui::TextUnformatted(text);
+  const ImU32 key = IM_COL32(95, 90, 85, 255);
+  if (toast) {
+    ImGui::TextUnformatted(toast);
+  } else if (!g_pad_seen.load(std::memory_order_relaxed)) {
+    Hint("F1", key, false, SteamDeck() ? "Settings (keyboard)" : "Settings", false);
+  } else {
+    Hint(SteamDeck() ? "View" : "Back", key, false, "", false);
+    ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.25f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("+");
+    ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.25f);
+    Hint(SteamDeck() ? "Menu" : "Start", key, false, "Settings and snapshots", false);
+    if (!SteamDeck()) {
+      ImGui::SameLine(0.0f, ImGui::GetFontSize() * 0.6f);
+      Hint("F1", key, false, "", false);
+    }
+  }
   ImGui::End();
   ImGui::PopStyleVar();
 }
@@ -1254,7 +1273,7 @@ void BuildFrame() {
   if (menu) {
     open = DrawMenu(io, appearing);
   } else {
-    if (hint > 0.0f) DrawHint(io, hint, toast > 0.0f ? toast_text.c_str() : HintText());
+    if (hint > 0.0f) DrawHint(io, hint, toast > 0.0f ? toast_text.c_str() : nullptr);
     if (fps) DrawFps(io, fps);
   }
   ImGui::Render();
