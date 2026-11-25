@@ -1,0 +1,92 @@
+From cc52b3997e4f047ad66c0bfbba8ada0ff1288356 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 03:06:49 +0000
+Subject: [PATCH] hid: SDL pads can be updated when the title reads them (off
+ by default)
+
+With a pad open SDL wakes the UI thread's event wait every millisecond to
+update it (SDL_events.c, EVENT_POLL_INTERVAL_NS). Under Wine each wake is
+a MsgWait and a PeekMessage: the Steam Deck's games woke their main
+thread about 3,030 times a second, 3.7-3.9 % of a core, with the
+wineserver behind it.
+
+hid.sdl.update_on_read (startup only, off): SDL_HINT_AUTO_UPDATE_JOYSTICKS
+off, and SDL_UpdateJoysticks() (safe from any thread in SDL3) at the start
+of State::DrainAndLock, which runs before every read of a pad's state or
+capabilities; the events it raises reach the event watch on that thread
+and are drained right after, so a read sees the pad as of now.
+
+Steam Deck, Overlord II: the main thread no longer among the busy ones,
+the wineserver 4-5 -> 3-4 %; the keyboard pad (mnk_mode) drove it into its
+level as before and the pad was connected. Off until the pad itself is
+tried in a game.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/hid/sdl3/sdl3_input_driver.cpp | 13 +++++++++++++
+ src/hid/sdl3/sdl3_input_driver.h   |  5 +++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/src/hid/sdl3/sdl3_input_driver.cpp b/src/hid/sdl3/sdl3_input_driver.cpp
+index 2ab6d1da..bfd392b2 100644
+--- a/src/hid/sdl3/sdl3_input_driver.cpp
++++ b/src/hid/sdl3/sdl3_input_driver.cpp
+@@ -183,6 +183,7 @@ struct SDL3InputDriver::State {
+   static bool EventWatch(void* userdata, SDL_Event* event);
+   void HandleEvent(const SDL_Event& event);
+   std::unique_lock<std::mutex> DrainAndLock();
++  bool update_on_read = false;  // hid.sdl.update_on_read, set before the UI thread starts SDL
+   void ProcessEventLocked(const SDL_Event& event);
+   void OnJoystickAddedLocked(const SDL_Event& event);
+   void OnGamepadAddedLocked(const SDL_Event& event);
+@@ -220,6 +221,11 @@ void SDL3InputDriver::State::HandleEvent(const SDL_Event& event) {
+ }
+ 
+ std::unique_lock<std::mutex> SDL3InputDriver::State::DrainAndLock() {
++  // hid.sdl.update_on_read: the pads read now, their events (the event watch, on this thread)
++  // drained below. Safe from any thread (SDL3).
++  if (update_on_read) {
++    SDL_UpdateJoysticks();
++  }
+   std::vector<SDL_Event> events;
+   {
+     std::lock_guard<std::mutex> guard(event_mutex);
+@@ -417,12 +423,19 @@ Result<void> SDL3InputDriver::Initialize(IDriverContext& context) {
+   state_->running = true;
+ 
+   std::filesystem::path mappings = mappings_file.Get();
++  // With an open pad SDL wakes the UI thread's event wait every millisecond to update it
++  // (SDL_events.c, EVENT_POLL_INTERVAL_NS): the Steam Deck's games woke their main thread about
++  // 3,000 times a second, each a wineserver round trip under Wine.
++  state_->update_on_read = update_on_read.Get();
+   const Result<void> ran =
+       context.RunOnUIThread([state = state_, mappings = std::move(mappings)]() {
+         if (!state->running) {
+           return;
+         }
+         SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
++        if (state->update_on_read) {
++          SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
++        }
+         if (!SDL_InitSubSystem(SDL_INIT_EVENTS)) {
+           REXHID_ERROR("SDL: failed to init events subsystem: {}", SDL_GetError());
+           return;
+diff --git a/src/hid/sdl3/sdl3_input_driver.h b/src/hid/sdl3/sdl3_input_driver.h
+index 00297587..252cc809 100644
+--- a/src/hid/sdl3/sdl3_input_driver.h
++++ b/src/hid/sdl3/sdl3_input_driver.h
+@@ -33,6 +33,11 @@ class SDL3InputDriver final : public IInputDriver, public SettingOwner {
+  public:
+   REX_SETTING(std::filesystem::path, mappings_file, "{app.root}/gamecontrollerdb.txt",
+               "SDL gamepad mappings file", kStartupOnly);
++  REX_SETTING(bool, update_on_read, false,
++              "Update the pads when the title reads them (SDL_UpdateJoysticks), not every "
++              "millisecond in the UI thread's event wait (SDL_HINT_AUTO_UPDATE_JOYSTICKS off): "
++              "under Wine each of those wakes went through the wineserver",
++              kStartupOnly);
+ 
+   SDL3InputDriver();
+ 
+-- 
+2.55.0.windows.5
+
