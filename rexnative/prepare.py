@@ -352,7 +352,36 @@ def not_starts(work):
     if not os.path.exists(p):
         return set()
     return {int(line.split('#')[0].split()[0], 16) for line in open(p, encoding='utf-8')
+            if line.split('#')[0].split()} - tail_starts(work)
+
+
+def tail_starts(work):
+    """Epilogues kept as functions of their own (tail-starts.txt, written by _tail_epilogues):
+    no hint check removes them, and not_starts leaves them out."""
+    p = os.path.join(work, 'tail-starts.txt')
+    if not os.path.exists(p):
+        return set()
+    return {int(line.split('#')[0].split()[0], 16) for line in open(p, encoding='utf-8')
             if line.split('#')[0].split()}
+
+
+def _tail_epilogues(pairs, starts, known_false, kept):
+    """Targets found not to be function starts that a `b` still reaches over other functions:
+    the epilogue of a function the compiler placed after code of its own that .pdata gives
+    functions of their own (Forza Motorsport 2's C++ catch blocks: sub_8276BF28 ends at 8276C2C8
+    with `b 0x8276C388`, its epilogue past the catch blocks 8276C2CC and 8276C328). Codegen
+    cannot grow the function over them, so the epilogue goes back as a function: its share of the
+    caller's registers (r31, the frame pointer it restores the stack from) comes from
+    live_in_nonvolatiles, as any function's that reads registers its caller set."""
+    starts = sorted(starts)
+    out = set()
+    for t, src in pairs:
+        if t not in known_false or t in kept or t <= src:
+            continue
+        i = bisect.bisect_right(starts, src)
+        if i < len(starts) and starts[i] < t:
+            out.add(t)
+    return out
 
 
 def _false_starts(text, hints):
@@ -818,6 +847,7 @@ def _epilogue_starts(work, hints):
     found = set()
     if not hints or not os.path.isdir(gen):
         return found
+    hints = set(hints) - tail_starts(work)
     for name in os.listdir(gen):
         if not name.endswith('.cpp'):
             continue
@@ -1110,8 +1140,20 @@ def codegen(work, name, rexglue, max_rounds, log):
         targets = [t for t, _ in pairs] + tails
         new = sorted({t for t in targets if t not in hints and t not in known_false})
         if not new and not fragments:
-            tail = text.strip().splitlines()[-12:]
-            raise RuntimeError('codegen failed with nothing to hint:\n' + '\n'.join(tail))
+            kept = _tail_epilogues([p for p in pairs if p[0] in tails],
+                                   set(hints) | _generated_starts(gen), known_false,
+                                   tail_starts(work))
+            if kept:
+                with open(os.path.join(work, 'tail-starts.txt'), 'a', encoding='utf-8',
+                          newline='\n') as f:
+                    f.write(''.join('0x%08X\n' % t for t in sorted(kept)))
+                log('  codegen round %d: %d epilogues a branch reaches over other functions '
+                    'kept as functions: %s' % (rnd, len(kept),
+                                               ' '.join('%08X' % t for t in sorted(kept))))
+                new = sorted(kept)
+            else:
+                tail = text.strip().splitlines()[-12:]
+                raise RuntimeError('codegen failed with nothing to hint:\n' + '\n'.join(tail))
         for h in fragments:
             del hints[h]
         if fragments:
