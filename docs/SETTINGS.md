@@ -20,8 +20,10 @@ F1 (or Back + Start on a pad) opens a settings HUD over the running game; what i
 saved into the game's configuration file. Its settings are on pages, a tab each: Display,
 Picture, Upscaler, DLSS 5 (NVIDIA GPUs) and Developer. LB and RB (Page Up and Page Down, or Q and
 E; or a click on a tab) turn the page, up and down pick a setting, left and right (or A) change
-it. A value marked * takes effect at the next start. Its title bar shows how the game runs now
-(the frames' recent mean: frames a second and ms) and the battery, its footer the pad's buttons
+it (held on the pad, it repeats). A value marked * takes effect at the next start. Its title bar
+shows how the game runs now
+(the frames' recent mean: frames a second and ms) and the battery (its time left on the battery,
+from Linux's battery under Proton), its footer the pad's buttons
 (L1 and R1 on the Steam Deck) for what the menu does; the game is dimmed behind it. On the Steam
 Deck it knows it is there from Steam's `SteamDeck=1`, or the Deck's own firmware (Valve's board)
 when a game was started without it.

@@ -42,6 +42,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <format>
 #include <mutex>
 #include <span>
@@ -475,14 +476,56 @@ double NativeRenderer::RecentFrameMs() {
   return double(g_recent_frame_ns.load(std::memory_order_relaxed)) / 1e6;
 }
 
+namespace {
+// A number in a Linux sysfs file through Wine's Z: drive (the whole file system), -1 without it.
+int64_t SysfsNumber(const std::filesystem::path& path) {
+  std::ifstream f(path);
+  int64_t v = -1;
+  return f && (f >> v) ? v : -1;
+}
+
+// The battery's time left in minutes while it runs the machine, -1 when not known. Windows says
+// so (BatteryLifeTime); under Proton it says nothing, and Linux's battery does: charge over
+// current (the Steam Deck's BAT1), or energy over power.
+int BatteryMinutesLeft(const SYSTEM_POWER_STATUS& ps) {
+  if (ps.ACLineStatus == 1) return -1;
+  if (ps.BatteryLifeTime != DWORD(-1)) return int(ps.BatteryLifeTime / 60);
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator("Z:\\sys\\class\\power_supply", ec)) {
+    std::ifstream type(e.path() / "type");
+    std::string t;
+    if (!(type && std::getline(type, t) && t == "Battery")) continue;
+    const int64_t charge = SysfsNumber(e.path() / "charge_now");
+    const int64_t current = SysfsNumber(e.path() / "current_now");
+    if (charge > 0 && current > 0) return int(charge * 60 / current);
+    const int64_t energy = SysfsNumber(e.path() / "energy_now");
+    const int64_t power = SysfsNumber(e.path() / "power_now");
+    if (energy > 0 && power > 0) return int(energy * 60 / power);
+  }
+  return -1;
+}
+}  // namespace
+
 std::string NativeRenderer::PowerStatus() {
   SYSTEM_POWER_STATUS ps = {};
   // 128: no battery; 255: unknown.
   if (!GetSystemPowerStatus(&ps) || ps.BatteryFlag == 128 || ps.BatteryFlag == 255 ||
       ps.BatteryLifePercent > 100)
     return {};
-  return std::string(ps.ACLineStatus == 1 ? "Charging " : "Battery ") +
-         std::to_string(ps.BatteryLifePercent) + "%";
+  std::string text = std::string(ps.ACLineStatus == 1 ? "Charging " : "Battery ") +
+                     std::to_string(ps.BatteryLifePercent) + "%";
+  // Read at most every 10 s: a moment's current swings with each frame.
+  static std::atomic<int64_t> read_at{0};
+  static std::atomic<int> minutes{-1};
+  const int64_t now = int64_t(GetTickCount64());
+  if (now - read_at.load(std::memory_order_relaxed) > 10000) {
+    read_at.store(now, std::memory_order_relaxed);
+    minutes.store(BatteryMinutesLeft(ps), std::memory_order_relaxed);
+  }
+  if (const int m = minutes.load(std::memory_order_relaxed); m > 0 && m < 24 * 60 && ps.ACLineStatus != 1)
+    text += "  " + std::to_string(m / 60) + ":" + (m % 60 < 10 ? "0" : "") + std::to_string(m % 60) +
+            " left";
+  return text;
 }
 
 NativeRenderer* NativeRenderer::Get() {

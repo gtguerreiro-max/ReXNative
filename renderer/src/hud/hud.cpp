@@ -841,6 +841,21 @@ void FeedPad(ImGuiIO& io, bool reset) {
   const int side = travel(lx) > 0.5f ? (lx < 0 ? -1 : 1) : 0;
   if (side && side != stick && !reset) g_step += side;
   stick = side;
+  // Left or Right held, on the D-pad or the stick: the value steps again after 0.4 s and then
+  // every 0.12 s, as a console's menus repeat (the press itself stepped above). The keyboard's
+  // arrows repeat as the system repeats keys (Key).
+  static int held = 0;
+  static std::chrono::steady_clock::time_point next_step;
+  const int dpad = (buttons & kPadLeft) ? -1 : (buttons & kPadRight) ? 1 : 0;
+  const int now_held = dpad ? dpad : side;
+  const auto now = std::chrono::steady_clock::now();
+  if (now_held != held) {
+    held = now_held;
+    next_step = now + std::chrono::milliseconds(400);
+  } else if (held && !reset && now >= next_step) {
+    g_step += held;
+    next_step = now + std::chrono::milliseconds(120);
+  }
   const float f = travel(ly);
   io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0 && f > 0.5f, ly < 0 ? f : 0.0f);
   io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0 && f > 0.5f, ly > 0 ? f : 0.0f);
@@ -1060,7 +1075,12 @@ bool DrawMenu(ImGuiIO& io, bool appearing) {
   if (g_page == "Upscaler") UpscalerLine();
   for (const Option& o : Options()) {
     if (o.page != g_page || !Shown(o)) continue;
-    if (first && (appearing || turned)) ImGui::SetKeyboardFocusHere();
+    if (first && (appearing || turned)) {
+      ImGui::SetKeyboardFocusHere();
+      // The focus box on the first row at once: ImGui hides its cursor after a key that is not a
+      // move (the page's LB / RB, the chord that opened the menu), and the pad has no hover.
+      ImGui::SetNavCursorVisible(true);
+    }
     first = false;
     Row(o, &focused);
   }
