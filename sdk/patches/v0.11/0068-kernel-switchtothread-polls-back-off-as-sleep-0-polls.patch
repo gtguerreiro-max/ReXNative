@@ -1,0 +1,85 @@
+From c9ec883d9828a552ada8d0a1c6b5472505d78639 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 09:26:27 +0000
+Subject: [PATCH] kernel: SwitchToThread polls back off as Sleep(0) polls do
+
+NtYieldExecution yielded the host processor each time, outside the
+yield backoff of KeDelayExecutionThread's zero delays. It now goes
+through KernelThread::ParkYield as well: under Wine a thread that yields
+16 times in a row, less than 2 ms apart, sleeps runtime.yield_backoff_us
+on its park word at each further yield. Elsewhere it yields as before.
+
+Forza Horizon on the Steam Deck: the thread that waits on its job
+thread's work yielded about 26,800 times a second in each burst, every
+core at 3.5 GHz; with the backoff, 570 a second. The game's CPU went from
+233-239 to 220-228 % of a core. Frame times did not change: the
+GPU throttles in those bursts (the APU at its 15 W limit, the GPU at
+200-450 MHz) come from the job threads' own work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/kernel/object/kernel_thread.h  |  9 +++++----
+ include/rex/kernel/runtime_settings.h      |  5 +++--
+ src/kernel/xboxkrnl/xboxkrnl_threading.cpp | 10 +++++++++-
+ 3 files changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/include/rex/kernel/object/kernel_thread.h b/include/rex/kernel/object/kernel_thread.h
+index 98544083..ad688ca8 100644
+--- a/include/rex/kernel/object/kernel_thread.h
++++ b/include/rex/kernel/object/kernel_thread.h
+@@ -296,10 +296,11 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+   std::optional<rex::platform::SleepResult> ParkSleep(std::chrono::microseconds duration);
+ 
+   /**
+-   * An alertable guest yield (a delay of 0) where ParkSleep is available: a stop, suspend or APC
+-   * request (the park word's interrupt) runs its host callback and gives kAlerted; otherwise the
+-   * thread yields its processor (SwitchToThread, sched_yield under Wine) and gives kSuccess. Empty
+-   * when not available: the caller's alertable host yield.
++   * A guest yield (a delay of 0, NtYieldExecution) where ParkSleep is available: a stop, suspend
++   * or APC request (the park word's interrupt) runs its host callback and gives kAlerted;
++   * otherwise the thread yields its processor (SwitchToThread, sched_yield under Wine), or sleeps
++   * runtime.yield_backoff_us when it polls, and gives kSuccess. Empty when not available: the
++   * caller's host yield.
+    */
+   std::optional<rex::platform::SleepResult> ParkYield(bool low_priority = false);
+ 
+diff --git a/include/rex/kernel/runtime_settings.h b/include/rex/kernel/runtime_settings.h
+index a62c3764..85b96295 100644
+--- a/include/rex/kernel/runtime_settings.h
++++ b/include/rex/kernel/runtime_settings.h
+@@ -44,8 +44,9 @@ class REX_KERNEL_API RuntimeSettings final : public SettingOwner {
+               "no wineserver timer, no spin at the end), woken by stop, suspend and APC requests "
+               "as fast waits are");
+   REX_SETTING(u32, yield_backoff_us, 200,
+-              "With fast_sleeps: a guest thread that yields (Sleep(0)) 16 times in a row, less "
+-              "than 2 ms apart, is polling; each further yield sleeps this long on its park word "
++              "With fast_sleeps: a guest thread that yields (Sleep(0), SwitchToThread) 16 times in "
++              "a row, less than 2 ms apart, is polling; each further yield sleeps this long on its "
++              "park word "
+               "(woken by stop, suspend and APC requests), 0 for a plain yield each time",
+               Range{0, 2000});
+   REX_SETTING(bool, wait_stats, false,
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index fb9ff10c..11691f9c 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -381,7 +381,15 @@ u32 NtYieldExecution_entry() {
+   KernelThread::CheckStop();
+   KernelThread::WriteKernelTime();
+   wait_stats::Timer stats(wait_stats::Kind::kYield);
+-  rex::platform::MaybeYield();
++  // As a delay of 0 (KernelThread::ParkYield), so a poll of yields in a row sleeps
++  // runtime.yield_backoff_us at each further one. Forza Horizon's thread 0xD waited on another's
++  // jobs with SwitchToThread about 26,800 times a second, all four of the Steam Deck's cores at
++  // their highest clock: the APU reached its 15 W limit and the GPU fell to 200-450 MHz in the
++  // middle of frames, which took 45-70 ms.
++  KernelThread* const thread = KernelThread::GetCallingThread();
++  if (!thread || !thread->ParkYield()) {
++    rex::platform::MaybeYield();
++  }
+   return X_STATUS_SUCCESS;
+ }
+ 
+-- 
+2.55.0.windows.5
+
