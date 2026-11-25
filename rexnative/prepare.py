@@ -1317,6 +1317,7 @@ def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=4
             'clear_color': ('%08X' % res['clear_color']['address']) if res.get('clear_color') else None,
         }
         status['ok'] = True
+        status.pop('error', None)  # an earlier run's failure, from the prepare.json it read
         log('  adapt: %d of %d functions, reference %s' % (len(found), len(res['functions']),
                                                           res['primary']))
     except Exception as e:  # recorded, so a batch goes on with the next game
