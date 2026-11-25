@@ -6,8 +6,13 @@ target, so the listing (address, instruction) of every function can be rebuilt f
 generated code alone, without the executable. The parser is PGR4Native's
 scripts/analysis/tu_address_map.py `listings()`, extended with the call graph.
 
-Parsed trees are cached (pickle) in %TEMP%/rexnative-cache, keyed by the generated files' names,
-sizes and times.
+Parsed trees are cached (pickle): one file per generated tree (t-<hash of its path>.pkl), holding
+the key of the files it parsed (their names, sizes and times) and parsed again when they change, in
+%TEMP%/rexnative-cache on Windows and ~/.cache/rexnative-cache elsewhere. Before, every build of a
+game added a file and none went: 8.8 GB in 161 files on the PC, and on the Steam Deck 669 MB in
+/tmp, which is in memory there with a quota per user that leftovers filled, after which flatpak
+could start no app (the ReXNative Manager's launcher among them; 2026-11-25). Files of that older
+scheme, and caches not used for CACHE_DAYS days, are removed when a cache is written.
 """
 import glob
 import hashlib
@@ -23,6 +28,7 @@ LABEL = re.compile(r'^loc_([0-9A-F]{8}):')
 TARGET = re.compile(r'0x(8[0-9a-f]{7})$')
 
 CACHE_VERSION = 2
+CACHE_DAYS = 30
 
 
 class Tree:
@@ -135,18 +141,54 @@ def load(tree):
     if not files:
         sys.exit('rexnative: no ReXGlue generated code (*_recomp.*.cpp) in %s' % tree)
     key = hashlib.sha1(repr((CACHE_VERSION, [(os.path.basename(f), os.path.getmtime(f),
-                                              os.path.getsize(f)) for f in files])).encode())
-    cache_dir = os.path.join(tempfile.gettempdir(), 'rexnative-cache')
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, key.hexdigest()[:20] + '.pkl')
-    if os.path.exists(cache):
+                                              os.path.getsize(f)) for f in files])).encode()).hexdigest()
+    cache_dir = _cache_dir()
+    cache = os.path.join(cache_dir, 't-%s.pkl' % hashlib.sha1(
+        os.path.realpath(tree).encode('utf-8', 'surrogateescape')).hexdigest()[:20])
+    try:
         with open(cache, 'rb') as f:
-            funcs = pickle.load(f)
-    else:
-        funcs = _parse(files)
-        with open(cache, 'wb') as f:
-            pickle.dump(funcs, f)
+            cached_key, funcs = pickle.load(f)
+        if cached_key == key:
+            os.utime(cache)  # in use: kept by the pruning below
+            return Tree(tree, funcs)
+    except (OSError, EOFError, ValueError, TypeError, pickle.UnpicklingError):
+        pass
+    funcs = _parse(files)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache + '.new', 'wb') as f:
+            pickle.dump((key, funcs), f)
+        os.replace(cache + '.new', cache)
+        _prune_cache(cache_dir, keep=cache)
+    except OSError:
+        pass  # a cache that cannot be written (a full disk) only costs the parse next time
     return Tree(tree, funcs)
+
+
+def _cache_dir():
+    if os.name == 'nt':
+        return os.path.join(tempfile.gettempdir(), 'rexnative-cache')
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    old = os.path.join(tempfile.gettempdir(), 'rexnative-cache')
+    if os.path.isdir(old):  # the older place, in /tmp
+        import shutil
+        shutil.rmtree(old, ignore_errors=True)
+    return os.path.join(base, 'rexnative-cache')
+
+
+def _prune_cache(cache_dir, keep):
+    """The older scheme's files (any .pkl not t-*), and caches not used for CACHE_DAYS days."""
+    import time
+    old = time.time() - CACHE_DAYS * 86400
+    for name in os.listdir(cache_dir):
+        path = os.path.join(cache_dir, name)
+        if path == keep or not name.endswith(('.pkl', '.pkl.new')):
+            continue
+        try:
+            if not name.startswith('t-') or os.path.getmtime(path) < old:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def mnemonics(insns):
