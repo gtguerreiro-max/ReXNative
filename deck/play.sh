@@ -59,6 +59,19 @@ if [[ -z ${REXNATIVE_PREFIX:-} && ! -d $prefix && -d $HOME/Games/ReXNative/prefi
 fi
 export STEAM_COMPAT_DATA_PATH=$prefix STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
 export PROTON_USE_XALIA=0
+# GE-Proton's protonfixes takes the game's id from UMU_ID, SteamAppId or SteamGameId, else the
+# last number in STEAM_COMPAT_DATA_PATH, and stops the game when it finds none (GE-Proton11-12:
+# IndexError, the game never starts). Steam gives a shortcut started from its Play button
+# SteamAppId; one started by SteamClient.Apps.RunGame (a Decky plugin's play button) had none,
+# and the shared prefix's path has no number (2026-11-25). 0: no game's fixes, as a shortcut's.
+if [[ -z ${UMU_ID:-}${SteamAppId:-}${SteamGameId:-} ]]; then
+  export SteamAppId=0
+fi
+# The same launch had no SteamDeck=1 either, which the renderer (1x on the Deck) and its HUD (the
+# Deck's controls, no PC-only rows) go by: the Deck's own firmware says so (Valve's board).
+if [[ -z ${SteamDeck:-} && $(cat /sys/class/dmi/id/board_vendor 2>/dev/null) == Valve ]]; then
+  export SteamDeck=1
+fi
 mkdir -p "$STEAM_COMPAT_DATA_PATH" "$here/logs"
 cd "$here"
 # ReXGlue v0.11 writes logs/<name>_NNN.log beside the game (log.file_name is the name alone) and
