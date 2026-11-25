@@ -76,7 +76,30 @@ It adds input delay: a frame waits for the next one, which the generated frame g
   renderer, and the HUD's Renderer (View + Menu) switches to the native one and back while it
   runs, as F9 and `auto_handover` do on the PC.
 - On the Deck, `deck.env` beside `play.sh` gives Proton variables (`PROTON_LOG=1`), and
-  `REXNATIVE_PROTON` picks another Proton.
+  `REXNATIVE_PROTON` picks another Proton. One in the games' folder (`~/Games/ReXNative/deck.env`)
+  goes for every game there.
+
+### The GPU's clock while a game plays
+
+`play.sh` keeps the GPU at 1000 MHz or more while the game plays (up to the Deck's 1600) and
+sets SteamOS's automatic clock back when it ends, however it ends (a user unit outside the
+game's processes waits for it). It uses the control Steam's own GPU slider uses
+(`steamos-priv-write`, `pp_od_clk_voltage` in manual mode), and only from the automatic clock: a
+clock set in the quick menu stays. The Deck's APU shares 15 W between CPU and GPU: when a game's
+threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the middle of
+frames, which took 45-70 ms. Measured 2026-11-25, 80 s in play for each:
+
+| | Forza Horizon (30 fps) | Iron Brigade (60 fps) | Overlord II (30 fps) |
+|---|---|---|---|
+| Automatic | 8 and 11 frames over 45 ms, worst 58-62 ms, 8.1-8.2 W | none, 8.2 W | none, 6.7 W |
+| GPU floor 1000 MHz | none, worst 42 ms, 8.2 W | none, 8.1 W | none, 6.5 W |
+| CPU boost off | none, worst 39 ms, 7.7 W | none, 9.2 W | none, 7.1 W |
+| `lavd` scheduler | 16 frames over 45 ms, 8.3 W | | |
+
+The boost off also took Forza's frames away, but cost the lighter games power (their CPU ran
+at a higher clock without it). `REXNATIVE_GPU_FLOOR` in a `deck.env` sets another floor in MHz, 0
+none (the Manager's switch for a game writes it). Installing a game also gives the games
+installed beside it the kit's `play.sh`.
 
 ## Steam artwork
 

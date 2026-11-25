@@ -475,6 +475,13 @@ def install(deck, work, log=print, root=REMOTE_ROOT, reinstall=False):
     dest = '%s/%s' % (root, slug)
     log('%s -> %s' % (title, dest if dest.startswith('/') else '~/' + dest))
     deck.send(dest, items, log=log)
+    # The kit's play.sh in every game installed beside this one: a change to it (2026-11-25, the
+    # GPU's clock floor while a game plays) reaches the games installed before at the next install.
+    out = deck.run('cd %s && for d in */; do d=${d%%/}; if [ "$d" != %s ] && [ -f "$d/play.sh" ] '
+                   '&& ! cmp -s %s/play.sh "$d/play.sh"; then cp %s/play.sh "$d/play.sh" && '
+                   'echo "$d"; fi; done; true' % (q(root), q(slug), q(slug), q(slug)), check=False)
+    if out.strip():
+        log('  play.sh updated in %d other games' % len(out.split()))
     # AMD's FidelityFX DLLs, once for every game in ~/Games/ReXNative/common, where the renderer
     # looks when they are not beside the executable (renderer/src/native/common_dir.h): 87 MB a
     # game less on the Deck. NVIDIA's are not sent (the Deck has no RTX).

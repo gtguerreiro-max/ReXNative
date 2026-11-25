@@ -8,13 +8,16 @@
 # Experimental, else its newest numbered Proton, in any Steam library: the SD card's too).
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # deck.env beside this script, if present: this Deck's own environment for Proton, one
-# VAR=value a line, e.g. PROTON_LOG=1.
-if [[ -f $here/deck.env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$here/deck.env"
-  set +a
-fi
+# VAR=value a line, e.g. PROTON_LOG=1. One in the games' folder (~/Games/ReXNative/deck.env)
+# goes for every game there, read first.
+for env in "$(dirname "$here")/deck.env" "$here/deck.env"; do
+  if [[ -f $env ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env"
+    set +a
+  fi
+done
 # FSR 4 on the Deck: GE-Proton fetches AMD's amdxcffx64.dll into the prefix (once), with which the
 # FSR SDK 2.4 upscaler runs FSR 4.1 (its RDNA 2 model) instead of FSR 3.1. Used when the upscaler
 # is on (F1, Upscaler); PROTON_FSR4_UPGRADE=0 in deck.env leaves FSR 3.1. Valve's Proton ignores it.
@@ -65,4 +68,49 @@ cd "$here"
 # try.flags, if present: flags for one try (python -m rexnative deck --try), on one line.
 extra=()
 [[ -f $here/try.flags ]] && read -r -a extra < "$here/try.flags"
+# The GPU's clock kept at 1000 MHz or more while the game plays (up to the Deck's 1600), set back
+# to SteamOS's automatic clock when it ends. The Deck's APU shares 15 W between CPU and GPU: when
+# a game's threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the
+# middle of frames, which took 45-70 ms. Forza Horizon (2026-11-25), 80 s in play each: 8 and 11
+# frames over 45 ms (worst 58-62 ms) automatic, none (worst 42 ms) with the floor, 8.2 W both
+# ways; Iron Brigade and Overlord II unchanged at the same power or less. The control Steam's own
+# GPU slider uses (steamos-priv-write: pp_od_clk_voltage in manual mode). Only from SteamOS's
+# automatic clock: a clock the player set in the quick menu stays. REXNATIVE_GPU_FLOOR in a
+# deck.env: another floor in MHz, 0 for none. A user unit outside the game's processes waits for
+# this one (Proton after the exec) and sets the automatic clock back however the game ends; the
+# mark file says the manual clock was ours should the Deck have stopped before that.
+gpu_floor() {
+  local floor=$1 w=/usr/bin/steamos-polkit-helpers/steamos-priv-write dev= d
+  local mark=${XDG_STATE_HOME:-$HOME/.local/state}/rexnative/gpu-floor
+  [[ $floor =~ ^[0-9]+$ ]] && (( floor > 0 )) || return 0
+  [[ -x $w ]] && command -v systemd-run >/dev/null || return 0
+  for d in /sys/class/drm/card*/device; do
+    grep -qs '^OD_SCLK' "$d/pp_od_clk_voltage" && { dev=$d; break; }
+  done
+  [[ -n $dev ]] || return 0
+  local level max
+  level=$(<"$dev/power_dpm_force_performance_level") || return 0
+  if [[ $level != auto ]]; then
+    # The player's clock, unless a game of ours set it and never set it back.
+    [[ $level == manual && -f $mark ]] &&
+      ! systemctl --user -q is-active 'rexnative-gpu-floor-*' 2>/dev/null || return 0
+  fi
+  max=$(sed -n 's/^SCLK: *[0-9]*Mhz *\([0-9]*\)Mhz.*/\1/p' "$dev/pp_od_clk_voltage")
+  [[ $max =~ ^[0-9]+$ ]] || return 0
+  (( floor <= max )) || floor=$max
+  local back
+  back="$(printf '%q' "$w") $dev/pp_od_clk_voltage r; $(printf '%q' "$w") $dev/pp_od_clk_voltage c; "
+  back+="$(printf '%q' "$w") $dev/power_dpm_force_performance_level auto; rm -f $(printf '%q' "$mark")"
+  mkdir -p "$(dirname "$mark")" && : > "$mark"
+  if "$w" "$dev/power_dpm_force_performance_level" manual >/dev/null 2>&1 &&
+     "$w" "$dev/pp_od_clk_voltage" "s 0 $floor" >/dev/null 2>&1 &&
+     "$w" "$dev/pp_od_clk_voltage" "s 1 $max" >/dev/null 2>&1 &&
+     "$w" "$dev/pp_od_clk_voltage" c >/dev/null 2>&1 &&
+     systemd-run --user --quiet --collect --unit="rexnative-gpu-floor-$$" /bin/sh -c \
+       "while kill -0 $$ 2>/dev/null; do sleep 1; done; $back" >/dev/null 2>&1; then
+    return 0
+  fi
+  /bin/sh -c "$back" >/dev/null 2>&1
+}
+gpu_floor "${REXNATIVE_GPU_FLOOR:-1000}"
 exec "$proton/proton" waitforexitandrun "$exe" "--log_file=$name" "${extra[@]}" "$@"
