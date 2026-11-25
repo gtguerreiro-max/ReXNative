@@ -26,9 +26,12 @@ it. A value marked * takes effect at the next start. Its title bar shows how the
 Deck it knows it is there from Steam's `SteamDeck=1`, or the Deck's own firmware (Valve's board)
 when a game was started without it.
 
-- **Display page:** the renderer, the screen, the frame rate and latency, the window, and the
+- **Display page:** the renderer, the screen, the frame rate and latency, the window, the
   **Menu size** (`rexnative.hud_scale`: Normal 100, Large 115, Larger 130 percent of its text,
-  as Valve asks a Steam Deck game's text to be the player's to make larger).
+  as Valve asks a Steam Deck game's text to be the player's to make larger), and the **FPS
+  counter** (`rexnative.hud_fps`: off, top left or top right): the frames a second and the time of
+  a frame, the last half second's mean, while the game plays. On the Steam Deck a 16:9 game
+  leaves it in the black band above the picture.
 - **Renderer**, the first setting: Native (ReXNative) or Classic (ReXGlue's Xenos GPU emulation,
   Xenia's renderer), for a game the native renderer does not draw right yet. It switches at once,
   on the Steam Deck too, and the choice is kept for the next start (`rexnative.classic`). The HUD

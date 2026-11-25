@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -37,6 +38,10 @@ REXCVAR_DEFINE_INT32(rexnative_hud_scale, 100, "ReXNative",
                      "The settings menu's text size, in percent of its normal size (26 px at 800 "
                      "lines): 100, 115 or 130 (its Display page's Menu size)")
     .range(80, 160);
+REXCVAR_DEFINE_INT32(rexnative_hud_fps, 0, "ReXNative",
+                     "The frame rate and frame time in a corner while the game plays: 0 none, 1 "
+                     "top left, 2 top right (the settings menu's FPS counter)")
+    .range(0, 2);
 
 namespace rexnative::hud {
 namespace {
@@ -256,6 +261,14 @@ std::vector<Option> MakeOptions() {
                [] { return Nearest(Find("menu_size"), FlagInt("rexnative_hud_scale")); },
                [](const std::string& v) { return Assignments{{"rexnative_hud_scale", v}}; },
                nullptr, "The size of this menu's text. At once."});
+  // A frame rate counter while the game plays (--rexnative_hud_fps, DrawFps).
+  o.push_back({"Display", "fps_counter", "FPS counter",
+               {{"Off", "0"}, {"Top left", "1"}, {"Top right", "2"}}, false,
+               [] { return std::to_string(std::clamp(FlagInt("rexnative_hud_fps"), 0, 2)); },
+               [](const std::string& v) { return Assignments{{"rexnative_hud_fps", v}}; },
+               nullptr,
+               "The frames a second and the time of a frame (the last half second's mean) in a "
+               "corner while the game plays. At once."});
   // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
   // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
   // where gamescope shows the game on the whole screen whatever the window is.
@@ -1158,6 +1171,30 @@ void DrawHint(ImGuiIO& io, float alpha, const char* text) {
   ImGui::PopStyleVar();
 }
 
+// The FPS counter's corner (--rexnative_hud_fps): 0 none, 1 top left, 2 top right. Any thread.
+int FpsCorner() { return std::clamp(REXCVAR_GET(rexnative_hud_fps), 0, 2); }
+
+// The FPS counter while the game plays: the frames' recent mean (RecentFrameMs) as frames a
+// second and ms, over a dark box in the corner the player picked.
+void DrawFps(ImGuiIO& io, int corner) {
+  const double ms = NativeRenderer::RecentFrameMs();
+  if (ms <= 0.5) return;
+  char text[48];
+  std::snprintf(text, sizeof(text), "%d fps   %.1f ms", int(std::lround(1000.0 / ms)), ms);
+  const float margin = ImGui::GetStyle().WindowPadding.x * 0.6f;
+  ImGui::SetNextWindowPos(ImVec2(corner == 2 ? io.DisplaySize.x - margin : margin, margin),
+                          ImGuiCond_Always, ImVec2(corner == 2 ? 1.0f : 0.0f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(0.55f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(margin, margin * 0.4f));
+  ImGui::Begin("##rexnative_fps", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoFocusOnAppearing);
+  ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.70f, 1.0f), "%s", text);
+  ImGui::End();
+  ImGui::PopStyleVar();
+}
+
 void BuildFrame() {
   g_frame_queued.store(false, std::memory_order_relaxed);
   static bool was_open = false;
@@ -1166,7 +1203,8 @@ void BuildFrame() {
   std::string toast_text;
   const float toast = menu ? 0.0f : ToastAlpha(now, &toast_text);
   const float hint = menu ? 0.0f : std::max(HintAlpha(now), toast);
-  if (!g_context || (!menu && hint <= 0.0f)) {
+  const int fps = menu ? 0 : FpsCorner();
+  if (!g_context || (!menu && hint <= 0.0f && !fps)) {
     was_open = false;
     return;
   }
@@ -1193,10 +1231,12 @@ void BuildFrame() {
   if (menu)
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), io.DisplaySize,
                                                   IM_COL32(0, 0, 0, 110));
-  if (menu)
+  if (menu) {
     open = DrawMenu(io, appearing);
-  else
-    DrawHint(io, hint, toast > 0.0f ? toast_text.c_str() : HintText());
+  } else {
+    if (hint > 0.0f) DrawHint(io, hint, toast > 0.0f ? toast_text.c_str() : HintText());
+    if (fps) DrawFps(io, fps);
+  }
   ImGui::Render();
   OverlayFrame frame;
   const ImDrawData* data = ImGui::GetDrawData();
@@ -1434,8 +1474,8 @@ bool OverlayFrameFor(uint32_t width, uint32_t height, OverlayFrame* frame) {
   if (!g_hint_end.load(std::memory_order_relaxed) && REXCVAR_GET(rexnative_hud_hint))
     g_hint_end.store((now + kHintTime).time_since_epoch().count(), std::memory_order_relaxed);
   std::string toast;
-  if (!g_ready ||
-      (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f && ToastAlpha(now, &toast) <= 0.0f)) {
+  if (!g_ready || (!g_open.load(std::memory_order_relaxed) && HintAlpha(now) <= 0.0f &&
+                   ToastAlpha(now, &toast) <= 0.0f && !FpsCorner())) {
     std::lock_guard lock(g_frame_mutex);
     g_frame_ready = false;
     return false;
