@@ -167,6 +167,34 @@ def extract_archive(src, dst, log):
     r = _run([exe, 'x', '-y', '-o' + dst, src])
     if r.returncode != 0:
         raise RuntimeError('7-Zip failed on %s: %s' % (src, r.stdout[-500:] + r.stderr[-500:]))
+    _writable(dst)
+
+
+def _writable(root):
+    """Clears the read-only bit a RAR can carry on its files (Windows' attribute): later steps
+    replace, patch and remove them, which Windows refuses on a read-only file."""
+    if os.name != 'nt':
+        return
+    for d, _, files in os.walk(root):
+        for f in files:
+            p = os.path.join(d, f)
+            try:
+                if not os.stat(p).st_mode & 0o200:
+                    os.chmod(p, 0o666)
+            except OSError:
+                pass
+
+
+def rmtree(path):
+    """shutil.rmtree that also removes read-only files (Windows refuses those): an extraction
+    stopped half way leaves them before _writable runs."""
+    def retry(func, p, _):
+        os.chmod(p, 0o777)
+        func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
 
 
 def entry_xex(data):
@@ -206,7 +234,7 @@ def find_packages(root):
 def _fresh(path):
     """An empty folder at path (what an interrupted run left there goes)."""
     if os.path.isdir(path):
-        shutil.rmtree(path)
+        rmtree(path)
     elif os.path.exists(path):
         os.remove(path)
     os.makedirs(path)
@@ -224,7 +252,7 @@ def stage_game(source, work, log):
         return {'reused': True}
     facts = _stage(source, work, _fresh(final + '.part'), log)
     if os.path.exists(final):
-        shutil.rmtree(final)  # an older run's, without default.xex
+        rmtree(final)  # an older run's, without default.xex
     os.replace(final + '.part', final)
     return facts
 
@@ -237,7 +265,7 @@ def _stage(source, work, data, log):
         if not os.path.isdir(root) or not os.listdir(root):
             extract_archive(source, _fresh(root + '.part'), log)
             if os.path.exists(root):
-                shutil.rmtree(root)
+                rmtree(root)
             os.replace(root + '.part', root)
     # A disc game: its image, given or in the archive (xiso.py).
     image = root if os.path.isfile(root) and root.lower().endswith(IMAGES) else None
