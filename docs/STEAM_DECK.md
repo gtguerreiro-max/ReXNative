@@ -82,10 +82,15 @@ It adds input delay: a frame waits for the next one, which the generated frame g
 ### The GPU's clock while a game plays
 
 `play.sh` keeps the GPU at 1000 MHz or more while the game plays (up to the Deck's 1600) and
-sets SteamOS's automatic clock back when it ends, however it ends (a user unit outside the
-game's processes waits for it). It uses the control Steam's own GPU slider uses
-(`steamos-priv-write`, `pp_od_clk_voltage` in manual mode), and only from the automatic clock: a
-clock set in the quick menu stays. The Deck's APU shares 15 W between CPU and GPU: when a game's
+sets SteamOS's automatic clock back when it ends, however it ends. It uses the control Steam's
+own GPU slider uses (`steamos-priv-write`, `pp_od_clk_voltage` in manual mode). The floor is the
+game's setting `[rexnative] gpu_floor` (MHz, 0 for the automatic clock): the settings menu's
+**GPU clock** (Display page: Steady or Automatic) and the ReXNative Manager's GPU clock switch for
+the game both write it. A watcher outside the game's processes (a user unit,
+`play.sh --gpu-floor-watch`) reads it each second while the game runs and sets the clock at once
+when it changes. A clock set in Steam's quick menu goes first, for as long as it is set; the
+automatic clock found in the floor's place (back from a suspend, or the quick menu's GPU clock
+turned off) gets the floor again. The Deck's APU shares 15 W between CPU and GPU: when a game's
 threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the middle of
 frames, which took 45-70 ms. Measured 2026-11-25, 80 s in play for each:
 
@@ -97,9 +102,10 @@ frames, which took 45-70 ms. Measured 2026-11-25, 80 s in play for each:
 | `lavd` scheduler | 16 frames over 45 ms, 8.3 W | | |
 
 The boost off also took Forza's frames away, but cost the lighter games power (their CPU ran
-at a higher clock without it). `REXNATIVE_GPU_FLOOR` in a `deck.env` sets another floor in MHz, 0
-none (the Manager's switch for a game writes it). Installing a game also gives the games
-installed beside it the kit's `play.sh`.
+at a higher clock without it). Without the setting in the game's file, `REXNATIVE_GPU_FLOOR` in
+a `deck.env` says the floor (MHz, 0 none; the Manager's switch wrote it there before the menu had
+the setting), else 1000. Installing a game also gives the games installed beside it the kit's
+`play.sh`.
 
 ## Steam artwork
 

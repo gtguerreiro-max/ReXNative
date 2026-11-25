@@ -40,7 +40,10 @@ well, from the next frame (it waited for a restart before).
   as Valve asks a Steam Deck game's text to be the player's to make larger), and the **FPS
   counter** (`rexnative.hud_fps`: off, top left or top right): the frames a second and the time of
   a frame, the last half second's mean, while the game plays. On the Steam Deck a 16:9 game
-  leaves it in the black band above the picture.
+  leaves it in the black band above the picture. On the Steam Deck alone, the **GPU clock**
+  (`rexnative.gpu_floor`: Steady, 1000 MHz or more, the default, or Automatic, 0): the clock
+  `play.sh` keeps while the game plays ([STEAM_DECK.md](STEAM_DECK.md#the-gpus-clock-while-a-game-plays)),
+  at once; the ReXNative Manager's GPU clock switch for the game is the same setting.
 - **Renderer**, the first setting: Native (ReXNative) or Classic (ReXGlue's Xenos GPU emulation,
   Xenia's renderer), for a game the native renderer does not draw right yet. It switches at once,
   on the Steam Deck too, and the choice is kept for the next start (`rexnative.classic`). The HUD

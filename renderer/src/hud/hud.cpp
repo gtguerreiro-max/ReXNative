@@ -43,6 +43,12 @@ REXCVAR_DEFINE_INT32(rexnative_hud_fps, 0, "ReXNative",
                      "The frame rate and frame time in a corner while the game plays: 0 none, 1 "
                      "top left, 2 top right (the settings menu's FPS counter)")
     .range(0, 2);
+REXCVAR_DEFINE_INT32(rexnative_gpu_floor, 1000, "ReXNative",
+                     "The Steam Deck's GPU clock while the game plays: kept at this many MHz or "
+                     "more, 0 for SteamOS's automatic clock (the settings menu's GPU clock). The "
+                     "game only keeps it in its settings file: deck/play.sh's watcher sets the "
+                     "clock from there, at once when it changes")
+    .range(0, 3000);
 
 namespace rexnative::hud {
 namespace {
@@ -271,6 +277,19 @@ std::vector<Option> MakeOptions() {
                nullptr,
                "The frames a second and the time of a frame (the last half second's mean) in a "
                "corner while the game plays. At once."});
+  // The Steam Deck's GPU clock floor (--rexnative_gpu_floor): the game only keeps the setting in
+  // its file, which deck/play.sh's watcher reads each second and sets the clock by (Linux's
+  // sysfs, out of Proton's reach). The ReXNative Manager's GPU clock switch writes the same key.
+  o.push_back({"Display", "gpu_clock", "GPU clock",
+               {{"Steady (1000 MHz or more)", "1000"}, {"Automatic", "0"}}, false,
+               [] { return std::string(FlagInt("rexnative_gpu_floor") > 0 ? "1000" : "0"); },
+               [](const std::string& v) { return Assignments{{"rexnative_gpu_floor", v}}; },
+               nullptr,
+               "Steady keeps the GPU at 1000 MHz or more while the game plays, so that the CPU's "
+               "bursts no longer take its power in the middle of frames (45-70 ms frames before, "
+               "at the same power). Automatic is SteamOS's own clock. A GPU clock set in Steam's "
+               "quick menu goes first. At once.",
+               [] { return SteamDeck(); }});
   // The window: ReXGlue's own settings (ui.*), which it applies at once (window_settings.cpp) and
   // which are saved in the game's configuration file as the others ([ui]). Not on the Steam Deck,
   // where gamescope shows the game on the whole screen whatever the window is.
@@ -1572,6 +1591,12 @@ void SetConfigPath(const std::filesystem::path& config) {
   g_file_time.store(FileTime(), std::memory_order_relaxed);
   g_file_keys.clear();
   for (const auto& [name, value] : ReadFileValues()) g_file_keys.insert(name);
+  // The GPU clock floor play.sh keeps when the file has none: a deck.env's REXNATIVE_GPU_FLOOR
+  // (play.sh exports it to the game), so that the menu shows the clock the game has.
+  const char* env = std::getenv("REXNATIVE_GPU_FLOOR");
+  if (env && *env && std::strspn(env, "0123456789") == std::strlen(env) &&
+      !g_file_keys.contains(rexnative::settings::FullName("rexnative_gpu_floor")))
+    rex::cvar::SetFlagByName("rexnative_gpu_floor", env);
 }
 
 bool SaveSetting(const std::string& cvar, const std::string& value) {

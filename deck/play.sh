@@ -18,6 +18,142 @@ for env in "$(dirname "$here")/deck.env" "$here/deck.env"; do
     set +a
   fi
 done
+# The GPU's clock kept at 1000 MHz or more while the game plays (up to the Deck's 1600), set back
+# to SteamOS's automatic clock when it ends. The Deck's APU shares 15 W between CPU and GPU: when
+# a game's threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the
+# middle of frames, which took 45-70 ms. Forza Horizon (2026-11-25), 80 s in play each: 8 and 11
+# frames over 45 ms (worst 58-62 ms) automatic, none (worst 42 ms) with the floor, 8.2 W both
+# ways; Iron Brigade and Overlord II unchanged at the same power or less. The control Steam's own
+# GPU slider uses (steamos-priv-write: pp_od_clk_voltage in manual mode).
+# The floor is the game's setting [rexnative] gpu_floor (MHz, 0 for SteamOS's automatic clock),
+# which its settings menu (Display, GPU clock) and the ReXNative Manager's GPU clock switch write;
+# without it REXNATIVE_GPU_FLOOR (a deck.env's), else 1000. A watcher outside the game's
+# processes (a user unit: play.sh --gpu-floor-watch) reads it each second while the game runs
+# (Proton, after the exec) and sets the clock at once when it changes. A clock the player set in
+# Steam's quick menu goes first, for as long as it is set; SteamOS's automatic clock found in the
+# floor's place (back from a suspend, or the quick menu's) gets the floor again. When the game
+# ends, however it ends, the automatic clock comes back if the floor was ours; the mark file says
+# so should the Deck have stopped first (the next game sets the automatic clock back then).
+gpu_w=/usr/bin/steamos-polkit-helpers/steamos-priv-write
+gpu_mark=${XDG_STATE_HOME:-$HOME/.local/state}/rexnative/gpu-floor
+gpu_dev=
+gpu_find() {
+  local d
+  for d in /sys/class/drm/card*/device; do
+    grep -qs '^OD_SCLK' "$d/pp_od_clk_voltage" && { gpu_dev=$d; return 0; }
+  done
+  return 1
+}
+gpu_set() { "$gpu_w" "$gpu_dev/$1" "$2" >/dev/null 2>&1; }
+gpu_auto() {
+  gpu_set pp_od_clk_voltage r
+  gpu_set pp_od_clk_voltage c
+  gpu_set power_dpm_force_performance_level auto
+  rm -f "$gpu_mark"
+}
+# The clock now: gpu_level (auto, manual...), gpu_s0 and gpu_s1 (the OD_SCLK range set, MHz),
+# gpu_min and gpu_max (the range the GPU allows). Bash alone: no process a second.
+gpu_read() {
+  local line sec= re_od='^([01]):[[:space:]]*([0-9]+)Mhz' re_range='^SCLK:[[:space:]]*([0-9]+)Mhz[[:space:]]*([0-9]+)Mhz'
+  gpu_level= gpu_s0= gpu_s1=
+  read -r gpu_level < "$gpu_dev/power_dpm_force_performance_level" 2>/dev/null
+  while IFS= read -r line; do
+    case $line in
+      OD_SCLK:*) sec=sclk ;;
+      OD_*) sec= ;;
+      *)
+        if [[ $sec == sclk && $line =~ $re_od ]]; then
+          if [[ ${BASH_REMATCH[1]} == 0 ]]; then gpu_s0=${BASH_REMATCH[2]}; else gpu_s1=${BASH_REMATCH[2]}; fi
+        elif [[ $line =~ $re_range ]]; then
+          gpu_min=${BASH_REMATCH[1]} gpu_max=${BASH_REMATCH[2]}
+        fi ;;
+    esac
+  done < "$gpu_dev/pp_od_clk_voltage"
+}
+# gpu_want: the floor the game's settings file ($1) asks for, within the GPU's range (0: none).
+gpu_wanted() {
+  local line table= v= re_table='^[[:space:]]*\[[[:space:]]*"?([A-Za-z0-9_.-]+)"?[[:space:]]*\]'
+  local re_key='^[[:space:]]*gpu_floor[[:space:]]*=[[:space:]]*"?([0-9]+)'
+  if [[ -f $1 ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line =~ $re_table ]]; then
+        table=${BASH_REMATCH[1]}
+      elif [[ $table == rexnative && $line =~ $re_key ]]; then
+        v=${BASH_REMATCH[1]}
+        break
+      fi
+    done < "$1"
+  fi
+  [[ $v =~ ^[0-9]+$ ]] || v=${REXNATIVE_GPU_FLOOR:-1000}
+  [[ $v =~ ^[0-9]+$ ]] || v=1000
+  v=$((10#$v))
+  if (( v > 0 )); then
+    (( v < gpu_min )) && v=$gpu_min
+    (( v > gpu_max )) && v=$gpu_max
+  fi
+  gpu_want=$v
+}
+# play.sh --gpu-floor-watch <the game's pid> <its settings file>: the watcher.
+gpu_watch() {
+  local pid=$1 file=$2 last=-1 failed=0
+  held=0 floor=0  # globals: the trap reads them
+  gpu_find || return 0
+  gpu_read
+  [[ $gpu_max =~ ^[0-9]+$ ]] || return 0
+  trap '(( held )) && gpu_auto; exit 0' TERM INT HUP
+  while kill -0 "$pid" 2>/dev/null; do
+    gpu_wanted "$file"
+    (( gpu_want != last )) && failed=0
+    last=$gpu_want
+    gpu_read
+    if (( held )); then
+      if [[ $gpu_level != manual || $gpu_s0 != "$floor" || $gpu_s1 != "$gpu_max" ]]; then
+        # Not ours any more: the quick menu's clock, or the automatic one (a suspend's).
+        held=0
+        rm -f "$gpu_mark"
+      elif (( gpu_want == 0 )); then
+        gpu_auto
+        held=0
+        gpu_read
+      elif (( gpu_want != floor )); then
+        gpu_set pp_od_clk_voltage "s 0 $gpu_want" && gpu_set pp_od_clk_voltage c && floor=$gpu_want
+      fi
+    fi
+    if (( !held && !failed && gpu_want > 0 )) && [[ $gpu_level == auto ]]; then
+      mkdir -p "$(dirname "$gpu_mark")" && : > "$gpu_mark"
+      if gpu_set power_dpm_force_performance_level manual &&
+         gpu_set pp_od_clk_voltage "s 0 $gpu_want" &&
+         gpu_set pp_od_clk_voltage "s 1 $gpu_max" &&
+         gpu_set pp_od_clk_voltage c; then
+        held=1 floor=$gpu_want
+      else
+        gpu_auto
+        failed=1
+      fi
+    fi
+    sleep 1
+  done
+  (( held )) && gpu_auto
+  return 0
+}
+# The watcher for this game, started before Proton.
+gpu_floor_start() {
+  [[ -x $gpu_w ]] && command -v systemd-run >/dev/null && gpu_find || return 0
+  gpu_read
+  # A floor of ours that a game which never ended left (no watcher keeps it): automatic again.
+  if [[ $gpu_level == manual && -f $gpu_mark ]] &&
+     ! systemctl --user -q is-active 'rexnative-gpu-floor-*' 2>/dev/null; then
+    gpu_auto
+  fi
+  local env=()
+  [[ -n ${REXNATIVE_GPU_FLOOR:-} ]] && env=(--setenv="REXNATIVE_GPU_FLOOR=$REXNATIVE_GPU_FLOOR")
+  systemd-run --user --quiet --collect --unit="rexnative-gpu-floor-$$" "${env[@]}" \
+    /bin/bash "$(readlink -f "$0")" --gpu-floor-watch "$$" "$1" >/dev/null 2>&1 || true
+}
+if [[ ${1:-} == --gpu-floor-watch ]]; then
+  gpu_watch "$2" "$3"
+  exit 0
+fi
 # FSR 4 on the Deck: GE-Proton fetches AMD's amdxcffx64.dll into the prefix (once), with which the
 # FSR SDK 2.4 upscaler runs FSR 4.1 (its RDNA 2 model) instead of FSR 3.1. Used when the upscaler
 # is on (F1, Upscaler); PROTON_FSR4_UPGRADE=0 in deck.env leaves FSR 3.1. Valve's Proton ignores it.
@@ -81,49 +217,5 @@ cd "$here"
 # try.flags, if present: flags for one try (python -m rexnative deck --try), on one line.
 extra=()
 [[ -f $here/try.flags ]] && read -r -a extra < "$here/try.flags"
-# The GPU's clock kept at 1000 MHz or more while the game plays (up to the Deck's 1600), set back
-# to SteamOS's automatic clock when it ends. The Deck's APU shares 15 W between CPU and GPU: when
-# a game's threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the
-# middle of frames, which took 45-70 ms. Forza Horizon (2026-11-25), 80 s in play each: 8 and 11
-# frames over 45 ms (worst 58-62 ms) automatic, none (worst 42 ms) with the floor, 8.2 W both
-# ways; Iron Brigade and Overlord II unchanged at the same power or less. The control Steam's own
-# GPU slider uses (steamos-priv-write: pp_od_clk_voltage in manual mode). Only from SteamOS's
-# automatic clock: a clock the player set in the quick menu stays. REXNATIVE_GPU_FLOOR in a
-# deck.env: another floor in MHz, 0 for none. A user unit outside the game's processes waits for
-# this one (Proton after the exec) and sets the automatic clock back however the game ends; the
-# mark file says the manual clock was ours should the Deck have stopped before that.
-gpu_floor() {
-  local floor=$1 w=/usr/bin/steamos-polkit-helpers/steamos-priv-write dev= d
-  local mark=${XDG_STATE_HOME:-$HOME/.local/state}/rexnative/gpu-floor
-  [[ $floor =~ ^[0-9]+$ ]] && (( floor > 0 )) || return 0
-  [[ -x $w ]] && command -v systemd-run >/dev/null || return 0
-  for d in /sys/class/drm/card*/device; do
-    grep -qs '^OD_SCLK' "$d/pp_od_clk_voltage" && { dev=$d; break; }
-  done
-  [[ -n $dev ]] || return 0
-  local level max
-  level=$(<"$dev/power_dpm_force_performance_level") || return 0
-  if [[ $level != auto ]]; then
-    # The player's clock, unless a game of ours set it and never set it back.
-    [[ $level == manual && -f $mark ]] &&
-      ! systemctl --user -q is-active 'rexnative-gpu-floor-*' 2>/dev/null || return 0
-  fi
-  max=$(sed -n 's/^SCLK: *[0-9]*Mhz *\([0-9]*\)Mhz.*/\1/p' "$dev/pp_od_clk_voltage")
-  [[ $max =~ ^[0-9]+$ ]] || return 0
-  (( floor <= max )) || floor=$max
-  local back
-  back="$(printf '%q' "$w") $dev/pp_od_clk_voltage r; $(printf '%q' "$w") $dev/pp_od_clk_voltage c; "
-  back+="$(printf '%q' "$w") $dev/power_dpm_force_performance_level auto; rm -f $(printf '%q' "$mark")"
-  mkdir -p "$(dirname "$mark")" && : > "$mark"
-  if "$w" "$dev/power_dpm_force_performance_level" manual >/dev/null 2>&1 &&
-     "$w" "$dev/pp_od_clk_voltage" "s 0 $floor" >/dev/null 2>&1 &&
-     "$w" "$dev/pp_od_clk_voltage" "s 1 $max" >/dev/null 2>&1 &&
-     "$w" "$dev/pp_od_clk_voltage" c >/dev/null 2>&1 &&
-     systemd-run --user --quiet --collect --unit="rexnative-gpu-floor-$$" /bin/sh -c \
-       "while kill -0 $$ 2>/dev/null; do sleep 1; done; $back" >/dev/null 2>&1; then
-    return 0
-  fi
-  /bin/sh -c "$back" >/dev/null 2>&1
-}
-gpu_floor "${REXNATIVE_GPU_FLOOR:-1000}"
+gpu_floor_start "$here/$name.toml"
 exec "$proton/proton" waitforexitandrun "$exe" "--log_file=$name" "${extra[@]}" "$@"
