@@ -241,6 +241,22 @@ def _fresh(path):
     return path
 
 
+def _fresh_part(base, log):
+    """An empty base.part/ to stage into. When an earlier run that is still alive (orphaned by an
+    app restart, hung) holds a file open in it, Windows can't remove it (WinError 145/5/32); then
+    a base.part-<pid>/ of this run's own is used, and part folders no process holds any more are
+    cleared on the way."""
+    for old in glob.glob(glob.escape(base) + '.part-*'):
+        shutil.rmtree(old, ignore_errors=True)
+    try:
+        return _fresh(base + '.part')
+    except OSError as e:
+        own = '%s.part-%d' % (base, os.getpid())
+        log('  %s.part is in use (%s): staging in %s' % (os.path.basename(base), e,
+                                                         os.path.basename(own)))
+        return _fresh(own)
+
+
 def stage_game(source, work, log):
     """<work>/game-data with default.xex; returns facts about where it came from.
 
@@ -250,10 +266,11 @@ def stage_game(source, work, log):
     final = os.path.join(work, 'game-data')
     if entry_xex(final):
         return {'reused': True}
-    facts = _stage(source, work, _fresh(final + '.part'), log)
+    part = _fresh_part(final, log)
+    facts = _stage(source, work, part, log)
     if os.path.exists(final):
         rmtree(final)  # an older run's, without default.xex
-    os.replace(final + '.part', final)
+    os.replace(part, final)
     return facts
 
 
@@ -263,10 +280,11 @@ def _stage(source, work, data, log):
     if os.path.isfile(source) and source.lower().endswith(ARCHIVES):
         root = os.path.join(work, 'archive')
         if not os.path.isdir(root) or not os.listdir(root):
-            extract_archive(source, _fresh(root + '.part'), log)
+            part = _fresh_part(root, log)
+            extract_archive(source, part, log)
             if os.path.exists(root):
                 rmtree(root)
-            os.replace(root + '.part', root)
+            os.replace(part, root)
     # A disc game: its image, given or in the archive (xiso.py).
     image = root if os.path.isfile(root) and root.lower().endswith(IMAGES) else None
     if image is None and os.path.isdir(root) and not find_xex(root):
@@ -1111,11 +1129,86 @@ def codegen(work, name, rexglue, max_rounds, log):
     raise RuntimeError('codegen still failing after %d rounds' % max_rounds)
 
 
+def _processes():
+    """{pid: (parent pid, command line)} of this machine's processes; {} when they can't be
+    listed."""
+    out = {}
+    try:
+        if os.name == 'nt':
+            r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                                "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' "
+                                "-f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }"],
+                               capture_output=True, text=True, errors='replace', timeout=60)
+            for line in r.stdout.splitlines():
+                parts = line.split(' ', 2)
+                if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                    out[int(parts[0])] = (int(parts[1]), parts[2])
+        elif os.path.isdir('/proc'):
+            for d in os.listdir('/proc'):
+                if not d.isdigit():
+                    continue
+                try:
+                    cmd = open('/proc/%s/cmdline' % d, 'rb').read().replace(b'\0', b' ').decode(
+                        'utf-8', 'replace')
+                    ppid = int(open('/proc/%s/stat' % d).read().rsplit(')', 1)[1].split()[1])
+                except (OSError, ValueError, IndexError):
+                    continue
+                out[int(d)] = (ppid, cmd)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return out
+
+
+def _alive(pid):
+    if os.name == 'nt':
+        return pid in _processes()
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def other_prepares(source, name):
+    """PIDs of other `rexnative prepare` runs of this game (not this one nor its parents): one an
+    app restart orphaned keeps extracting and building in the same work folder, and a second run
+    beside it removes the files it writes (WinError 145) and races its codegen and build."""
+    procs = _processes()
+    mine, pid = set(), os.getpid()
+    while pid and pid not in mine:
+        mine.add(pid)
+        pid = procs.get(pid, (0, ''))[0]
+    keys = {os.path.abspath(source).lower()}
+    if os.path.isfile(source):
+        keys.add(os.path.basename(source).lower())  # the same archive given by another path
+    return sorted(p for p, (_, cmd) in procs.items()
+                  if p not in mine and 'rexnative' in cmd and ' prepare ' in cmd
+                  and any(k in cmd.lower() for k in keys))
+
+
+def wait_other_prepares(source, name, log, limit=2 * 3600):
+    """Waits (up to limit seconds) for other runs preparing this game to end."""
+    others = other_prepares(source, name)
+    if not others:
+        return
+    log('  another prepare of %s is running (pid %s): waiting for it to end'
+        % (name, ' '.join(map(str, others))))
+    t0 = time.time()
+    while others and time.time() - t0 < limit:
+        time.sleep(30)
+        others = [p for p in others if _alive(p)]
+    log('  %s (%.0f s)' % ('it ended' if not others else 'still running; going on',
+                          time.time() - t0))
+
+
 def prepare(source, work_root, rexglue, refs, run_adapt, log=print, max_rounds=40,
             title_update=False, dlc=False):
     name = slug(source)
     work = os.path.join(work_root, name)
     os.makedirs(work, exist_ok=True)
+    wait_other_prepares(source, name, log)
     status_path = os.path.join(work, 'prepare.json')
     status = {'source': os.path.abspath(source), 'name': name, 'steps': {}}
     if os.path.exists(status_path):
