@@ -277,3 +277,16 @@ come from), and `survey.py ~/Games/ReXNative` every game log's share of windows 
 `--clean` removes the tools from the Deck. Routes that reach gameplay (deck_drive keys go to the
 game's own display): Forza Horizon `42:Return,50:space,58:space`, Iron Brigade
 `25:Return,35:Return,45:space,55:space,65:space`, Overlord II `45:Return,60:space,70:space`.
+In a route `+e` holds E down until `-e` (the right trigger with `--hid.mnk_mode`: a racing game's
+accelerator; steering blind ends against a tree).
+
+A frame that takes 45-70 ms now and then while the game stands still: its line in the per-frame
+CSV (`--rexnative.csv`) tells where. With `swap_fence_us` (the swap waited on the GPU) and a
+`gpu_busy_ms` three or four times the median for the same draws, the GPU went slow. On the Deck,
+`gpuclock.py <s> <out.csv>` writes the GPU's clock and busy share and the APU's power every few
+ms, and `threadtrace.py <exe> <s> <out.csv>` every thread's run time every 20 ms beside them, all
+on CLOCK_MONOTONIC_RAW, the CSV's `t_ms`. Forza Horizon (2026-11-25): in those frames the GPU ran
+at 200-450 MHz at 100 % busy (1040 MHz otherwise) with the APU at its 15 W limit, while two of
+the game's job threads burst to a core each at 3.5 GHz for 100-160 ms: the CPU took the power the
+GPU needed. The game's own work, not ReXNative's or a poll; Steam's performance settings (a
+manual GPU clock, a CPU clock limit) are the player's to try.

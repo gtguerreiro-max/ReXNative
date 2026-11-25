@@ -12,7 +12,9 @@
 # The tools go to ~/.cache/rexnative-tests on the Deck; `bash scripts/deck/measure.sh --clean`
 # removes them. Python: $PYTHON, else python. Other tools there: states.py <exe> <s> (each busy
 # thread's context switches and where it waits), survey.py ~/Games/ReXNative (every game log's
-# windows below the game's frame rate).
+# windows below the game's frame rate), gpuclock.py <s> <out.csv> (the GPU's clock and busy share
+# and the APU's power every few ms) and threadtrace.py <exe> <s> <out.csv> (every thread's run
+# time every 20 ms with them), both timed as the per-frame CSV's t_ms (docs/DEBUGGING.md).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 py=${PYTHON:-python}
@@ -30,7 +32,7 @@ if [ "${1:-}" = "--clean" ]; then
 fi
 work=$1 exe=$2 keys=$3 wait=$4
 shift 4
-for f in sample.py states.py survey.py ws.sh summary.sh; do
+for f in sample.py states.py survey.py ws.sh summary.sh gpuclock.py threadtrace.py; do
   D "mkdir -p ~/.cache/rexnative-tests && cat > ~/.cache/rexnative-tests/$f" < "$here/$f"
 done
 for v in "$@"; do
