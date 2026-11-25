@@ -13,3 +13,11 @@ registers = ["r11"]
 address = 0x8241DC44
 name = "rexnative_fh_step_begun"
 registers = ["f31"]
+
+# The render thread found no newer step to draw (2380(r31), the last one drawn) and is about to
+# call SleepEx(0, TRUE) (sub_82B2A848) before its main loop tries again: a poll of about 12,000 a
+# second, a whole core of the Steam Deck's four. The hook sleeps a little first.
+[[midasm_hook]]
+address = 0x82616CD0
+name = "rexnative_fh_render_idle"
+registers = ["r3"]

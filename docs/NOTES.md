@@ -291,6 +291,17 @@ Deck, driving from the start (2026-11-24): in the first 10 s of the drive, 9 fra
 and 13 with two of 297 without the gate, 2 and 3 of 298 with it; steady driving had one step in
 every frame either way, each frame two refreshes after the last.
 
+The render thread waits for those steps by polling: when no step newer than the one it drew
+last (`2380(r31)`) is done, its main loop calls `SleepEx(0, TRUE)` and looks again, about 12,000
+times a second, a whole core of the Steam Deck's four (`runtime.wait_stats` with SDK patch 0060
+named the loop: "yields from 82B2A85C < 82616CD4"). A third hook (0x82616CD0, before that call)
+sleeps `rexnative.render_poll_us` (300 us) first, on a futex in the process under Wine
+(`rex::platform::SleepOnWord`, SDK patch 0058; elsewhere nothing changes). On the Deck, driving
+(two runs each): the render thread 97 -> 58 % of a core, the APU 12.3 -> 7.4 W on average (the
+CPU's cores 3,450 -> 2,600 MHz), frames over 50 ms 64 and 52 -> 27 and 21 in each run, frames
+with 0 or 2 steps fewer, 33.3 ms a frame either way. 1000 us gave the same (what is left is the
+thread's own work).
+
 ## A frame held on the display
 
 `rexnative.present_interval` (the HUD's Frame rate) 2 or 3 shows each frame for that many

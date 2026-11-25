@@ -25,8 +25,14 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/platform/sync.h>
 #include <rex/ppc/context.h>
 
+REXCVAR_DEFINE_INT32(rexnative_render_poll_us, 300, "ReXNative",
+                     "Forza Horizon: how long the render thread sleeps (us) each time it finds no "
+                     "new simulation step to draw, before its SleepEx(0) and next look; 0 polls "
+                     "as on the console. Where the platform sleeps that short with no system "
+                     "object (Wine); elsewhere nothing changes (src/title_hooks.cpp)");
 REXCVAR_DEFINE_BOOL(rexnative_step_gate, true, "ReXNative",
                     "Forza Horizon: hold a simulation step while the frames are two behind, so "
                     "each frame shows one step of motion (src/title_hooks.cpp)");
@@ -111,4 +117,20 @@ void rexnative_fh_step_raise(PPCRegister& r11) {
     g_timeouts.fetch_add(1, std::memory_order_relaxed);
   }
   held_since = {};
+}
+
+// 0x82616CD0, on the render thread: no newer simulation step to draw, SleepEx(0, TRUE) next, then
+// its main loop looks again. That poll ran about 12,000 times a second on the Steam Deck, a whole
+// core of four, beside the simulation thread it waits for. A sleep of rexnative.render_poll_us
+// first (a futex in the process under Wine: rex::platform::SleepOnWord) lets it look about 3,000
+// times a second, seeing a new step at most that late; nothing wakes it early. On a platform with
+// no such sleep (Windows rounds it up to its timer period) it polls as before.
+void rexnative_fh_render_idle(PPCRegister& r3) {
+  (void)r3;
+#ifdef REX_PLATFORM_HAS_SLEEP_ON_WORD
+  const int32_t us = REXCVAR_GET(rexnative_render_poll_us);
+  if (us <= 0) return;
+  static const std::atomic<uint32_t> never{0};
+  (void)rex::platform::SleepOnWord(never, 0, std::chrono::microseconds(std::min(us, 2000)));
+#endif
 }
