@@ -257,6 +257,22 @@ def _fresh_part(base, log):
         return _fresh(own)
 
 
+def replace_dir(part, final, tries=30):
+    """os.replace for a folder just written: Windows refuses to rename one while another process
+    holds a file in it (WinError 5/32), and Defender or the search indexer scanning what an
+    extraction just wrote does that for a while (Forza Motorsport 4: 11 GB staged in 18 minutes,
+    then "Acesso negado" renaming game-data.part; the same rename worked when tried again later). Tries
+    again for about three minutes before giving up."""
+    for i in range(tries):
+        try:
+            os.replace(part, final)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(min(1 + i, 8))
+
+
 def stage_game(source, work, log):
     """<work>/game-data with default.xex; returns facts about where it came from.
 
@@ -270,7 +286,7 @@ def stage_game(source, work, log):
     facts = _stage(source, work, part, log)
     if os.path.exists(final):
         rmtree(final)  # an older run's, without default.xex
-    os.replace(part, final)
+    replace_dir(part, final)
     return facts
 
 
@@ -284,7 +300,7 @@ def _stage(source, work, data, log):
             extract_archive(source, part, log)
             if os.path.exists(root):
                 rmtree(root)
-            os.replace(part, root)
+            replace_dir(part, root)
     # A disc game: its image, given or in the archive (xiso.py).
     image = root if os.path.isfile(root) and root.lower().endswith(IMAGES) else None
     if image is None and os.path.isdir(root) and not find_xex(root):
