@@ -62,6 +62,9 @@ with it. `stable` is the last release, which its **stable** channel (the default
 release is a tested commit of main: `python scripts/release.py X.Y.Z --notes notes.md` tags it
 `vX.Y.Z`, moves `stable` to it and makes the GitHub release (pre-releases while ReXNative is in
 Early Access; `--dry-run` says what it would do). Pull requests go to `main`.
+`python scripts/draft_release_notes.py` drafts the notes with a local model (an OpenAI-compatible
+server such as llama.cpp's) and checks that every note cites commits of the release; read them
+before publishing.
 
 ## License
 
