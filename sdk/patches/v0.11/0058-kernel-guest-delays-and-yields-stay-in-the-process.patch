@@ -1,0 +1,304 @@
+From 066e80e3aa484d720e4c1b1f3566007f4eefae1b Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 00:52:08 +0000
+Subject: [PATCH 58/60] kernel: guest delays and yields stay in the process
+ under Wine
+
+A guest delay (KeDelayExecutionThread, a game's Sleep) armed a high
+resolution waitable timer and waited on it alertably, two wineserver
+round trips under Wine, then spun its last 250 us; an alertable yield
+(Sleep(0)) was SleepEx(0, TRUE), a wineserver round trip too. A game's
+Sleep(1) loop took a quarter of a core on the Steam Deck, and Forza
+Horizon's render thread yields about 12,000 times a second.
+
+With runtime.fast_sleeps (on) a delay sleeps on the thread's park word,
+patch 0057's, with rex::platform::SleepOnWord: RtlWaitOnAddress with a
+100 ns timeout under Wine, a futex in the process (elsewhere it declines
+and the timer stays: Windows rounds such a sleep up to its timer period).
+Stop, suspend and APC requests already set the park word's interrupt and
+wake it (InterruptFastWait); the request's host callback then runs, and
+an alertable delay returns STATUS_USER_APC. An alertable yield looks at
+the park word and calls SwitchToThread (sched_yield there).
+REX_PLATFORM_HAS_SLEEP_ON_WORD tells code built against several SDKs.
+
+Steam Deck, fast_sleeps false -> true, two runs each: Iron Brigade at
+60 fps, its Sleep(1) thread 24.2/24.5 -> 8.5/8.4 % of a core, main
+thread 52.9/51.7 -> 44.9/42.1 %; Forza Horizon at 30 fps, wineserver
+12/12 -> 7/6 %, its Sleep(1) thread 36.6/36.7 -> 21.5/20.8 %.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/site/pages/reference/cvars.md        |  1 +
+ docs/site/pages/runtime/kernel.md         |  2 +
+ include/rex/kernel/object/kernel_thread.h | 17 ++++++
+ include/rex/kernel/runtime_settings.h     |  5 ++
+ include/rex/platform/sync.h               | 17 ++++++
+ src/base/threading_posix.cpp              |  5 ++
+ src/base/threading_win.cpp                | 36 +++++++++++++
+ src/kernel/kernel_thread.cpp              | 65 +++++++++++++++++++++--
+ 8 files changed, 145 insertions(+), 3 deletions(-)
+
+diff --git a/docs/site/pages/reference/cvars.md b/docs/site/pages/reference/cvars.md
+index b0be403a..17418160 100644
+--- a/docs/site/pages/reference/cvars.md
++++ b/docs/site/pages/reference/cvars.md
+@@ -289,6 +289,7 @@ These settings exist while the `rexkernel` module is connected. Declared by `Run
+ | `runtime.ffmpeg_verbose` | `bool` | `false` | live | Log FFmpeg messages during XMA decoding. |
+ | `runtime.fast_waits` | `bool` | `true` | until launch | Guest events, semaphores and critical sections in user space: no system call without a waiter, a short spin before a sleep. |
+ | `runtime.wait_spin_us` | `u32` | `6` | live | How long a guest wait or critical section spins before it sleeps, in microseconds, with `runtime.fast_waits`. 0 to 1000. |
++| `runtime.fast_sleeps` | `bool` | `true` | live | Guest delays (a game's `Sleep`) sleep on the thread's park word where the platform can with no system object (Wine: a futex in the process), woken by stop, suspend and APC requests as fast waits are. Off, or on Windows, they wait on a high resolution timer. |
+ | `runtime.wait_stats` | `bool` | `false` | live | Log the guest threads' waits and signals per kind every 5 s. |
+ | `runtime.terminate_timeout_ms` | `u32` | `2000` | live | How long `Unload` waits for guest threads, in ms. 0 to 60000. |
+ 
+diff --git a/docs/site/pages/runtime/kernel.md b/docs/site/pages/runtime/kernel.md
+index 260d747d..29eac5be 100644
+--- a/docs/site/pages/runtime/kernel.md
++++ b/docs/site/pages/runtime/kernel.md
+@@ -64,6 +64,8 @@ Under Proton every operation on a host event or semaphore is a system call, and
+ - A wait the host must do, on several objects, alertable, or `NtSignalAndWaitForSingleObjectEx`, moves the object to its host primitive for good, with its state, and the threads queued on it go on waiting there. The log names each object that moves.
+ - `RtlEnterCriticalSection` spins for the same time, whatever the title's spin count, before it counts itself in the lock and waits on the section's event, which is such an event.
+ 
++A guest delay (`KeDelayExecutionThread`, a game's `Sleep`) sleeps on the same word with `runtime.fast_sleeps` (on by default) where the platform can do it with no system object: under Wine, `RtlWaitOnAddress` with a timeout in 100 ns units, a futex in the process (`rex::platform::SleepOnWord`). A stop, a suspend or an APC request ends it as it ends a fast wait; the request's host callback then runs, and an alertable delay returns `STATUS_USER_APC`. Before, each delay armed a high resolution waitable timer and waited on it alertably, two wineserver round trips under Wine, and spun its last 250 us: a game's `Sleep(1)` loop took a quarter of a core on the Steam Deck. On Windows `RtlWaitOnAddress` rounds up to the timer period, so delays keep the timer there.
++
+ `KeWaitForSingleObject` and the other waits refresh the thread's `kernel_time` at most every 4 ms then, because `GetThreadTimes` is a wineserver round trip under Wine. With `runtime.wait_stats` the runtime logs every 5 s, per thread, its waits by kind (taken at once, after the spin, after a sleep, or on a host primitive) and its signals.
+ 
+ ## Threads
+diff --git a/include/rex/kernel/object/kernel_thread.h b/include/rex/kernel/object/kernel_thread.h
+index eacb356e..bfdc3747 100644
+--- a/include/rex/kernel/object/kernel_thread.h
++++ b/include/rex/kernel/object/kernel_thread.h
+@@ -13,6 +13,7 @@
+ 
+ #pragma once
+ 
++#include <optional>
+ #include <array>
+ #include <atomic>
+ #include <chrono>
+@@ -286,6 +287,22 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+    */
+   std::atomic<u32>& GetParkWord() { return park_word_; }
+ 
++  /**
++   * A guest delay on the park word (runtime.fast_sleeps), where the platform sleeps on a word
++   * with no system object (rex::platform::SleepOnWord: Wine). kSuccess once `duration` passed,
++   * kAlerted when a stop, suspend or APC request interrupted it (InterruptFastWait; the host
++   * callback queued with it has run). Empty when not available: the caller sleeps on a timer.
++   */
++  std::optional<rex::platform::SleepResult> ParkSleep(std::chrono::microseconds duration);
++
++  /**
++   * An alertable guest yield (a delay of 0) where ParkSleep is available: a stop, suspend or APC
++   * request (the park word's interrupt) runs its host callback and gives kAlerted; otherwise the
++   * thread yields its processor (SwitchToThread, sched_yield under Wine) and gives kSuccess. Empty
++   * when not available: the caller's alertable host yield.
++   */
++  std::optional<rex::platform::SleepResult> ParkYield();
++
+   /** True when a stop or suspend request must end this thread's wait, as CheckStop sees it. */
+   bool HasWaitInterrupt() const;
+ 
+diff --git a/include/rex/kernel/runtime_settings.h b/include/rex/kernel/runtime_settings.h
+index 7593dbf8..6fd99987 100644
+--- a/include/rex/kernel/runtime_settings.h
++++ b/include/rex/kernel/runtime_settings.h
+@@ -38,6 +38,11 @@ class REX_KERNEL_API RuntimeSettings final : public SettingOwner {
+               "Microseconds a guest wait or critical section spins before it sleeps, with "
+               "fast_waits",
+               Range{0, 1000});
++  REX_SETTING(bool, fast_sleeps, true,
++              "Guest delays (KeDelayExecutionThread, a game's Sleep) sleep on the thread's park "
++              "word where the platform can with no system object (Wine: a futex in the process, "
++              "no wineserver timer, no spin at the end), woken by stop, suspend and APC requests "
++              "as fast waits are");
+   REX_SETTING(bool, wait_stats, false,
+               "Log the guest threads' waits and signals per kind every 5 s");
+   REX_SETTING(u32, terminate_timeout_ms, 2000, "Time Unload waits for guest threads to exit",
+diff --git a/include/rex/platform/sync.h b/include/rex/platform/sync.h
+index 119883c9..552530f6 100644
+--- a/include/rex/platform/sync.h
++++ b/include/rex/platform/sync.h
+@@ -38,6 +38,23 @@ namespace rex::platform {
+ REX_API bool WaitOnWord(const std::atomic<u32>& word, u32 expected,
+                         std::chrono::milliseconds timeout);
+ 
++/**
++ * Sleeps on the word for up to `duration`, to the microsecond, where the platform can with no
++ * system object: under Wine, RtlWaitOnAddress (a futex in the process; a waitable timer there is
++ * a wineserver object, two round trips a sleep). Elsewhere it returns false at once and the caller
++ * sleeps its own way (Windows rounds such a sleep up to its timer period). WakeOneOnWord and
++ * WakeAllOnWord end it early; it may also return early for no reason, as WaitOnWord.
++ *
++ * @param word The word to watch.
++ * @param expected The value the thread sleeps on.
++ * @param duration The longest sleep.
++ * @return False when the platform has no such sleep (nothing was done).
++ */
++REX_API bool SleepOnWord(const std::atomic<u32>& word, u32 expected,
++                         std::chrono::microseconds duration);
++/** SleepOnWord is there (code built against several SDKs looks for it). */
++#define REX_PLATFORM_HAS_SLEEP_ON_WORD 1
++
+ /** Wakes one thread sleeping in WaitOnWord on the word. Costs no system call without a sleeper. */
+ REX_API void WakeOneOnWord(std::atomic<u32>& word);
+ 
+diff --git a/src/base/threading_posix.cpp b/src/base/threading_posix.cpp
+index da6e5d3b..efd59c58 100644
+--- a/src/base/threading_posix.cpp
++++ b/src/base/threading_posix.cpp
+@@ -277,6 +277,11 @@ bool WaitOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::millise
+   return !(result == -1 && errno == ETIMEDOUT);
+ }
+ 
++bool SleepOnWord(const std::atomic<u32>& /*word*/, u32 /*expected*/,
++                 std::chrono::microseconds /*duration*/) {
++  return false;  // the caller's own sleep (a futex with a timeout would do; not measured here)
++}
++
+ void WakeOneOnWord(std::atomic<u32>& word) {
+   syscall(SYS_futex, &word, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
+ }
+diff --git a/src/base/threading_win.cpp b/src/base/threading_win.cpp
+index 8c473844..e2a90e9a 100644
+--- a/src/base/threading_win.cpp
++++ b/src/base/threading_win.cpp
+@@ -119,6 +119,42 @@ bool WaitOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::millise
+   return GetLastError() != ERROR_TIMEOUT;
+ }
+ 
++namespace {
++
++// ntdll's RtlWaitOnAddress, under Wine only (ntdll exports wine_get_version there): its timeout is
++// in 100 ns units and it waits on a futex in the process. On Windows it waits on the kernel's
++// timer, rounded up to the timer period (15.6 ms unless raised).
++using RtlWaitOnAddressFn = LONG(NTAPI*)(const void* address, const void* compare, SIZE_T size,
++                                        const LARGE_INTEGER* timeout);
++
++RtlWaitOnAddressFn WineWaitOnAddress() {
++  static const RtlWaitOnAddressFn fn = [] {
++    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
++    if (!ntdll || !GetProcAddress(ntdll, "wine_get_version")) {
++      return RtlWaitOnAddressFn{nullptr};
++    }
++    return reinterpret_cast<RtlWaitOnAddressFn>(GetProcAddress(ntdll, "RtlWaitOnAddress"));
++  }();
++  return fn;
++}
++
++}  // namespace
++
++bool SleepOnWord(const std::atomic<u32>& word, u32 expected, std::chrono::microseconds duration) {
++  const RtlWaitOnAddressFn wait = WineWaitOnAddress();
++  if (!wait) {
++    return false;
++  }
++  if (duration <= std::chrono::microseconds::zero()) {
++    return true;
++  }
++  LARGE_INTEGER timeout;
++  timeout.QuadPart = -static_cast<LONGLONG>(duration.count()) * 10;  // relative, 100 ns units
++  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): RtlWaitOnAddress only reads the word
++  (void)wait(const_cast<std::atomic<u32>*>(&word), &expected, sizeof(u32), &timeout);
++  return true;
++}
++
+ void WakeOneOnWord(std::atomic<u32>& word) {
+   ::WakeByAddressSingle(&word);
+ }
+diff --git a/src/kernel/kernel_thread.cpp b/src/kernel/kernel_thread.cpp
+index 551bd687..7fe25b52 100644
+--- a/src/kernel/kernel_thread.cpp
++++ b/src/kernel/kernel_thread.cpp
+@@ -194,7 +194,8 @@ bool KernelThread::ForceStop() {
+ }
+ 
+ void KernelThread::SleepFor(std::chrono::microseconds duration) {
+-  if (!GetBoundCurrentThread()) {
++  KernelThread* const self = GetBoundCurrentThread();
++  if (!self) {
+     rex::platform::SleepFor(duration);
+     return;
+   }
+@@ -203,11 +204,66 @@ void KernelThread::SleepFor(std::chrono::microseconds duration) {
+   for (auto left = duration; left.count() > 0;
+        left = std::chrono::duration_cast<std::chrono::microseconds>(
+            deadline - std::chrono::steady_clock::now())) {
+-    (void)rex::platform::AlertableSleep(left);
++    // Not alertable: an APC request ends the park sleep, its host callback runs, and the delay
++    // goes on, as the alertable host sleep below does.
++    if (!self->ParkSleep(left)) {
++      (void)rex::platform::AlertableSleep(left);
++    }
+     CheckStop();
+   }
+ }
+ 
++// A game's alertable Sleep(0) poll loop (Forza Horizon's thread 0x11: 13,900 a second) made an
++// alertable host yield each time, SleepEx(0, TRUE): under Wine a wineserver round trip, which
++// checks for user APCs. Those come with the park word's interrupt here (InterruptFastWait), so
++// the yield looks at the word and yields in the process.
++std::optional<rex::platform::SleepResult> KernelThread::ParkYield() {
++  constexpr u32 kParkInterrupt = 2;  // fast_sync.cpp's
++  if (!GetRuntimeSettings().fast_sleeps.Get() ||
++      !rex::platform::SleepOnWord(park_word_, 0, std::chrono::microseconds(0))) {
++    return std::nullopt;
++  }
++  if ((park_word_.load(std::memory_order_seq_cst) & kParkInterrupt) || HasWaitInterrupt()) {
++    park_word_.fetch_and(~kParkInterrupt, std::memory_order_seq_cst);
++    (void)rex::platform::AlertableSleep(std::chrono::microseconds(0));
++    return rex::platform::SleepResult::kAlerted;
++  }
++  rex::platform::MaybeYield();
++  return rex::platform::SleepResult::kSuccess;
++}
++
++// A game's Sleep(1) loop (Iron Brigade, Forza Horizon, Overlord II's network thread) took a
++// quarter of a core on the Steam Deck: each sleep armed a high resolution waitable timer and
++// waited on it alertably (wineserver objects under Wine, two round trips) and spun its last
++// 250 us. On the park word it is one futex sleep in the process, woken as a fast wait is.
++std::optional<rex::platform::SleepResult> KernelThread::ParkSleep(
++    std::chrono::microseconds duration) {
++  constexpr u32 kParkInterrupt = 2;  // fast_sync.cpp's
++  if (!GetRuntimeSettings().fast_sleeps.Get()) {
++    return std::nullopt;
++  }
++  const auto deadline = std::chrono::steady_clock::now() + duration;
++  // Clears an old signal bit (no object hands this thread one while it sleeps), keeps an interrupt.
++  park_word_.fetch_and(kParkInterrupt, std::memory_order_seq_cst);
++  for (;;) {
++    const u32 word = park_word_.load(std::memory_order_seq_cst);
++    if ((word & kParkInterrupt) || HasWaitInterrupt()) {
++      park_word_.fetch_and(~kParkInterrupt, std::memory_order_seq_cst);
++      // The request's host callback, which an alertable host sleep would have run.
++      (void)rex::platform::AlertableSleep(std::chrono::microseconds(0));
++      return rex::platform::SleepResult::kAlerted;
++    }
++    const auto left = std::chrono::duration_cast<std::chrono::microseconds>(
++        deadline - std::chrono::steady_clock::now());
++    if (left.count() <= 0) {
++      return rex::platform::SleepResult::kSuccess;
++    }
++    if (!rex::platform::SleepOnWord(park_word_, word, left)) {
++      return std::nullopt;  // not this platform: the caller's timer
++    }
++  }
++}
++
+ void KernelThread::RequestStop(i32 exit_code) {
+   stop_exit_code_.store(exit_code, std::memory_order_release);
+   {
+@@ -1085,7 +1141,10 @@ X_STATUS KernelThread::Delay([[maybe_unused]] u32 processor_mode, u32 alertable,
+   WriteKernelTime();
+   if (alertable) {
+     ObserveDelay(duration, true);
+-    auto result = rex::platform::AlertableSleep(duration);
++    KernelThread* const self = const_cast<KernelThread*>(this);
++    // A delay of 0 is a yield: ParkSleep would return at once without giving up the processor.
++    const auto parked = duration.count() > 0 ? self->ParkSleep(duration) : self->ParkYield();
++    auto result = parked ? *parked : rex::platform::AlertableSleep(duration);
+     CheckStop();
+     switch (result) {
+       default:
+-- 
+2.55.0.windows.5
+

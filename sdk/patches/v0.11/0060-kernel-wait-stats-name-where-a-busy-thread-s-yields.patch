@@ -1,0 +1,140 @@
+From c644ce1f4ab7724cbf8d9c38c5a591c339f68e5c Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 00:52:09 +0000
+Subject: [PATCH 60/60] kernel: wait stats name where a busy thread's yields
+ come from
+
+With runtime.wait_stats a guest yield (KeDelayExecutionThread with a
+zero interval) records the two return addresses above its caller (the
+back chain at 0(r1), the saved LR 8 bytes below the frame it points at),
+and the report adds the three most frequent for a thread yielding 1,000
+times a second or more: "yields from 82B2A85C < 82616CD4: 11818/s"
+found Forza Horizon's render thread polling for a new simulation step.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/kernel/wait_stats.cpp                  | 41 ++++++++++++++++++++++
+ src/kernel/wait_stats.h                    |  7 ++++
+ src/kernel/xboxkrnl/xboxkrnl_threading.cpp | 15 ++++++++
+ 3 files changed, 63 insertions(+)
+
+diff --git a/src/kernel/wait_stats.cpp b/src/kernel/wait_stats.cpp
+index 0bfbdf6f..b6b5d616 100644
+--- a/src/kernel/wait_stats.cpp
++++ b/src/kernel/wait_stats.cpp
+@@ -8,6 +8,7 @@
+ #include "kernel/wait_stats.h"
+ 
+ #include <algorithm>
++#include <functional>
+ #include <array>
+ #include <atomic>
+ #include <format>
+@@ -49,6 +50,11 @@ struct ThreadCounters {
+   std::array<std::atomic<u64>, kKinds> wait_ns{};
+   std::array<std::atomic<u64>, kSignals> signals{};
+   std::atomic<u64> alertable{0};
++  // Yields by caller (RecordYieldCaller): (from << 32) | outer, and their counts since the last
++  // report (the reporter takes them).
++  static constexpr size_t kCallers = 8;
++  std::array<std::atomic<u64>, kCallers> caller_keys{};
++  std::array<std::atomic<u64>, kCallers> caller_counts{};
+   std::string name;
+   u32 thread_id = 0;
+   Counts last; /**< What the previous report saw, which only the reporter touches. */
+@@ -155,6 +161,25 @@ void Report(std::chrono::steady_clock::time_point now) {
+       text += std::format(" | alertable {:.0f}", d.alertable / seconds);
+     }
+     text += std::format(" | in waits {:.1f} ms/s", total_ns / 1e6 / seconds);
++    // The busiest yielders' callers, the most frequent first.
++    std::array<std::pair<u64, u64>, ThreadCounters::kCallers> callers{};
++    for (size_t c = 0; c < ThreadCounters::kCallers; ++c) {
++      callers[c] = {thread->caller_counts[c].exchange(0, std::memory_order_relaxed),
++                    thread->caller_keys[c].load(std::memory_order_relaxed)};
++    }
++    const u64 yields = d.waits[static_cast<size_t>(Kind::kYield)][0] +
++                       d.waits[static_cast<size_t>(Kind::kYield)][1] +
++                       d.waits[static_cast<size_t>(Kind::kYield)][2] +
++                       d.waits[static_cast<size_t>(Kind::kYield)][3] +
++                       d.waits[static_cast<size_t>(Kind::kYield)][4];
++    if (yields / seconds >= 1000) {
++      std::sort(callers.begin(), callers.end(), std::greater<>());
++      for (size_t c = 0; c < 3 && callers[c].first; ++c) {
++        text += std::format(" | yields from {:08X} < {:08X}: {:.0f}/s",
++                            static_cast<u32>(callers[c].second >> 32),
++                            static_cast<u32>(callers[c].second), callers[c].first / seconds);
++      }
++    }
+     rows.push_back({blocked / seconds, std::move(text)});
+   }
+   std::sort(rows.begin(), rows.end(),
+@@ -229,6 +254,22 @@ void RecordWait(Kind kind, std::chrono::nanoseconds took, Path path, bool alerta
+   MaybeReport();
+ }
+ 
++void RecordYieldCaller(u32 from, u32 outer) {
++  if (!Enabled()) {
++    return;
++  }
++  ThreadCounters& mine = Mine();
++  const u64 key = (static_cast<u64>(from) << 32) | outer;
++  for (size_t c = 0; c < ThreadCounters::kCallers; ++c) {
++    const u64 have = mine.caller_keys[c].load(std::memory_order_relaxed);
++    if (have == key || (have == 0 && mine.caller_counts[c].load(std::memory_order_relaxed) == 0)) {
++      mine.caller_keys[c].store(key, std::memory_order_relaxed);
++      Bump(mine.caller_counts[c], 1);
++      return;
++    }
++  }
++}
++
+ void RecordSignal(Signal signal) {
+   if (t_suppress) {
+     return;
+diff --git a/src/kernel/wait_stats.h b/src/kernel/wait_stats.h
+index 685434ad..feff36df 100644
+--- a/src/kernel/wait_stats.h
++++ b/src/kernel/wait_stats.h
+@@ -69,6 +69,13 @@ Path TakePath();
+ /** Records one signal of the calling thread. */
+ void RecordSignal(Signal signal);
+ 
++/**
++ * Counts a guest yield (a delay of 0) by where it came from: the two return addresses above the
++ * kernel call's caller (`from`, then its caller `outer`), for the report's busiest yielders: a
++ * thread polling with Sleep(0) thousands of times a second shows the loop it polls in.
++ */
++void RecordYieldCaller(u32 from, u32 outer);
++
+ /** Times a wait from its construction to its destruction, when the counts are on. */
+ class Timer {
+  public:
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index fed15ae1..fb9ff10c 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -351,6 +351,21 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, MappedU64 in
+   }
+ 
+   const u64 interval = *interval_ptr;
++  if (!interval && wait_stats::Enabled()) {
++    // Where the yield came from: the frames above this call's caller (back chain at 0(r1), the
++    // saved LR 8 bytes below the frame it points at, as the recompiled prologues store it).
++    const auto* ctx = ThreadState::Get()->GetContext();
++    const auto* space = StateOf(kernel::GetCurrent()).GetAddressSpace();
++    const auto load = [&](u32 address) -> u32 {
++      const u32* p = space->TryTranslateVirtual<const u32*>(address);
++      return p ? std::byteswap(*p) : 0;
++    };
++    const u32 frame = load(static_cast<u32>(ctx->r1.u64));
++    const u32 from = frame ? load(frame - 8) : 0;
++    const u32 outer_frame = frame ? load(frame) : 0;
++    const u32 outer = outer_frame ? load(outer_frame - 8) : 0;
++    wait_stats::RecordYieldCaller(from ? from : static_cast<u32>(ctx->lr), outer);
++  }
+   wait_stats::Timer stats(interval ? wait_stats::Kind::kDelay : wait_stats::Kind::kYield,
+                           alertable != 0);
+   X_STATUS result = thread->Delay(processor_mode, alertable, interval);
+-- 
+2.55.0.windows.5
+
