@@ -300,7 +300,9 @@ sleeps `rexnative.render_poll_us` (300 us) first, on a futex in the process unde
 (two runs each): the render thread 97 -> 58 % of a core, the APU 12.3 -> 7.4 W on average (the
 CPU's cores 3,450 -> 2,600 MHz), frames over 50 ms 64 and 52 -> 27 and 21 in each run, frames
 with 0 or 2 steps fewer, 33.3 ms a frame either way. 1000 us gave the same (what is left is the
-thread's own work).
+thread's own work). SDK patch 0066 does it for any game (`runtime.yield_backoff_us`: a thread that
+yields 16 times in a row sleeps 200 us at each further yield): Forza with only that, 8.2 to 8.5 W
+and its render thread at 62 %; the hook stays, a little better for this game.
 
 ## A frame held on the display
 

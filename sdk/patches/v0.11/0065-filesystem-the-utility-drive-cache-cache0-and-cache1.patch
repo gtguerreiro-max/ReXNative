@@ -1,0 +1,177 @@
+From 1ff667eaa28cc9a3058c8d61a428a3350be6eaa0 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 01:53:42 +0000
+Subject: [PATCH] filesystem: the utility drive, cache:, cache0: and cache1:,
+ as host folders
+
+A title mounts the hard disk's cache partition with XMountUtilityDrive
+(XAM), which fails here: it checks the partition's device type, and the
+volume query answers an unknown device. Forza Horizon then opened
+cache:\ and cache:\ghost_stream_N for its replay and ghost streams and
+found no mount ("no mount covers 'cache:'").
+
+ConfigureStandardMounts takes a utility_root, and the title passes
+<app.user_root>\utility: cache0:, cache1: and cache: are writable host
+folders there (\Device\Harddisk0\Cache0, Cache1 and Cache), mounted
+before the hard disk's null mount so they cover its Cache partitions,
+as Xenia mounts them. A title's own ObCreateSymbolicLink of cache: finds
+it there and succeeds. Forza Horizon on the Steam Deck: no cache: error
+left in its log. Unit test: the three drives are separate folders.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/site/pages/filesystem/filesystem.md   |  3 ++-
+ include/rex/filesystem/file_system.h       |  4 +++-
+ src/filesystem/file_system.cpp             | 25 +++++++++++++++++++++-
+ src/filesystem/file_system.h               |  6 +++---
+ src/kernel/title_state.cpp                 |  5 ++++-
+ tests/unit/filesystem/file_system_test.cpp | 24 +++++++++++++++++++++
+ 6 files changed, 60 insertions(+), 7 deletions(-)
+
+diff --git a/docs/site/pages/filesystem/filesystem.md b/docs/site/pages/filesystem/filesystem.md
+index 557eb866..5f3bf14c 100644
+--- a/docs/site/pages/filesystem/filesystem.md
++++ b/docs/site/pages/filesystem/filesystem.md
+@@ -58,7 +58,8 @@ When `title.game_root` is set, `TitleRuntime::Load` calls `IFileSystem::Configur
+ |---|---|---|
+ | `\Device\Harddisk0\Partition1` | `game:` and `d:` | The folder in `title.game_root`. It is writable only when `title.game_writable` is true. |
+ | `\Device\Harddisk0\PartitionUpdate` | `update:` | The folder in `title.update_root`, read only. It is added only when that folder exists. |
+-| `\Device\Harddisk0` | None | A writable null mount with the empty files `\Partition0`, `\Cache0` and `\Cache1`. |
++| `\Device\Harddisk0\Cache0`, `\Cache1` and `\Cache` | `cache0:`, `cache1:` and `cache:` | The utility drive, writable: the folders `cache0`, `cache1` and `cache` in `<app.user_root>\utility`, as Xenia mounts them. A title mounts it with `XMountUtilityDrive`, which fails here (it checks the partition's device type); Forza Horizon keeps its replay and ghost streams there. |
++| `\Device\Harddisk0` | None | A writable null mount with the empty files `\Partition0`, `\Cache0` and `\Cache1`, which the utility drive's folders cover. |
+ 
+ With an empty `title.game_root`, `Load` logs a warning and adds no mounts. A `title.game_root` that is not a folder fails `Load`. A failed update mount logs a warning, and `Load` continues without it.
+ 
+diff --git a/include/rex/filesystem/file_system.h b/include/rex/filesystem/file_system.h
+index eb433423..ea632d11 100644
+--- a/include/rex/filesystem/file_system.h
++++ b/include/rex/filesystem/file_system.h
+@@ -80,11 +80,13 @@ class IFileSystem : public NonCopyable {
+    *
+    * @param game_root The host folder of the game files.
+    * @param update_root The host folder of the title update files, empty for none.
++   * @param utility_root The host folder of the utility drive (cache:, cache0: and cache1:, each
++   *     a folder in it), empty for none.
+    * @return kNotFound when game_root is empty or not a folder.
+    */
+   [[nodiscard]] virtual Result<void> ConfigureStandardMounts(
+       const std::filesystem::path& game_root, const std::filesystem::path& update_root,
+-      MountFlags game_flags) = 0;
++      MountFlags game_flags, const std::filesystem::path& utility_root = {}) = 0;
+ 
+   /** Removes every mount and every link. */
+   virtual void Clear() = 0;
+diff --git a/src/filesystem/file_system.cpp b/src/filesystem/file_system.cpp
+index 01e2b072..5e3c421a 100644
+--- a/src/filesystem/file_system.cpp
++++ b/src/filesystem/file_system.cpp
+@@ -331,7 +331,8 @@ std::optional<std::string> FileSystem::FindLink(std::string_view path) const {
+ 
+ Result<void> FileSystem::ConfigureStandardMounts(const std::filesystem::path& game_root,
+                                                  const std::filesystem::path& update_root,
+-                                                 MountFlags game_flags) {
++                                                 MountFlags game_flags,
++                                                 const std::filesystem::path& utility_root) {
+   std::lock_guard lock(mutex_);
+   Clear();
+   std::error_code ec;
+@@ -361,6 +362,28 @@ Result<void> FileSystem::ConfigureStandardMounts(const std::filesystem::path& ga
+     }
+   }
+ 
++  // The utility drive, which a title mounts with XMountUtilityDrive: cache0:, cache1: and cache:
++  // as writable host folders, mounted before the hard disk so they cover its Cache partitions, as
++  // Xenia mounts them. That XAM task fails here (it checks the partition's device type), and Forza
++  // Horizon then found no cache: for its replay and ghost streams (cache:\ghost_stream_N).
++  if (!utility_root.empty()) {
++    const std::filesystem::path base = std::filesystem::absolute(utility_root, ec);
++    constexpr std::pair<std::string_view, std::string_view> kCaches[] = {
++        {"\\Device\\Harddisk0\\Cache0", "cache0"},
++        {"\\Device\\Harddisk0\\Cache1", "cache1"},
++        {"\\Device\\Harddisk0\\Cache", "cache"}};
++    for (const auto& [device, name] : kCaches) {
++      const std::filesystem::path folder = base / std::filesystem::path(name);
++      std::filesystem::create_directories(folder, ec);
++      if (auto mounted = Mount({std::string(device), ProviderType::kHostDirectory, folder,
++                                MountFlags::kWritable, {}})) {
++        REX_TRY_VOID(Link(std::string(name) + ":", device));
++      } else {
++        REXFS_WARN("the utility drive's {}: is not mounted, {}", name, mounted.error().message);
++      }
++    }
++  }
++
+   return Mount({std::string(kHarddisk),
+                 ProviderType::kNull,
+                 {},
+diff --git a/src/filesystem/file_system.h b/src/filesystem/file_system.h
+index 700f4430..a2b875c6 100644
+--- a/src/filesystem/file_system.h
++++ b/src/filesystem/file_system.h
+@@ -37,9 +37,9 @@ class FileSystem final : public IFileSystem {
+   [[nodiscard]] Result<void> Link(std::string_view link, std::string_view target) override;
+   [[nodiscard]] Result<void> Unlink(std::string_view link) override;
+   [[nodiscard]] std::optional<std::string> FindLink(std::string_view path) const override;
+-  [[nodiscard]] Result<void> ConfigureStandardMounts(const std::filesystem::path& game_root,
+-                                                     const std::filesystem::path& update_root,
+-                                                     MountFlags game_flags) override;
++  [[nodiscard]] Result<void> ConfigureStandardMounts(
++      const std::filesystem::path& game_root, const std::filesystem::path& update_root,
++      MountFlags game_flags, const std::filesystem::path& utility_root = {}) override;
+   void Clear() override;
+   [[nodiscard]] Result<Opened> Open(std::string_view path, const OpenOptions& options) override;
+   [[nodiscard]] Result<Opened> OpenRelative(IFile& root, std::string_view path,
+diff --git a/src/kernel/title_state.cpp b/src/kernel/title_state.cpp
+index a32b15ec..b7da29ce 100644
+--- a/src/kernel/title_state.cpp
++++ b/src/kernel/title_state.cpp
+@@ -237,7 +237,10 @@ Result<void> TitleState::LoadKernel() {
+     REXSYS_WARN("TitleRuntime::Load: no game_data_root, the standard mounts are skipped");
+   } else {
+     if (auto mounted =
+-            file_system_->ConfigureStandardMounts(game_data_root_, update_data_root_, game_flags_);
++            file_system_->ConfigureStandardMounts(
++                game_data_root_, update_data_root_, game_flags_,
++                user_data_root_.empty() ? std::filesystem::path()
++                                        : user_data_root_ / "utility");
+         !mounted) {
+       return fail(X_STATUS_UNSUCCESSFUL, mounted.error().message);
+     }
+diff --git a/tests/unit/filesystem/file_system_test.cpp b/tests/unit/filesystem/file_system_test.cpp
+index f30986cf..43a3bc0f 100644
+--- a/tests/unit/filesystem/file_system_test.cpp
++++ b/tests/unit/filesystem/file_system_test.cpp
+@@ -372,6 +372,30 @@ REX_TEST_CASE("Standard mounts serve game, d, update and the null paths", "[file
+   CHECK(CodeOf(missing.error()) == FileSystemError::kNotFound);
+ }
+ 
++REX_TEST_CASE("Standard mounts give the utility drive as host folders", "[filesystem][mounts]") {
++  Fixture fixture;
++  std::filesystem::create_directories(fixture.GetTemp() / "game");
++  const std::filesystem::path utility = fixture.GetTemp() / "utility";
++  REQUIRE(fixture.GetFileSystem().ConfigureStandardMounts(fixture.GetTemp() / "game", {},
++                                                          MountFlags::kNone, utility));
++  // cache: and cache0: are separate folders though one name starts the other.
++  struct Case {
++    std::string_view path, folder, name;
++  };
++  for (const Case& c : {Case{"cache:\\ghost_stream_0", "cache", "ghost_stream_0"},
++                        Case{"cache0:\\a.bin", "cache0", "a.bin"},
++                        Case{"cache1:\\b.bin", "cache1", "b.bin"}}) {
++    INFO(c.path);
++    auto created = fixture.GetFileSystem().Open(
++        c.path, {.disposition = Disposition::kCreate, .access = Access::kWriteAccess});
++    REQUIRE(created);
++    CHECK(std::filesystem::exists(utility / std::string(c.folder) / std::string(c.name)));
++  }
++  // The hard disk's Partition0 is still the empty one.
++  CHECK(fixture.Open("\\Device\\Harddisk0\\Partition0").file->GetInfo().size == 0);
++  CHECK(fixture.GetFileSystem().GetMounts().size() == 5);
++}
++
+ REX_TEST_CASE("the game partition is read only", "[filesystem][mounts]") {
+   Fixture fixture;
+   std::filesystem::create_directories(fixture.GetTemp() / "game");
+-- 
+2.55.0.windows.5
+

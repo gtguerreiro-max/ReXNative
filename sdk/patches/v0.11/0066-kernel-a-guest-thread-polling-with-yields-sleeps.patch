@@ -1,0 +1,137 @@
+From f3356e93bd7f0a9b7c9c7c6e707c24db77bdf470 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 02:13:44 +0000
+Subject: [PATCH] kernel: a guest thread polling with yields sleeps a little
+ between them
+
+A thread that yields (Sleep(0)) over and over is polling: Forza
+Horizon's render thread looked for its next simulation step about 12,000
+times a second, a whole core of the Steam Deck's four beside the thread
+it waited for, and the busy core held the CPU at its top clock.
+
+With runtime.yield_backoff_us (200) and fast_sleeps, a thread that yields
+16 times in a row, each less than 2 ms after the last, sleeps that long
+on its park word at each further yield (woken by stop, suspend and APC
+requests as a fast wait is); a gap of 2 ms (work in between) ends the
+run. A low priority thread's yield, a 100 us spin before, sleeps 100 us
+there. Elsewhere than Wine nothing changes (SleepOnWord declines).
+
+Steam Deck: Forza Horizon driving, the APU 11.6-12.3 -> 8.2-8.5 W, its
+render thread 97 -> 62 % of a core, frames over 50 ms 50-64 -> 28-32 a
+run, 33.3 ms a frame either way (256 yields in a row first was too many:
+each frame polls about 170 times). Iron Brigade at 60 fps and Overlord II
+unchanged (16.67 and 33.3 ms, the same power within noise): they do not
+poll with yields.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/kernel/object/kernel_thread.h |  6 +++-
+ include/rex/kernel/runtime_settings.h     |  5 ++++
+ src/kernel/kernel_thread.cpp              | 36 +++++++++++++++++++----
+ 3 files changed, 41 insertions(+), 6 deletions(-)
+
+diff --git a/include/rex/kernel/object/kernel_thread.h b/include/rex/kernel/object/kernel_thread.h
+index bfdc3747..98544083 100644
+--- a/include/rex/kernel/object/kernel_thread.h
++++ b/include/rex/kernel/object/kernel_thread.h
+@@ -301,7 +301,7 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+    * thread yields its processor (SwitchToThread, sched_yield under Wine) and gives kSuccess. Empty
+    * when not available: the caller's alertable host yield.
+    */
+-  std::optional<rex::platform::SleepResult> ParkYield();
++  std::optional<rex::platform::SleepResult> ParkYield(bool low_priority = false);
+ 
+   /** True when a stop or suspend request must end this thread's wait, as CheckStop sees it. */
+   bool HasWaitInterrupt() const;
+@@ -426,6 +426,10 @@ class REX_KERNEL_API KernelThread : public ICallingThread, public rex::NonCopyab
+   bool exited_ = false;
+   bool handles_closed_ = false;
+   std::atomic<u32> park_word_{0};
++  // Yields in a row (ParkYield): when the last came (steady clock ns) and how many came less than
++  // 2 ms apart; only the thread itself touches them.
++  u64 yield_last_ns_ = 0;
++  u32 yield_run_ = 0;
+ };
+ 
+ }  // namespace rex::kernel
+diff --git a/include/rex/kernel/runtime_settings.h b/include/rex/kernel/runtime_settings.h
+index 6fd99987..a62c3764 100644
+--- a/include/rex/kernel/runtime_settings.h
++++ b/include/rex/kernel/runtime_settings.h
+@@ -43,6 +43,11 @@ class REX_KERNEL_API RuntimeSettings final : public SettingOwner {
+               "word where the platform can with no system object (Wine: a futex in the process, "
+               "no wineserver timer, no spin at the end), woken by stop, suspend and APC requests "
+               "as fast waits are");
++  REX_SETTING(u32, yield_backoff_us, 200,
++              "With fast_sleeps: a guest thread that yields (Sleep(0)) 16 times in a row, less "
++              "than 2 ms apart, is polling; each further yield sleeps this long on its park word "
++              "(woken by stop, suspend and APC requests), 0 for a plain yield each time",
++              Range{0, 2000});
+   REX_SETTING(bool, wait_stats, false,
+               "Log the guest threads' waits and signals per kind every 5 s");
+   REX_SETTING(u32, terminate_timeout_ms, 2000, "Time Unload waits for guest threads to exit",
+diff --git a/src/kernel/kernel_thread.cpp b/src/kernel/kernel_thread.cpp
+index 7fe25b52..bd477380 100644
+--- a/src/kernel/kernel_thread.cpp
++++ b/src/kernel/kernel_thread.cpp
+@@ -217,8 +217,18 @@ void KernelThread::SleepFor(std::chrono::microseconds duration) {
+ // alertable host yield each time, SleepEx(0, TRUE): under Wine a wineserver round trip, which
+ // checks for user APCs. Those come with the park word's interrupt here (InterruptFastWait), so
+ // the yield looks at the word and yields in the process.
+-std::optional<rex::platform::SleepResult> KernelThread::ParkYield() {
++//
++// A yield that is a poll (runtime.yield_backoff_us): Forza Horizon's render thread looked for a
++// new simulation step about 12,000 times a second, a whole core of the Steam Deck's four beside
++// the thread it waited for; sleeping 300 us between looks took the APU from 12.3 to 7.4 W and
++// halved the frames over 50 ms. A thread that yields kYieldRun times in a row, each less than
++// kYieldGapNs after the last, sleeps that long at each further yield; the run ends at a gap
++// (the thread did other work). A low priority thread's yield, a 100 us spin before, sleeps
++// 100 us there.
++std::optional<rex::platform::SleepResult> KernelThread::ParkYield(bool low_priority) {
+   constexpr u32 kParkInterrupt = 2;  // fast_sync.cpp's
++  constexpr u32 kYieldRun = 16;
++  constexpr u64 kYieldGapNs = 2'000'000;
+   if (!GetRuntimeSettings().fast_sleeps.Get() ||
+       !rex::platform::SleepOnWord(park_word_, 0, std::chrono::microseconds(0))) {
+     return std::nullopt;
+@@ -228,6 +238,18 @@ std::optional<rex::platform::SleepResult> KernelThread::ParkYield() {
+     (void)rex::platform::AlertableSleep(std::chrono::microseconds(0));
+     return rex::platform::SleepResult::kAlerted;
+   }
++  const u64 now = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                       std::chrono::steady_clock::now().time_since_epoch())
++                                       .count());
++  yield_run_ = now - yield_last_ns_ < kYieldGapNs ? yield_run_ + 1 : 1;
++  yield_last_ns_ = now;
++  const u32 backoff = GetRuntimeSettings().yield_backoff_us.Get();
++  if (backoff && yield_run_ >= kYieldRun) {
++    return ParkSleep(std::chrono::microseconds(backoff));
++  }
++  if (low_priority) {
++    return ParkSleep(std::chrono::microseconds(100));
++  }
+   rex::platform::MaybeYield();
+   return rex::platform::SleepResult::kSuccess;
+ }
+@@ -1155,10 +1177,14 @@ X_STATUS KernelThread::Delay([[maybe_unused]] u32 processor_mode, u32 alertable,
+     }
+   } else {
+     if (duration == std::chrono::microseconds::zero()) {
+-      if (priority_ <= rex::platform::ThreadPriority::kBelowNormal) {
+-        rex::platform::SleepFor(std::chrono::microseconds(100));
+-      } else {
+-        rex::platform::MaybeYield();
++      const bool low_priority = priority_ <= rex::platform::ThreadPriority::kBelowNormal;
++      // Not alertable: an interrupt only runs its host callback (ParkYield), and CheckStop below.
++      if (!const_cast<KernelThread*>(this)->ParkYield(low_priority)) {
++        if (low_priority) {
++          rex::platform::SleepFor(std::chrono::microseconds(100));
++        } else {
++          rex::platform::MaybeYield();
++        }
+       }
+     } else {
+       rex::platform::MaybeYield();
+-- 
+2.55.0.windows.5
+
