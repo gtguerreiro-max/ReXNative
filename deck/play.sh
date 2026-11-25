@@ -34,6 +34,17 @@ done
 # floor's place (back from a suspend, or the quick menu's) gets the floor again. When the game
 # ends, however it ends, the automatic clock comes back if the floor was ours; the mark file says
 # so should the Deck have stopped first (the next game sets the automatic clock back then).
+# Steam's latch. Steam applies the game's performance profile a few seconds after it starts and
+# when it ends; with its GPU clock on automatic it writes "Setting auto GPU clock" and then
+# "Latching manual GPU clock: N MHz" in its log, N being the quick menu's slider (1600 unless the
+# player moved it), which steamos-manager writes as a fixed clock N-N. On SteamOS's automatic
+# clock that write fails (the GPU takes no manual clock then); in the floor's manual mode it took,
+# and locked the GPU at 1600 MHz for the rest of the game and after it (2026-11-25: the player's
+# Forza Horizon, started from Steam's Play; games started by RunGame get no profile). So a fixed
+# clock equal to the one Steam last latched, its choice being automatic, is not the player's: the
+# watcher puts the floor back (not twice within 5 s: something else would be fighting it), sets the
+# automatic clock at the end, and a game starting finds one left that way and sets it back. A
+# player's quick menu clock is logged "Setting manual GPU clock" and goes first as before.
 gpu_w=/usr/bin/steamos-polkit-helpers/steamos-priv-write
 gpu_mark=${XDG_STATE_HOME:-$HOME/.local/state}/rexnative/gpu-floor
 gpu_dev=
@@ -70,6 +81,20 @@ gpu_read() {
     esac
   done < "$gpu_dev/pp_od_clk_voltage"
 }
+# gpu_latch: the clock Steam latched last (above), when that is its last word on the GPU clock.
+gpu_steam_latch() {
+  local log=$HOME/.local/share/Steam/logs/steamui_steamos.txt line re='Latching manual GPU clock: ([0-9]+)'
+  gpu_latch=
+  [[ -r $log ]] || return 1
+  line=$(tac "$log" 2>/dev/null | grep -m1 -E 'Setting (auto|manual) GPU clock|Latching manual GPU clock: [0-9]+')
+  [[ $line =~ $re ]] && gpu_latch=${BASH_REMATCH[1]}
+  [[ -n $gpu_latch ]]
+}
+# Whether the clock now is Steam's latch: a fixed clock equal to it.
+gpu_latched() {
+  [[ $gpu_level == manual && -n $gpu_s0 && $gpu_s0 == "$gpu_s1" ]] && gpu_steam_latch &&
+    [[ $gpu_s0 == "$gpu_latch" ]]
+}
 # gpu_want: the floor the game's settings file ($1) asks for, within the GPU's range (0: none).
 gpu_wanted() {
   local line table= v= re_table='^[[:space:]]*\[[[:space:]]*"?([A-Za-z0-9_.-]+)"?[[:space:]]*\]'
@@ -95,7 +120,7 @@ gpu_wanted() {
 }
 # play.sh --gpu-floor-watch <the game's pid> <its settings file>: the watcher.
 gpu_watch() {
-  local pid=$1 file=$2 last=-1 failed=0
+  local pid=$1 file=$2 last=-1 failed=0 ever=0 back=-100
   held=0 floor=0  # globals: the trap reads them
   gpu_find || return 0
   gpu_read
@@ -108,9 +133,17 @@ gpu_watch() {
     gpu_read
     if (( held )); then
       if [[ $gpu_level != manual || $gpu_s0 != "$floor" || $gpu_s1 != "$gpu_max" ]]; then
-        # Not ours any more: the quick menu's clock, or the automatic one (a suspend's).
-        held=0
-        rm -f "$gpu_mark"
+        if (( SECONDS - back >= 5 )) && gpu_latched; then
+          # Steam's latch (above): the floor back.
+          back=$SECONDS
+          gpu_set pp_od_clk_voltage "s 0 $floor" && gpu_set pp_od_clk_voltage "s 1 $gpu_max" &&
+            gpu_set pp_od_clk_voltage c
+          gpu_read
+        else
+          # Not ours any more: the quick menu's clock, or the automatic one (a suspend's).
+          held=0
+          rm -f "$gpu_mark"
+        fi
       elif (( gpu_want == 0 )); then
         gpu_auto
         held=0
@@ -125,7 +158,7 @@ gpu_watch() {
          gpu_set pp_od_clk_voltage "s 0 $gpu_want" &&
          gpu_set pp_od_clk_voltage "s 1 $gpu_max" &&
          gpu_set pp_od_clk_voltage c; then
-        held=1 floor=$gpu_want
+        held=1 ever=1 floor=$gpu_want
       else
         gpu_auto
         failed=1
@@ -133,16 +166,19 @@ gpu_watch() {
     fi
     sleep 1
   done
-  (( held )) && gpu_auto
+  # Ours, or Steam's latch over ours (it latches as the game ends too).
+  gpu_read
+  if (( held )) || { (( ever )) && gpu_latched; }; then gpu_auto; fi
   return 0
 }
 # The watcher for this game, started before Proton.
 gpu_floor_start() {
   [[ -x $gpu_w ]] && command -v systemd-run >/dev/null && gpu_find || return 0
   gpu_read
-  # A floor of ours that a game which never ended left (no watcher keeps it): automatic again.
-  if [[ $gpu_level == manual && -f $gpu_mark ]] &&
-     ! systemctl --user -q is-active 'rexnative-gpu-floor-*' 2>/dev/null; then
+  # A floor of ours that a game which never ended left (no watcher keeps it), or Steam's latch
+  # over one (above): automatic again.
+  if [[ $gpu_level == manual ]] && ! systemctl --user -q is-active 'rexnative-gpu-floor-*' 2>/dev/null &&
+     { [[ -f $gpu_mark ]] || gpu_latched; }; then
     gpu_auto
   fi
   local env=()

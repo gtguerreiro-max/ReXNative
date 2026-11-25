@@ -90,9 +90,17 @@ the game both write it. A watcher outside the game's processes (a user unit,
 `play.sh --gpu-floor-watch`) reads it each second while the game runs and sets the clock at once
 when it changes. A clock set in Steam's quick menu goes first, for as long as it is set; the
 automatic clock found in the floor's place (back from a suspend, or the quick menu's GPU clock
-turned off) gets the floor again. The Deck's APU shares 15 W between CPU and GPU: when a game's
-threads burst at 3.5 GHz the automatic clock let the GPU fall to 200-450 MHz in the middle of
-frames, which took 45-70 ms. Measured 2026-11-25, 80 s in play for each:
+turned off) gets the floor again. Steam applies a game's performance profile a few seconds after
+it starts from Play and when it ends, and with its GPU clock on automatic it then "latches" the
+quick menu's slider (1600 MHz unless moved: "Latching manual GPU clock" in
+`~/.local/share/Steam/logs/steamui_steamos.txt`) through steamos-manager. That write fails on
+the automatic clock, but in the floor's manual mode it took and locked the GPU at 1600 MHz for the
+rest of the game and after it (ReXNative debd573 to e5646c0). The watcher now tells it from a
+player's clock (Steam logs "Setting manual GPU clock" for that) and puts the floor back, sets the
+automatic clock at the end, and a game starting sets one left over back to automatic. The
+Deck's APU shares 15 W between CPU and GPU: when a game's threads burst at 3.5 GHz the
+automatic clock let the GPU fall to 200-450 MHz in the middle of frames, which took 45-70 ms.
+Measured 2026-11-25, 80 s in play for each:
 
 | | Forza Horizon (30 fps) | Iron Brigade (60 fps) | Overlord II (30 fps) |
 |---|---|---|---|
@@ -106,6 +114,12 @@ at a higher clock without it). Without the setting in the game's file, `REXNATIV
 a `deck.env` says the floor (MHz, 0 none; the Manager's switch wrote it there before the menu had
 the setting), else 1000. Installing a game also gives the games installed beside it the kit's
 `play.sh`.
+
+The frame latency with the floor (Forza Horizon driving, 115 s each, 2026-11-25): at 1, 1 frame
+late (50 ms); at 2, 228, its frames ready 4.5 ms before their refresh against 8 at 1 (the game's
+threads and the GPU working at once share the 15 W, and the GPU's clock drops). With the GPU fixed
+at 1600 MHz (Steam's latch above), 1 at 1 and 36 at 2. Auto stays at 1 there, as it should; a 2
+picked by hand under the latch felt better than it is.
 
 ## Steam artwork
 
