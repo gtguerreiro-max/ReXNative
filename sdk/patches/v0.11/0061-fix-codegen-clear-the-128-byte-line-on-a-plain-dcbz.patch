@@ -1,0 +1,44 @@
+From 567e3850d964956cc4a1c534a2221a8bbbde0252 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 22:37:10 +0000
+Subject: [PATCH] fix(codegen): clear the 128-byte line on a plain dcbz
+
+Xenon has no 32-byte cache block: a plain dcbz zeroes the whole
+128-byte line, as dcbzl (dcbz128) does, and retail code relies on it.
+Lazy Raiders zero-fills its hash buckets with one dcbz per 128 bytes,
+so the 32-byte clear left stale node pointers in 3/4 of each line and
+its main thread looped forever at the title screen. Emit the same
+line-aligned 128-byte clear as dcbzl. xenia-canary made the same change
+in 72ce130971.
+
+Fixes #627
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+(cherry picked from commit b1ae09337631d995afbfd498ec774f40143e4271)
+---
+ src/codegen/builder/system.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/codegen/builder/system.cpp b/src/codegen/builder/system.cpp
+index 067993ef..bd0f8230 100644
+--- a/src/codegen/builder/system.cpp
++++ b/src/codegen/builder/system.cpp
+@@ -187,11 +187,13 @@ bool Build<PPC_INST_DCBTST>(BuilderContext& ctx) {
+ 
+ template <>
+ bool Build<PPC_INST_DCBZ>(BuilderContext& ctx) {
++  // Xenon has no 32-byte cache block: a plain dcbz zeroes the whole 128-byte line, as dcbz128
++  // (dcbzl) does. Retail code relies on it, e.g. zero fills that step 128 bytes per dcbz.
+   ctx.Print("\t{} = (", ctx.EA());
+   if (ctx.insn.operands[0] != 0)
+     ctx.Print("{}.u32 + ", ctx.R(ctx.insn.operands[0]));
+-  ctx.Println("{}.u32) & ~31;", ctx.R(ctx.insn.operands[1]));
+-  ctx.Println("\tmemset((void*)REX_RAW_ADDR({}), 0, 32);", ctx.EA());
++  ctx.Println("{}.u32) & ~127;", ctx.R(ctx.insn.operands[1]));
++  ctx.Println("\tmemset((void*)REX_RAW_ADDR({}), 0, 128);", ctx.EA());
+   return true;
+ }
+ 
+-- 
+2.55.0.windows.5
+

@@ -1,0 +1,145 @@
+From ed925bfb142f50b2d7e5c9a3fc1a23d139177d5f Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 17:42:41 +0000
+Subject: [PATCH] codegen: index waiting jumps and registered functions
+
+GapFill added each function with two walks over every function: AddFunction's
+NotifyFunctionAdded looked at every node for jumps to the new base, and
+DiscoverPendingFunctions looked at every node for ones still to discover.
+
+- FunctionGraph keeps target -> the entries holding an unresolved jump to it
+  (every unresolved jump goes through AddUnresolvedJumpToFunction, and only
+  jumps to the new function's base resolve against it), so a new function
+  looks only at those.
+- FunctionGraph keeps the bases that may still be kRegistered (every node is
+  made by AddFunction in that state and never goes back), pruned when read.
+  DiscoverPendingFunctions uses it when one function or none waits; with more,
+  it walks the graph as before, so the discovery order is unchanged.
+
+Measured on top of the previous commit (Linux, 12 threads, tcmalloc):
+Limbo 6.3 -> 4.7 s, Iron Brigade 22.3 -> 8.6 s, Burnout Crash 45.3 -> 16.0 s;
+every generated file byte for byte the same as development's.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+(cherry picked from commit e26826774e7f7d33ace1ee11e7bd4eb1dc012574)
+---
+ src/codegen/function_graph.cpp | 32 ++++++++++++++++++++++++++++++--
+ src/codegen/function_graph.h   | 10 ++++++++++
+ src/codegen/phase_discover.cpp | 12 ++++++++++--
+ 3 files changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index aa1ac2df..b7f7e923 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -880,6 +880,7 @@ FunctionNode* FunctionGraph::AddFunction(u32 base, u32 size, FunctionAuthority a
+   tables_->no_return.reset();
+ 
+   tables_->function_has_xrefs[base] = has_xrefs;
++  tables_->registered.insert(base);
+ 
+   NotifyFunctionAdded(node_ptr);
+ 
+@@ -1230,6 +1231,9 @@ void FunctionGraph::AddUnresolvedJumpToFunction(u32 entry, u32 site, u32 target,
+   }
+ 
+   node->AddUnresolvedJump(site, target, is_call, conditional);
++  auto& waiting = tables_->waiting_on[target];
++  if (waiting.empty() || waiting.back() != entry)
++    waiting.push_back(entry);
+   REXCG_TRACE("FunctionGraph: added unresolved {} 0x{:08X}->0x{:08X} to function 0x{:08X}",
+               is_call ? "call" : "jump", site, target, entry);
+ }
+@@ -1520,11 +1524,35 @@ TargetType FunctionGraph::ClassifyTarget(u32 target, u32 caller_addr,
+ }
+ 
+ void FunctionGraph::NotifyFunctionAdded(FunctionNode* new_function) {
+-  for (auto& [base, node] : tables_->functions) {
+-    if (node.get() != new_function && node->HasUnresolvedJumps() && node->IsPending()) {
++  // Only jumps to the new function's base resolve against it: the entries that hold one, not every
++  // function (each resolves on its own, so the order does not matter).
++  auto waiting = tables_->waiting_on.find(new_function->GetBase());
++  if (waiting == tables_->waiting_on.end())
++    return;
++  for (u32 entry : waiting->second) {
++    auto it = tables_->functions.find(entry);
++    if (it == tables_->functions.end())
++      continue;
++    FunctionNode* node = it->second.get();
++    if (node != new_function && node->HasUnresolvedJumps() && node->IsPending()) {
+       node->TryResolveAgainst(new_function);
+     }
+   }
+ }
+ 
++std::vector<u32> FunctionGraph::RegisteredFunctions() {
++  std::vector<u32> out;
++  auto& registered = tables_->registered;
++  for (auto it = registered.begin(); it != registered.end();) {
++    auto node = tables_->functions.find(*it);
++    if (node == tables_->functions.end() || !node->second->CanDiscover()) {
++      it = registered.erase(it);  // removed or discovered: a function never goes back
++      continue;
++    }
++    out.push_back(*it);
++    ++it;
++  }
++  return out;
++}
++
+ }  // namespace rex::codegen
+diff --git a/src/codegen/function_graph.h b/src/codegen/function_graph.h
+index 1918db11..8e4cb5a7 100644
+--- a/src/codegen/function_graph.h
++++ b/src/codegen/function_graph.h
+@@ -82,6 +82,12 @@ class FunctionGraph : public rex::MoveOnly {
+   /** Removes a function, to clean up absorbed GAP_FILLs. */
+   bool RemoveFunction(u32 entry_point);
+ 
++  /**
++   * The functions still kRegistered (not yet discovered), without walking the graph: from the bases
++   * added since they were last seen discovered. In no particular order.
++   */
++  std::vector<u32> RegisteredFunctions();
++
+   /**
+    * Returns the function containing an address in O(log f) through the sorted base index, or null
+    * when no function contains addr.
+@@ -188,6 +194,10 @@ class FunctionGraph : public rex::MoveOnly {
+     std::unordered_map<u32, bool> function_has_xrefs;
+     std::unordered_set<u32> declared_no_return;
+     std::optional<std::unordered_set<u32>> no_return;
++    /** Target -> the entries holding an unresolved jump to it (may name entries since resolved). */
++    std::unordered_map<u32, std::vector<u32>> waiting_on;
++    /** Bases that may still be kRegistered: every function added, until it is seen discovered. */
++    std::unordered_set<u32> registered;
+   };
+ 
+   std::unique_ptr<Tables> tables_ = std::make_unique<Tables>();
+diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
+index 33f3b2a3..c9ef7100 100644
+--- a/src/codegen/phase_discover.cpp
++++ b/src/codegen/phase_discover.cpp
+@@ -252,9 +252,17 @@ void DiscoverAllFunctions(CodegenContext& ctx) {
+ size_t DiscoverPendingFunctions(CodegenContext& ctx,
+                                 const std::unordered_set<u32>& known_functions) {
+   std::vector<u32> pending;
+-  for (const auto& [addr, node] : ctx.graph.GetFunctions()) {
+-    if (node->CanDiscover() && !ctx.scan.outside_code.contains(addr)) {
++  for (u32 addr : ctx.graph.RegisteredFunctions()) {
++    if (!ctx.scan.outside_code.contains(addr))
+       pending.push_back(addr);
++  }
++  if (pending.size() > 1) {
++    // Several: in the graph's order, as discovering one can change what the next finds.
++    pending.clear();
++    for (const auto& [addr, node] : ctx.graph.GetFunctions()) {
++      if (node->CanDiscover() && !ctx.scan.outside_code.contains(addr)) {
++        pending.push_back(addr);
++      }
+     }
+   }
+   for (u32 func_addr : pending) {
+-- 
+2.55.0.windows.5
+

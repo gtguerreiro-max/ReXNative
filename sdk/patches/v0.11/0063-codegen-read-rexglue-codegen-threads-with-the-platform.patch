@@ -1,0 +1,37 @@
+From 7eac6de7144f9c17bd489b35bc07e83095137fc7 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 13:01:57 +0000
+Subject: [PATCH] codegen: read REXGLUE_CODEGEN_THREADS with the platform
+ helper (getenv is deprecated on Windows, -Werror)
+
+(cherry picked from commit 20c19b19e4e83aaae9e66a59a03bee15b755db2d)
+---
+ src/codegen/codegen_writer.cpp | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/codegen/codegen_writer.cpp b/src/codegen/codegen_writer.cpp
+index a15886cd..81243917 100644
+--- a/src/codegen/codegen_writer.cpp
++++ b/src/codegen/codegen_writer.cpp
+@@ -2,6 +2,7 @@
+ #include <thread>
+ #include <atomic>
+ #include "codegen_writer.h"
++#include <rex/platform/process.h>
+ 
+ #include <algorithm>
+ #include <array>
+@@ -362,8 +363,8 @@ bool CodegenWriter::Write(bool force) {
+   references.resize(count);
+   std::vector<std::vector<MMIOReportSite>> sites_of(count);
+   unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+-  if (const char* env = std::getenv("REXGLUE_CODEGEN_THREADS")) {
+-    const int n = std::atoi(env);
++  if (const auto env = rex::platform::GetEnvironmentValue("REXGLUE_CODEGEN_THREADS")) {
++    const int n = std::atoi(env->c_str());
+     if (n > 0)
+       threads = static_cast<unsigned>(n);
+   }
+-- 
+2.55.0.windows.5
+

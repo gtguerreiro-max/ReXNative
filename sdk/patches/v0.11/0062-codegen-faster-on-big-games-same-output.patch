@@ -1,0 +1,228 @@
+From 4435758915d5846de368e09ed2ec08c4752a4ca7 Mon Sep 17 00:00:00 2001
+From: gtguerreiro-max <295622337+gtguerreiro-max@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 16:21:51 +0000
+Subject: [PATCH] codegen: faster on big games, same output
+
+- Write: each function emitted on its own thread (EmitCpp is const), merged
+  in function order; REXGLUE_CODEGEN_THREADS sets the count (1 = as before).
+  The no-return set IsNoReturn fills lazily is solved before the threads.
+- Discover: a function outside every code region is remembered and neither
+  retried nor counted as pending each time GapFill registers a function
+  (Iron Brigade logged the same warning 284,670 times).
+- GapFill cleanup: by base with the running maximum of the ends instead of
+  every function against every other.
+- NotifyFunctionAdded: nodes with nothing to resolve skipped first.
+
+Measured (Linux, 12 threads, tcmalloc): Limbo 10.6 -> 6.2 s, Iron Brigade
+37.8 -> 21.9 s, Burnout Crash 98.7 -> 43.1 s; every generated file byte for
+byte the same as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+(cherry picked from commit defcfc8982d8b980cf3b20b4c17bb1a53669f4b2)
+---
+ src/codegen/codegen_context.h  |  2 ++
+ src/codegen/codegen_writer.cpp | 62 ++++++++++++++++++++++++++--------
+ src/codegen/function_graph.cpp |  7 +++-
+ src/codegen/function_graph.h   |  2 ++
+ src/codegen/phase_discover.cpp |  3 +-
+ src/codegen/phase_gapfill.cpp  | 29 +++++++++++-----
+ 6 files changed, 81 insertions(+), 24 deletions(-)
+
+diff --git a/src/codegen/codegen_context.h b/src/codegen/codegen_context.h
+index 4adca254..434f932a 100644
+--- a/src/codegen/codegen_context.h
++++ b/src/codegen/codegen_context.h
+@@ -142,6 +142,8 @@ class CodegenContext : public rex::MoveOnly {
+     ~ScanArtifacts() = default;
+ 
+     std::vector<CodeRegion> code_regions;     /**< Null delimited code regions */
++    /** Functions found outside every code region: discovery never succeeds for them. */
++    std::unordered_set<u32> outside_code;
+     std::unordered_map<u32, u32> pdata_sizes; /**< Maps address to size */
+   } scan;
+ 
+diff --git a/src/codegen/codegen_writer.cpp b/src/codegen/codegen_writer.cpp
+index 39416b43..a15886cd 100644
+--- a/src/codegen/codegen_writer.cpp
++++ b/src/codegen/codegen_writer.cpp
+@@ -1,3 +1,6 @@
++#include <cstdlib>
++#include <thread>
++#include <atomic>
+ #include "codegen_writer.h"
+ 
+ #include <algorithm>
+@@ -348,23 +351,54 @@ bool CodegenWriter::Write(bool force) {
+   references.reserve(functions.size());
+ 
+   const size_t max_file_bytes = ctx_.GetLimits().max_file_size_bytes;
+-  std::unordered_set<std::string> referenced;
+   std::vector<MMIOReportSite> mmio_sites;
+-  emit_ctx.referenced = &referenced;
+-  emit_ctx.mmio_sites = &mmio_sites;
+-  for (const auto* fn : functions) {
+-    referenced.clear();
+-    std::string code = fn->EmitCpp(emit_ctx);
+-    if (code.size() > max_file_bytes) {
+-      REXCG_WARN("Function 0x{:08X} is {} bytes, exceeds max_file_size_bytes ({})", fn->GetBase(),
+-                 code.size(), max_file_bytes);
++  // Each function's C++ on its own: EmitCpp is const and reads only the binary, the graph and the
++  // config, so the functions are emitted on several threads, each with its own referenced set and
++  // MMIO list, and merged in function order (the same output as one thread).
++  // REXGLUE_CODEGEN_THREADS: how many (default: the machine's hardware threads; 1 = one at a time).
++  const size_t count = functions.size();
++  bodies.resize(count);
++  sizes.resize(count);
++  references.resize(count);
++  std::vector<std::vector<MMIOReportSite>> sites_of(count);
++  unsigned threads = std::max(1u, std::thread::hardware_concurrency());
++  if (const char* env = std::getenv("REXGLUE_CODEGEN_THREADS")) {
++    const int n = std::atoi(env);
++    if (n > 0)
++      threads = static_cast<unsigned>(n);
++  }
++  threads = static_cast<unsigned>(std::min<size_t>(threads, std::max<size_t>(count, 1)));
++  // IsNoReturn fills a cache the first time (a const method): filled here, before the threads.
++  GetGraph().SolveNoReturn();
++  std::atomic<size_t> next{0};
++  auto emit_some = [&]() {
++    EmitContext local = emit_ctx;
++    for (size_t i = next.fetch_add(1); i < count; i = next.fetch_add(1)) {
++      local.referenced = &references[i];
++      local.mmio_sites = &sites_of[i];
++      std::string code = functions[i]->EmitCpp(local);
++      if (code.size() > max_file_bytes) {
++        REXCG_WARN("Function 0x{:08X} is {} bytes, exceeds max_file_size_bytes ({})",
++                   functions[i]->GetBase(), code.size(), max_file_bytes);
++      }
++      sizes[i] = {functions[i]->GetBase(), code.size()};
++      bodies[i] = std::move(code);
+     }
+-    sizes.push_back({fn->GetBase(), code.size()});
+-    bodies.push_back(std::move(code));
+-    references.push_back(referenced);
++  };
++  if (threads <= 1) {
++    emit_some();
++  } else {
++    std::vector<std::thread> pool;
++    pool.reserve(threads - 1);
++    for (unsigned t = 1; t < threads; ++t)
++      pool.emplace_back(emit_some);
++    emit_some();
++    for (auto& t : pool)
++      t.join();
+   }
+-  emit_ctx.referenced = nullptr;
+-  emit_ctx.mmio_sites = nullptr;
++  for (auto& sites : sites_of)
++    mmio_sites.insert(mmio_sites.end(), std::make_move_iterator(sites.begin()),
++                      std::make_move_iterator(sites.end()));
+ 
+   for (const auto& [address, declared] : GetConfig().declared_mmio_accesses) {
+     const std::string_view block = declared.block == rex::ppc::MMIOBlock::kGPU ? "gpu" : "apu";
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index 967918d0..aa1ac2df 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -1036,6 +1036,11 @@ bool FunctionGraph::IsNoReturn(u32 entry) const {
+   return tables_->no_return->contains(entry);
+ }
+ 
++void FunctionGraph::SolveNoReturn() const {
++  if (!tables_->no_return)
++    tables_->no_return = NoReturnSolver(*this).Solve();
++}
++
+ void FunctionGraph::DeclareNoReturn(u32 address) {
+   tables_->declared_no_return.insert(address);
+   tables_->no_return.reset();
+@@ -1516,7 +1521,7 @@ TargetType FunctionGraph::ClassifyTarget(u32 target, u32 caller_addr,
+ 
+ void FunctionGraph::NotifyFunctionAdded(FunctionNode* new_function) {
+   for (auto& [base, node] : tables_->functions) {
+-    if (node.get() != new_function && node->IsPending()) {
++    if (node.get() != new_function && node->HasUnresolvedJumps() && node->IsPending()) {
+       node->TryResolveAgainst(new_function);
+     }
+   }
+diff --git a/src/codegen/function_graph.h b/src/codegen/function_graph.h
+index 00d7a518..1918db11 100644
+--- a/src/codegen/function_graph.h
++++ b/src/codegen/function_graph.h
+@@ -72,6 +72,8 @@ class FunctionGraph : public rex::MoveOnly {
+    * unknown address returns.
+    */
+   bool IsNoReturn(u32 entry) const;
++  /** Solves the no-return set IsNoReturn fills lazily, so that threads can then only read it. */
++  void SolveNoReturn() const;
+ 
+   /** Returns the function at an entry point in O(1), or null when absent. */
+   FunctionNode* GetFunction(u32 entry_point);
+diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
+index 3625a898..33f3b2a3 100644
+--- a/src/codegen/phase_discover.cpp
++++ b/src/codegen/phase_discover.cpp
+@@ -76,6 +76,7 @@ void DiscoverFunction(CodegenContext& ctx, u32 func_addr,
+   }
+   if (!region) {
+     REXCG_WARN("Analyze: function 0x{:08X} not in any code region", func_addr);
++    ctx.scan.outside_code.insert(func_addr);  // the regions are fixed: never retried
+     return;
+   }
+ 
+@@ -252,7 +253,7 @@ size_t DiscoverPendingFunctions(CodegenContext& ctx,
+                                 const std::unordered_set<u32>& known_functions) {
+   std::vector<u32> pending;
+   for (const auto& [addr, node] : ctx.graph.GetFunctions()) {
+-    if (node->CanDiscover()) {
++    if (node->CanDiscover() && !ctx.scan.outside_code.contains(addr)) {
+       pending.push_back(addr);
+     }
+   }
+diff --git a/src/codegen/phase_gapfill.cpp b/src/codegen/phase_gapfill.cpp
+index 9d5dc5c1..161fe909 100644
+--- a/src/codegen/phase_gapfill.cpp
++++ b/src/codegen/phase_gapfill.cpp
+@@ -260,17 +260,30 @@ void CleanupAbsorbedGapFills(CodegenContext& ctx) {
+   auto& graph = ctx.graph;
+   std::vector<u32> to_remove;
+ 
++  // Only a function that starts before addr can contain it (ContainsAddress needs base <= addr and
++  // the bases are unique), so a GAP_FILL function goes when an earlier one contains its address.
++  // By base, with the running maximum of the ends: walking back stops once nothing earlier reaches.
++  std::vector<const FunctionNode*> by_base;
++  by_base.reserve(graph.GetFunctionCount());
++  for (const auto& [addr, node] : graph.GetFunctions())
++    by_base.push_back(node.get());
++  std::sort(by_base.begin(), by_base.end(),
++            [](const auto* a, const auto* b) { return a->GetBase() < b->GetBase(); });
++  std::vector<u64> reach(by_base.size());
++  u64 far = 0;
++  for (size_t i = 0; i < by_base.size(); ++i) {
++    far = std::max<u64>(far, u64(by_base[i]->GetBase()) + by_base[i]->GetSize());
++    reach[i] = far;
++  }
+   for (const auto& [addr, node] : graph.GetFunctions()) {
+     if (node->GetAuthority() != FunctionAuthority::kGapFill)
+       continue;
+-
+-    for (const auto& [otherAddr, otherNode] : graph.GetFunctions()) {
+-      if (otherAddr == addr)
+-        continue;
+-      if (!otherNode->ContainsAddress(addr))
+-        continue;
+-
+-      if (otherNode->GetAuthority() != FunctionAuthority::kGapFill || otherAddr < addr) {
++    auto pos = std::lower_bound(by_base.begin(), by_base.end(), addr,
++                                [](const auto* n, u32 a) { return n->GetBase() < a; });
++    for (size_t i = static_cast<size_t>(pos - by_base.begin()); i-- > 0;) {
++      if (reach[i] <= addr)
++        break;
++      if (by_base[i]->ContainsAddress(addr)) {
+         to_remove.push_back(addr);
+         break;
+       }
+-- 
+2.55.0.windows.5
+
