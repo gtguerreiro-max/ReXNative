@@ -4534,7 +4534,16 @@ ID3D12PipelineState* DrawRenderer::Impl::SelectPipeline(
       }
     }
   }
-  if (!use) use = p ? p : GetPipeline(key_hash, key, vst, pst, variant);
+  // The key's own pipeline, made here at its first draw, is `p` too: otherwise the draw counted as
+  // one on the generic pipeline below and bound the generic shaders, a null pixel shader (no
+  // pixel constants, textures or descriptor indices) for a pipeline that runs the real one. A draw
+  // that must not be skipped (memexport, an occlusion query, a narrow surface) drew with the
+  // previous draw's constants: Forza Motorsport 4's 32x512 environment strips loop until a
+  // counter stepped by a constant reaches another, and the GPU hung (a first run, no cache).
+  if (!use) {
+    if (!p) p = GetPipeline(key_hash, key, vst, pst, variant);
+    use = p;
+  }
   // The store's record of a prewarmed pipeline ages with its first use (the pso memo above and
   // the pipelines map's hits reach no GetPipeline), so it stays while the player plays it.
   if (use->store_entry != PipelineStore::kNoEntry) {
