@@ -282,6 +282,14 @@ def stage_game(source, work, log):
     final = os.path.join(work, 'game-data')
     if entry_xex(final):
         return {'reused': True}
+    extracted = os.path.join(work, 'archive')
+    if not os.path.exists(source) and not (source.lower().endswith(ARCHIVES) and
+                                           os.path.isdir(extracted) and os.listdir(extracted)):
+        # Only extraction reads the source (or archive/, the archive extracted): a game whose
+        # game-data is complete returns above, so both can go once it is prepared, as the
+        # Manager does.
+        raise FileNotFoundError('the source %s is not there any more and game-data is not complete: '
+                                'download or extract it again' % source)
     part = _fresh_part(final, log)
     facts = _stage(source, work, part, log)
     if os.path.exists(final):
@@ -293,7 +301,9 @@ def stage_game(source, work, log):
 def _stage(source, work, data, log):
     facts = {}
     root = source
-    if os.path.isfile(source) and source.lower().endswith(ARCHIVES):
+    # An archive is extracted into archive/, which a later run reads without it (stage_game).
+    if source.lower().endswith(ARCHIVES) and (os.path.isfile(source) or
+                                              os.path.isdir(os.path.join(work, 'archive'))):
         root = os.path.join(work, 'archive')
         if not os.path.isdir(root) or not os.listdir(root):
             part = _fresh_part(root, log)
