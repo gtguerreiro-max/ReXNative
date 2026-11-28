@@ -16,6 +16,8 @@ Xenia's disc_image_device.cc read it.
 import os
 import struct
 
+from . import meter
+
 SECTOR = 2048
 MAGIC = b'MICROSOFT*XBOX*MEDIA'
 PARTITIONS = (0, 0xFD90000, 0x2080000, 0x18300000)
@@ -98,11 +100,12 @@ class Image:
 
     def extract(self, dst, log=print, chunk=8 << 20, skip=('$SystemUpdate/',)):
         """Writes every file under dst but those under `skip` (the console's system update,
-        which discs carry for the console, not the game); returns how many."""
+        which discs carry for the console, not the game); returns how many. The bytes written
+        against the files' total (the directory's sizes) go to log as meter lines."""
+        files = [f for f in self.walk() if not f[0].startswith(skip)]
+        m = meter.Meter(sum(f[2] for f in files), log)
         n = total = 0
-        for rel, first, length in self.walk():
-            if rel.startswith(skip):
-                continue
+        for rel, first, length in files:
             out = os.path.join(dst, *rel.split('/'))
             os.makedirs(os.path.dirname(out), exist_ok=True)
             self.f.seek(self.base + first * SECTOR)
@@ -114,6 +117,7 @@ class Image:
                         raise ValueError('%s: %s ends before its %d bytes' % (self.path, rel, length))
                     w.write(b)
                     left -= len(b)
+                    m.bytes(total + length - left)
             n += 1
             total += length
         log('  %d files, %.1f GB' % (n, total / 1e9))

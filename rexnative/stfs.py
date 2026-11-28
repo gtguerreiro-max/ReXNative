@@ -6,6 +6,8 @@ import hashlib
 import os
 import struct
 
+from . import meter
+
 BLOCK = 0x1000
 PER_LEVEL = 170
 MAGICS = (b'CON ', b'LIVE', b'PIRS')
@@ -183,12 +185,14 @@ class Package:
             i = entries[i]['parent']
         return '/'.join(reversed(parts))
 
-    def extract(self, out_dir, log=None):
+    def extract(self, out_dir, log=None, progress=None):
         """Every file into out_dir; returns the number of files. Names that would leave out_dir
-        (absolute, '..', drive letters) are refused."""
+        (absolute, '..', drive letters) are refused. With progress (a log function), the bytes
+        written against the files' total go to it as meter lines."""
         root = os.path.realpath(out_dir)
         entries = self.entries()
-        n = 0
+        m = progress and meter.Meter(sum(e['size'] for e in entries if not e['dir']), progress)
+        n = written = 0
         for i, e in enumerate(entries):
             rel = self.path_of(entries, i)
             parts = [p for p in rel.replace('\\', '/').split('/') if p not in ('', '.')]
@@ -203,12 +207,17 @@ class Package:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             remaining = e['size']
             with open(dst, 'wb') as o:
-                for b in self.chain(e['start'], e['blocks'], e['contig']):
+                for k, b in enumerate(self.chain(e['start'], e['blocks'], e['contig'])):
                     data = self.read_block(b)
                     o.write(data[:min(BLOCK, remaining)])
                     remaining -= BLOCK
                     if remaining <= 0:
                         break
+                    if m and k % 256 == 255:  # every MB
+                        m.bytes(written + e['size'] - remaining)
+            written += e['size']
+            if m:
+                m.bytes(written)
             n += 1
             if log:
                 log('  %12d  %s' % (e['size'], '/'.join(parts)))

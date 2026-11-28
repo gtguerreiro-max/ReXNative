@@ -1,7 +1,8 @@
 """From a game as it comes (a .7z/.zip/.rar of it, an STFS package, or a folder with default.xex)
 to its ReXNative layer, unattended:
 
-  1. extract (7-Zip for archives; STFS packages with stfs.py) into <work>/<game>/game-data;
+  1. extract (7-Zip for archives; STFS packages with stfs.py) into <work>/<game>/game-data, each
+     part's progress logged as `    N% (X MB/s)` lines (meter.py) the Manager shows;
   2. ReXGlue codegen of default.xex into <work>/<game>/generated/default, again and again: each
      unresolved branch target codegen reports becomes a function hint (as the ports'
      tools/gen_manifest.py do), until it succeeds;
@@ -14,6 +15,7 @@ game is run. <work>/<game>/prepare.json records each step's outcome; `survey` ta
 import bisect
 import glob
 import json
+import locale
 import os
 import re
 import shutil
@@ -22,7 +24,7 @@ import subprocess
 import sys
 import time
 
-from . import profile as prof, stfs, xex, xiso
+from . import meter, profile as prof, stfs, xex, xiso
 
 BELOW_NORMAL = 0x00004000  # Windows process priority class
 SEVEN_ZIP = [r'C:\Program Files\7-Zip\7z.exe', r'C:\Program Files (x86)\7-Zip\7z.exe', '7z']
@@ -158,15 +160,63 @@ def seven_zip():
     return shutil.which('7z') or shutil.which('7za')
 
 
+SEVEN_ZIP_PCT = re.compile(rb'^\s*(\d{1,3})%')
+SEVEN_ZIP_SIZE = re.compile(rb'^(Total )?Physical Size = (\d+)')
+
+
 def extract_archive(src, dst, log):
+    """src (an archive) into dst with 7-Zip, its percentages as meter lines. With -bsp1 7-Zip writes
+    ` 23% 900 - <file>` to stdout again and again over the same line (\\r on Windows, backspaces in
+    the Linux 7-Zip). Before that, while it opens the archive, it writes ` 52% 1600 Open` (a RAR's
+    headers are spread through it: Forza Motorsport 2's 5.2 GB reached 97% in 20 s on a hard disk,
+    then took 5 minutes from 97% to the end). Only the percentages after the archive's properties
+    (from its `--` line on) are the extraction's. The rate is of the archive read (its Physical Size,
+    the volumes' total for a multi-volume one)."""
     exe = seven_zip()
     if not exe:
         raise RuntimeError('7-Zip not found (needed for %s)' % src)
     os.makedirs(dst, exist_ok=True)
     log('  7-Zip: %s' % os.path.basename(src))
-    r = _run([exe, 'x', '-y', '-o' + dst, src])
-    if r.returncode != 0:
-        raise RuntimeError('7-Zip failed on %s: %s' % (src, r.stdout[-500:] + r.stderr[-500:]))
+    kw = {'creationflags': BELOW_NORMAL} if os.name == 'nt' else {}
+    if os.name != 'nt':
+        from .project import _lower_priority
+        kw['preexec_fn'] = _lower_priority
+    try:
+        size = os.path.getsize(src)
+    except OSError:
+        size = 1
+    p = subprocess.Popen([exe, 'x', '-y', '-bsp1', '-o' + dst, src], stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+    m, text, rest = None, [], b''  # m from the `--` line on: the extraction
+    # Windows' 7-Zip writes its messages to a pipe in the console's code page (cp850 here)
+    enc = 'oem' if os.name == 'nt' else locale.getpreferredencoding(False)
+    try:
+        for chunk in iter(lambda: p.stdout.read1(1 << 16), b''):
+            *lines, rest = re.split(rb'[\r\n\b]', rest + chunk)
+            for line in lines:
+                pct = SEVEN_ZIP_PCT.match(line)
+                if pct:
+                    if m is not None and not line.rstrip().endswith(b' Open'):
+                        m.percent(int(pct.group(1)))
+                    continue
+                if m is None and line.strip() == b'--':
+                    m = meter.Meter(size, log)
+                sz = SEVEN_ZIP_SIZE.match(line)
+                if sz and (sz.group(1) or size <= 1):
+                    size = int(sz.group(2))
+                    if m is not None:
+                        m.total = size
+                if line.strip():
+                    text = (text + [line.decode(enc, 'replace').strip()])[-20:]
+    except BaseException:
+        p.kill()
+        raise
+    finally:
+        p.stdout.close()
+    if rest.strip():
+        text.append(rest.decode(enc, 'replace').strip())
+    if p.wait() != 0:
+        raise RuntimeError('7-Zip failed on %s: %s' % (src, '\n'.join(text)[-1000:]))
     _writable(dst)
 
 
@@ -343,7 +393,7 @@ def _stage(source, work, data, log):
             if pkg.content_type != 0x000D0000:
                 continue  # title updates and DLC are not the game's executable
             log('  STFS %s: %s (%s)' % (os.path.basename(p), pkg.display_name, kind))
-            n = pkg.extract(data)
+            n = pkg.extract(data, progress=log)
             log('  %d files' % n)
         finally:
             pkg.close()
