@@ -281,6 +281,16 @@ def find_packages(root):
     return out
 
 
+def rel_or_abs(path, start):
+    """path relative to start, or absolute when it cannot be (on Windows, another drive or a
+    network share: relpath raises ValueError). The user's own game files may be on another
+    drive than the work folder."""
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def _fresh(path):
     """An empty folder at path (what an interrupted run left there goes)."""
     if os.path.isdir(path):
@@ -388,7 +398,7 @@ def _stage(source, work, data, log):
         pkg = stfs.Package(p)
         try:
             kind = stfs.CONTENT_TYPES.get(pkg.content_type, '%08X' % pkg.content_type)
-            titles.append({'package': os.path.relpath(p, work), 'title_id': '%08X' % pkg.title_id,
+            titles.append({'package': rel_or_abs(p, work), 'title_id': '%08X' % pkg.title_id,
                            'type': kind, 'name': pkg.display_name})
             if pkg.content_type != 0x000D0000:
                 continue  # title updates and DLC are not the game's executable
